@@ -1,0 +1,25 @@
+# CMake build artifacts
+/build/
+/build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+Makefile
+
+# Qt Creator and IDE files
+*.pro.user
+*.pro.user.*
+.qtc_clangd/
+.idea/
+.vscode/
+
+# Runtime data and logs
+/data/*.db
+/data/*.db-shm
+/data/*.db-wal
+*.log
+
+# Operating system files
+.DS_Store
+Thumbs.db
