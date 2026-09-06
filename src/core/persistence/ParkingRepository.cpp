@@ -174,7 +174,6 @@ bool ParkingRepository::saveLayout(const ParkingLayout &layout)
     snapshotQuery.bindValue(QStringLiteral(":value"),
                             QString::fromStdString(signature));
     if (!exec(snapshotQuery, lastError_)) {
-        || !exec(snapshotQuery, lastError_)) {
         database_.rollback();
         return false;
     }
@@ -463,8 +462,9 @@ std::vector<PersistedSpotState> ParkingRepository::loadSpotStates()
             }
             state.vehicle = Vehicle(plate.toStdString(), static_cast<VehicleType>(vehicleType));
         }
-        const qint64 expiry = query.value(4).toLongLong();
-        if (expiry != invalidTime) {
+        const QVariant expiryValue = query.value(4);
+        if (!expiryValue.isNull()) {
+            const qint64 expiry = expiryValue.toLongLong();
             state.reservationExpiresAt = fromMilliseconds(expiry);
         }
         if ((state.status == SpotStatus::Occupied
@@ -497,9 +497,9 @@ std::vector<PersistedRecord> ParkingRepository::loadRecords()
         record.plateNumber = query.value(0).toString().toStdString();
         record.spotId = query.value(1).toString().toStdString();
         record.entryTime = fromMilliseconds(query.value(2).toLongLong());
-        const qint64 exitTime = query.value(3).toLongLong();
-        if (exitTime != invalidTime) {
-            record.exitTime = fromMilliseconds(exitTime);
+        const QVariant exitTimeValue = query.value(3);
+        if (!exitTimeValue.isNull()) {
+            record.exitTime = fromMilliseconds(exitTimeValue.toLongLong());
         }
         record.fee = query.value(4).toDouble();
         if (record.plateNumber.empty() || record.spotId.empty()

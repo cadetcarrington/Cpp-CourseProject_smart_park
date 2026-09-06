@@ -5,6 +5,7 @@
 #include "core/model/Vehicle.h"
 #include "core/service/ParkingService.h"
 
+#include <QCoreApplication>
 #include <QTemporaryDir>
 #include <QSqlQuery>
 
@@ -444,6 +445,11 @@ void testSqlitePersistenceAndRecovery()
 
 int main()
 {
+    int argc = 0;
+    char programName[] = "smartpark_core_tests";
+    char *argv[] = {programName, nullptr};
+    QCoreApplication app(argc, argv);
+
     testVehicle();
     testParkingSpotLifecycle();
     testParkingSpotReservation();
