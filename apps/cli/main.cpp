@@ -1,78 +1,100 @@
-#include "core/model/ParkingSpot.h"
+#include "core/model/ParkingLayout.h"
 #include "core/model/Vehicle.h"
+#include "core/service/ParkingService.h"
 
 #include <exception>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
-void require(bool condition, const std::string &message)
+smartpark::ParkingLayout loadLayout(const std::string &path)
 {
-    if (!condition) {
-        throw std::runtime_error(message);
+    if (path.empty()) {
+        return smartpark::ParkingLayout::defaultLayout();
     }
-    std::cout << "[PASS] " << message << '\n';
+
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error("cannot open layout file: " + path);
+    }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    return smartpark::ParkingLayout::fromDescription(buffer.str());
 }
 
-void printSpot(const smartpark::ParkingSpot &spot)
+void printAllocation(const smartpark::AllocationResult &result)
 {
-    std::cout << spot.identifier() << " | "
-              << (spot.isAvailable() ? "Available" : "Occupied") << " | "
-              << (spot.parkedVehicle() ? spot.parkedVehicle()->plateNumber() : "-")
-              << '\n';
-}
-
-void printState(const smartpark::ParkingSpot &first, const smartpark::ParkingSpot &second)
-{
-    std::cout << "Spot | Status | Plate\n";
-    printSpot(first);
-    printSpot(second);
-    const int available = static_cast<int>(first.isAvailable())
-        + static_cast<int>(second.isAvailable());
-    std::cout << "Available: " << available << "/2\n\n";
+    std::cout << "  Spot: " << result.spotId
+              << " | Entry: " << result.entryRoute.distance << "m"
+              << " | Exit: " << result.exitRoute.distance << "m"
+              << " | Nearby occupied: " << result.nearbyOccupiedSpots
+              << " | Score: " << result.score << '\n';
+    if (!result.entryRoute.points.empty()) {
+        const smartpark::Point &first = result.entryRoute.points.front();
+        const smartpark::Point &last = result.entryRoute.points.back();
+        std::cout << "  Entry route: (" << first.x << ", " << first.y << ") -> ("
+                  << last.x << ", " << last.y << ") through "
+                  << result.entryRoute.points.size() << " waypoints\n";
+    }
 }
 
 } // namespace
 
-int main()
+int main(int argc, char **argv)
 {
     try {
-        std::cout << "SmartPark CLI - core model verification\n"
-                  << "Two explicit spots; no GUI, database or automatic allocation.\n\n";
+        if (argc > 2) {
+            throw std::runtime_error("usage: smartpark_cli [layout.txt]");
+        }
 
-        smartpark::ParkingSpot first("A001");
-        smartpark::ParkingSpot second("A002");
-        const smartpark::Vehicle car(u8"\u664bA12345", smartpark::VehicleType::Car);
-        const smartpark::Vehicle electric(u8"\u664bA88888", smartpark::VehicleType::Electric);
+        const std::string layoutPath = argc == 2 ? argv[1] : std::string();
+        const smartpark::ParkingLayout layout = loadLayout(layoutPath);
+        smartpark::ParkingService service(layout);
 
-        require(first.isAvailable() && second.isAvailable(), "Both spots start available");
-        printState(first, second);
+        std::cout << "SmartPark CLI - automatic parking allocation\n"
+                  << "Site: " << layout.siteWidth() << "m x " << layout.siteHeight()
+                  << "m | Regions: " << layout.regions().size()
+                  << " | Spots: " << layout.spots().size() << "\n\n";
 
-        require(first.occupy(car), "First vehicle occupies A001");
-        require(second.occupy(electric), "Second vehicle occupies A002");
-        require(first.parkedVehicle() && first.parkedVehicle()->plateNumber() == car.plateNumber()
-                    && second.parkedVehicle()
-                    && second.parkedVehicle()->plateNumber() == electric.plateNumber(),
-                "Both spots retain the correct vehicles");
-        printState(first, second);
+        const std::vector<smartpark::Vehicle> vehicles = {
+            {u8"晋A12345", smartpark::VehicleType::Car},
+            {u8"晋A88888", smartpark::VehicleType::Electric},
+            {u8"晋B67890", smartpark::VehicleType::Truck},
+        };
 
-        require(!first.occupy(electric), "Repeated occupancy is rejected");
-        require(first.parkedVehicle() && first.parkedVehicle()->plateNumber() == car.plateNumber(),
-                "Rejected occupancy leaves original vehicle unchanged");
+        std::vector<smartpark::AllocationResult> allocations;
+        allocations.reserve(vehicles.size());
+        for (const smartpark::Vehicle &vehicle : vehicles) {
+            const auto result = service.allocate(vehicle);
+            if (!result) {
+                throw std::runtime_error("automatic allocation failed");
+            }
+            std::cout << "Allocate " << vehicle.plateNumber() << ":\n";
+            printAllocation(*result);
+            allocations.push_back(*result);
+        }
 
-        require(first.release(), "First vehicle leaves A001");
-        require(first.isAvailable() && !first.parkedVehicle(), "A001 is empty and available");
-        require(!first.release(), "Repeated release is rejected");
-        printState(first, second);
+        std::cout << "\nRelease " << allocations.front().spotId << " and allocate another vehicle.\n";
+        if (!service.release(allocations.front().spotId)) {
+            throw std::runtime_error("release failed");
+        }
+        const auto replacement = service.allocate({u8"晋C24680", smartpark::VehicleType::Car});
+        if (!replacement || replacement->spotId == allocations[1].spotId
+            || replacement->spotId == allocations[2].spotId) {
+            throw std::runtime_error("replacement allocation failed");
+        }
+        printAllocation(*replacement);
 
-        require(second.release(), "Second vehicle leaves A002");
-        require(first.isAvailable() && second.isAvailable()
-                    && !first.parkedVehicle() && !second.parkedVehicle(),
-                "All spots are empty and available again");
-        printState(first, second);
-        std::cout << "RESULT: PASS\n";
+        if (layoutPath.empty() && layout.spots().size() != 60) {
+            throw std::runtime_error("default layout must contain 60 spots");
+        }
+
+        std::cout << "\nRESULT: PASS\n";
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "RESULT: FAIL - " << error.what() << '\n';
