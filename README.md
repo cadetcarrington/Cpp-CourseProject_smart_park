@@ -22,7 +22,7 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 
 当前版本只搭建工程结构，后续第一个可运行版本将实现：
 
-- C++20、CMake 与 Qt 6 Widgets 的基础工程配置。
+- C++17、CMake 与 Qt 6 Widgets 的基础工程配置。
 - 可以启动的管理员端 `MainWindow`。
 - `Vehicle` 与 `ParkingSpot` 基础模型。
 - 一个能够在内存中管理 60 个停车位的停车核心。
@@ -31,7 +31,7 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 
 ## 技术栈
 
-- C++20
+- C++17
 - Qt 6 Widgets
 - CMake
 - SQLite 与 Qt SQL（后续）
@@ -75,6 +75,25 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 7. 出入口终端：手动输入车牌并通过服务端处理业务。
 8. 车牌识别：接入 OpenCV 与 HyperLPR3。
 
-## 当前启动方式
+## Linux 构建与运行
 
-项目骨架阶段尚未提供可执行程序。完成第一个 CMake 和 Qt 6 Widgets 版本后，将在项目根目录使用 CMake 配置、编译并启动管理员端。
+当前 Linux 开发环境使用独立的 Conda 环境 `smartpark-qt68`，其中包含 Qt 6.8.4、CMake、Ninja 和 C++ 编译器。
+
+```bash
+source ~/miniforge3/etc/profile.d/conda.sh
+conda activate smartpark-qt68
+
+cmake -S . -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"
+cmake --build build --parallel
+./build/apps/admin/smartpark_admin
+```
+
+如果当前终端没有图形显示，可以使用 Qt 的 offscreen 平台插件做启动检查：
+
+```bash
+QT_QPA_PLATFORM=offscreen ./build/apps/admin/smartpark_admin
+```
+
+该 Conda 环境用于构建 Linux x86_64 版本。Windows 和 Android 版本后续需要分别使用对应平台的 Qt Kit。
