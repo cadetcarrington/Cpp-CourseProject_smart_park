@@ -1,5 +1,6 @@
 #include "core/model/ParkingRecord.h"
 
+#include <cmath>
 #include <stdexcept>
 #include <utility>
 
@@ -57,7 +58,8 @@ double ParkingRecord::fee() const noexcept
 
 bool ParkingRecord::close(TimePoint exitTime, double recordFee)
 {
-    if (isClosed() || exitTime < entryTime_) {
+    if (isClosed() || exitTime < entryTime_ || !std::isfinite(recordFee)
+        || recordFee < 0.0) {
         return false;
     }
     exitTime_ = exitTime;

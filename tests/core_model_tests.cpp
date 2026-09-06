@@ -2,6 +2,8 @@
 #include "core/model/ParkingRecord.h"
 #include "core/persistence/DatabaseManager.h"
 #include "core/persistence/ParkingRepository.h"
+#include "core/persistence/Persistence.h"
+#include "core/util/TimeUtil.h"
 #include "core/model/Vehicle.h"
 #include "core/service/ParkingService.h"
 
@@ -11,10 +13,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <exception>
 #include <iostream>
+#include <limits>
+#include <memory>
 #include <set>
-#include <stdexcept>
 #include <string>
 
 namespace {
@@ -126,7 +130,7 @@ void testParkingRecordLifecycle()
 {
     using namespace std::chrono_literals;
     const smartpark::ParkingRecord::TimePoint entry =
-        smartpark::ParkingRecord::Clock::from_time_t(1000);
+        smartpark::ParkingRecord::Clock::from_time_t(1700000000);
     smartpark::ParkingRecord record(u8"晋A12345", "A001", entry);
 
     expect(record.plateNumber() == u8"晋A12345", "parking record keeps the plate number");
@@ -182,7 +186,7 @@ void testCustomLayoutAndAutomaticAllocation()
     expect(service.spots().size() == 32, "custom layout generates all requested spots");
 
     const smartpark::ParkingRecord::TimePoint entry =
-        smartpark::ParkingRecord::Clock::from_time_t(1000);
+        smartpark::ParkingRecord::Clock::from_time_t(1700000000);
     const auto first = service.enter({u8"晋A12345", smartpark::VehicleType::Car}, entry);
     const auto second = service.enter({u8"晋A88888", smartpark::VehicleType::Electric}, entry);
     expect(first.has_value() && second.has_value(), "automatic allocation succeeds");
@@ -253,7 +257,7 @@ void testReservationTtlAndConflict()
         "exit 40 15\n"
         "region A 10 10 1 1 1.2 5.5 6 left\n";
     smartpark::ParkingService service(smartpark::ParkingLayout::fromDescription(description));
-    const auto now = smartpark::ParkingRecord::Clock::from_time_t(2000);
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
     const smartpark::Vehicle owner(u8"晋A12345", smartpark::VehicleType::Car);
     const smartpark::Vehicle other(u8"晋A88888", smartpark::VehicleType::Car);
 
@@ -289,7 +293,7 @@ void testTypeMatching()
         "region A 12 14 2 1 1.2 5.5 6 left normal\n"
         "region B 28 14 2 1 1.2 5.5 6 left charging\n";
     smartpark::ParkingService service(smartpark::ParkingLayout::fromDescription(description));
-    const auto now = smartpark::ParkingRecord::Clock::from_time_t(3000);
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
 
     const auto car = service.enter({u8"晋A12345", smartpark::VehicleType::Car}, now);
     const auto ev = service.enter({u8"晋A88888", smartpark::VehicleType::Electric}, now);
@@ -311,7 +315,7 @@ void testCongestionAvoidanceAndStrategies()
         "region A 36 4 6 2 1.2 5.5 6 left\n"
         "region B 36 40 6 2 1.2 5.5 6 left\n";
     const auto layout = smartpark::ParkingLayout::fromDescription(description);
-    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000);
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
 
     smartpark::ParkingService nearest(layout, smartpark::AllocationStrategy::Nearest);
     std::optional<smartpark::AllocationResult> lastNearest;
@@ -354,7 +358,7 @@ void testMultiEntranceSelection()
     smartpark::ParkingService service(
         smartpark::ParkingLayout::fromDescription(description),
         smartpark::AllocationStrategy::Nearest);
-    const auto now = smartpark::ParkingRecord::Clock::from_time_t(5000);
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
     const auto first = service.enter({u8"晋A12345", smartpark::VehicleType::Car}, now);
     expect(first.has_value(), "multi-entrance allocation succeeds");
     const auto firstSpot = findSpot(service, first->spotId);
@@ -386,7 +390,7 @@ void testSqlitePersistenceAndRecovery()
         "exit 60 15\n"
         "region A 10 10 1 3 1.2 5.5 6 left\n";
     const auto layout = smartpark::ParkingLayout::fromDescription(description);
-    const auto now = smartpark::ParkingRecord::Clock::from_time_t(1000);
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
 
     QTemporaryDir directory;
     expect(directory.isValid(), "SQLite test can create a temporary directory");
@@ -395,6 +399,7 @@ void testSqlitePersistenceAndRecovery()
         smartpark::DatabaseManager database(databasePath);
         expect(database.database().isOpen(), "SQLite database opens");
         smartpark::ParkingRepository repository(database.database());
+        expect(repository.saveLayout(layout), "the first database can store the layout");
         smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
                                           &repository);
 
@@ -412,6 +417,7 @@ void testSqlitePersistenceAndRecovery()
 
     smartpark::DatabaseManager database(databasePath);
     smartpark::ParkingRepository repository(database.database());
+    expect(repository.saveLayout(layout), "the restored database accepts the same layout");
     smartpark::ParkingService restored(layout, smartpark::AllocationStrategy::Nearest,
                                        &repository);
     expect(restored.spots().size() == 3, "restart restores every parking spot");
@@ -441,6 +447,357 @@ void testSqlitePersistenceAndRecovery()
            "loader reports an invalid persisted spot status");
 }
 
+void testPersistenceHelperRestoresAcrossRestart()
+{
+    using namespace std::chrono_literals;
+    const std::string description =
+        "site 60 30\n"
+        "entrance 0 15\n"
+        "exit 60 15\n"
+        "region A 10 10 1 3 1.2 5.5 6 left\n";
+    const auto layout = smartpark::ParkingLayout::fromDescription(description);
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
+
+    QTemporaryDir directory;
+    expect(directory.isValid(), "Persistence test can create a temporary directory");
+    const QString databasePath = directory.filePath("smartpark.db");
+    {
+        smartpark::Persistence persistence(databasePath);
+        expect(persistence.databaseManager().database().isOpen(),
+               "Persistence helper opens the SQLite database");
+        smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                          &persistence.repository());
+        expect(service.enter({u8"晋A11111", smartpark::VehicleType::Car}, now).has_value(),
+               "Persistence-backed service accepts an entry");
+        expect(service.reserve({u8"晋A22222", smartpark::VehicleType::Car}, now + 5min, 30min)
+                   .has_value(),
+               "Persistence-backed service accepts a reservation");
+        expect(service.leave(u8"晋A11111", now + 15min).has_value(),
+               "Persistence-backed service closes a record");
+    }
+
+    smartpark::Persistence restored(databasePath);
+    smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                      &restored.repository());
+    expect(service.records().size() == 1, "Persistence helper restores the closed record");
+    expect(service.reservedSpots() == 1 && service.occupiedSpots() == 0,
+           "Persistence helper restores the reservation but not the released spot");
+    const auto reserved = std::find_if(
+        service.spots().begin(), service.spots().end(),
+        [](const smartpark::ParkingSpot &spot) {
+            return spot.status() == smartpark::SpotStatus::Reserved;
+        });
+    expect(reserved != service.spots().end() && reserved->parkedVehicle()
+               && reserved->parkedVehicle()->plateNumber() == u8"晋A22222",
+           "Persistence helper restores the reserved vehicle");
+    service.expireReservations(now + 46min);
+    expect(service.reservedSpots() == 0, "restart preserves the reservation TTL");
+}
+
+void testLayoutMismatchRejected()
+{
+    const std::string firstDescription =
+        "site 60 30\n"
+        "entrance 0 15\n"
+        "exit 60 15\n"
+        "region A 10 10 1 3 1.2 5.5 6 left\n";
+    const std::string secondDescription =
+        "site 70 30\n"
+        "entrance 0 15\n"
+        "exit 70 15\n"
+        "region A 10 10 1 3 1.2 5.5 6 left\n";
+    const auto firstLayout = smartpark::ParkingLayout::fromDescription(firstDescription);
+    const auto secondLayout = smartpark::ParkingLayout::fromDescription(secondDescription);
+
+    QTemporaryDir directory;
+    expect(directory.isValid(), "mismatch test can create a temporary directory");
+    smartpark::Persistence persistence(directory.filePath("smartpark.db"));
+    smartpark::ParkingService first(firstLayout, smartpark::AllocationStrategy::Nearest,
+                                    &persistence.repository());
+    expect(first.spots().size() == 3, "first layout initializes against the database");
+
+    expectThrows<std::runtime_error>(
+        [&] {
+            smartpark::ParkingService mismatched(secondLayout,
+                                                 smartpark::AllocationStrategy::Nearest,
+                                                 &persistence.repository());
+        },
+        "a different layout is rejected against the persisted signature");
+}
+
+void testExpiredReservationPersisted()
+{
+    using namespace std::chrono_literals;
+    const std::string description =
+        "site 60 30\n"
+        "entrance 0 15\n"
+        "exit 60 15\n"
+        "region A 10 10 1 3 1.2 5.5 6 left\n";
+    const auto layout = smartpark::ParkingLayout::fromDescription(description);
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
+
+    QTemporaryDir directory;
+    expect(directory.isValid(), "expiry test can create a temporary directory");
+    const QString databasePath = directory.filePath("smartpark.db");
+    {
+        smartpark::Persistence persistence(databasePath);
+        smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                          &persistence.repository());
+        expect(service.reserve({u8"晋A12345", smartpark::VehicleType::Car}, now + 5min, 30min)
+                   .has_value(),
+               "expiry test can reserve a spot");
+        service.expireReservations(now + 46min);
+        expect(service.reservedSpots() == 0, "expired reservation is released in memory");
+    }
+
+    smartpark::Persistence restored(databasePath);
+    smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                      &restored.repository());
+    expect(service.reservedSpots() == 0 && service.occupiedSpots() == 0,
+           "expired reservation stays released after restart");
+    expect(service.remainingSpots() == 3,
+           "the expired spot is available after restart");
+}
+
+void testDirtyActiveRecordsRejected()
+{
+    using namespace std::chrono_literals;
+    const std::string description =
+        "site 60 30\n"
+        "entrance 0 15\n"
+        "exit 60 15\n"
+        "region A 10 10 1 3 1.2 5.5 6 left\n";
+    const auto layout = smartpark::ParkingLayout::fromDescription(description);
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
+
+    QTemporaryDir directory;
+    expect(directory.isValid(), "dirty record test can create a temporary directory");
+    smartpark::Persistence persistence(directory.filePath("smartpark.db"));
+    smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                      &persistence.repository());
+    expect(service.enter({u8"晋A12345", smartpark::VehicleType::Car}, now).has_value(),
+           "dirty record test can enter a vehicle");
+
+    QSqlQuery duplicate(persistence.databaseManager().database());
+    duplicate.prepare(QStringLiteral(
+        "INSERT INTO parking_records(plate_number,spot_id,entry_time_ms,exit_time_ms,fee)"
+        " VALUES(:plate,:spot,:entry,NULL,0)"));
+    duplicate.bindValue(QStringLiteral(":plate"), QString::fromUtf8(u8"晋A12345"));
+    duplicate.bindValue(QStringLiteral(":spot"), QStringLiteral("A002"));
+    duplicate.bindValue(QStringLiteral(":entry"), 0);
+    expect(!duplicate.exec(),
+           "partial unique index blocks a duplicate active record");
+
+    QSqlQuery drop(persistence.databaseManager().database());
+    expect(drop.exec(QStringLiteral("DROP INDEX idx_active_parking_record")),
+           "can drop the active record index for the corruption scenario");
+    QSqlQuery secondDuplicate(persistence.databaseManager().database());
+    secondDuplicate.prepare(QStringLiteral(
+        "INSERT INTO parking_records(plate_number,spot_id,entry_time_ms,exit_time_ms,fee)"
+        " VALUES(:plate,:spot,:entry,NULL,0)"));
+    secondDuplicate.bindValue(QStringLiteral(":plate"), QString::fromUtf8(u8"晋A12345"));
+    secondDuplicate.bindValue(QStringLiteral(":spot"), QStringLiteral("A002"));
+    secondDuplicate.bindValue(QStringLiteral(":entry"), 0);
+    expect(secondDuplicate.exec(),
+           "duplicate active record can be inserted without the index");
+    expectThrows<std::runtime_error>(
+        [&] {
+            smartpark::ParkingService dirty(layout,
+                                            smartpark::AllocationStrategy::Nearest,
+                                            &persistence.repository());
+        },
+        "dirty duplicate active records are rejected on restore");
+}
+
+void testDisabledStateAndExpiryInvariants()
+{
+    const std::string description =
+        "site 60 30\n"
+        "entrance 0 15\n"
+        "exit 60 15\n"
+        "region A 10 10 1 3 1.2 5.5 6 left\n";
+    const auto layout = smartpark::ParkingLayout::fromDescription(description);
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
+
+    QTemporaryDir directory;
+    expect(directory.isValid(), "invariant test can create a temporary directory");
+
+    const auto corrupt = [&](const QString &path, const char *update) {
+        smartpark::Persistence persistence(path);
+        smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                          &persistence.repository());
+        QSqlQuery query(persistence.databaseManager().database());
+        query.prepare(QStringLiteral(
+            "UPDATE parking_spots SET %1 WHERE identifier='A001'").arg(QString::fromUtf8(update)));
+        expect(query.exec(), "invariant test can corrupt a parking spot");
+    };
+    const auto reopen = [&](const QString &path) {
+        smartpark::Persistence persistence(path);
+        smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                          &persistence.repository());
+    };
+
+    corrupt(directory.filePath("reserved_without_expiry.db"),
+            "status=2, plate_number='晋A9', vehicle_type=0, reserved_until_ms=NULL");
+    expectThrows<std::runtime_error>(
+        [&] { reopen(directory.filePath("reserved_without_expiry.db")); },
+        "a reserved spot without an expiry time is rejected on restore");
+
+    corrupt(directory.filePath("available_with_expiry.db"),
+            "status=0, plate_number=NULL, vehicle_type=NULL, reserved_until_ms=12345");
+    expectThrows<std::runtime_error>(
+        [&] { reopen(directory.filePath("available_with_expiry.db")); },
+        "a non-reserved spot with an expiry time is rejected on restore");
+
+    corrupt(directory.filePath("disabled_with_vehicle.db"),
+            "status=3, plate_number='晋A9', vehicle_type=0, reserved_until_ms=NULL");
+    expectThrows<std::runtime_error>(
+        [&] { reopen(directory.filePath("disabled_with_vehicle.db")); },
+        "a disabled spot with a vehicle is rejected on restore");
+
+    corrupt(directory.filePath("disabled_ok.db"),
+            "status=3, plate_number=NULL, vehicle_type=NULL, reserved_until_ms=NULL");
+    {
+        smartpark::Persistence persistence(directory.filePath("disabled_ok.db"));
+        smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                          &persistence.repository());
+        const smartpark::ParkingSpot *disabled = findSpot(service, "A001");
+        expect(disabled != nullptr
+                   && disabled->status() == smartpark::SpotStatus::Disabled
+                   && !disabled->parkedVehicle().has_value(),
+               "a disabled spot is restored without a vehicle");
+        expect(service.remainingSpots() == 2,
+               "a disabled spot is not counted as available");
+    }
+}
+
+void testLayoutSpotSetValidation()
+{
+    const std::string description =
+        "site 60 30\n"
+        "entrance 0 15\n"
+        "exit 60 15\n"
+        "region A 10 10 1 3 1.2 5.5 6 left\n";
+    const auto layout = smartpark::ParkingLayout::fromDescription(description);
+
+    QTemporaryDir directory;
+    expect(directory.isValid(), "layout set test can create a temporary directory");
+    smartpark::Persistence persistence(directory.filePath("smartpark.db"));
+    smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                      &persistence.repository());
+    expect(service.spots().size() == 3, "layout set test initializes the layout");
+
+    QSqlQuery extra(persistence.databaseManager().database());
+    extra.prepare(QStringLiteral(
+        "INSERT INTO parking_spots("
+        "identifier,zone,type,row_index,column_index,x,y,width,height,access_x,access_y,status)"
+        " VALUES('A099','X',0,0,0,1,1,1,1,1,1,0)"));
+    expect(extra.exec(), "layout set test can insert an extra spot row");
+    expectThrows<std::runtime_error>(
+        [&] {
+            smartpark::ParkingService mismatched(layout,
+                                                 smartpark::AllocationStrategy::Nearest,
+                                                 &persistence.repository());
+        },
+        "a persisted spot id set differing from the layout is rejected");
+}
+
+void testTimeValidationAndSafeConversion()
+{
+    using namespace std::chrono_literals;
+    const std::string description =
+        "site 60 30\n"
+        "entrance 0 15\n"
+        "exit 60 15\n"
+        "region A 10 10 1 3 1.2 5.5 6 left\n";
+    const auto layout = smartpark::ParkingLayout::fromDescription(description);
+    const auto valid = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
+    const auto tooEarly = smartpark::ParkingRecord::Clock::from_time_t(500);
+    const auto tooLate = smartpark::ParkingRecord::Clock::from_time_t(8000000000LL);
+
+    const auto maxPoint = smartpark::ParkingRecord::Clock::time_point{} +
+        std::chrono::milliseconds(smartpark::timeutil::maxValidSeconds * 1000);
+    expect(smartpark::timeutil::isValid(maxPoint),
+           "isValid accepts the exact max boundary");
+    expect(!smartpark::timeutil::isValid(maxPoint + std::chrono::milliseconds(1)),
+           "isValid rejects max + 1ms");
+    expect(!smartpark::timeutil::canAdd(maxPoint - std::chrono::milliseconds(999),
+                                        std::chrono::seconds(1)),
+           "canAdd rejects max - 999ms + 1s");
+    expect(smartpark::timeutil::canAdd(maxPoint - std::chrono::milliseconds(1000),
+                                       std::chrono::seconds(1)),
+           "canAdd accepts exactly max - 1s + 1s");
+    expect(!smartpark::timeutil::canAdd(maxPoint - std::chrono::milliseconds(999),
+                                        std::chrono::seconds(2)),
+           "canAdd rejects an addend crossing the max boundary");
+
+    smartpark::ParkingService service(layout);
+    expect(!service.enter({u8"晋A11111", smartpark::VehicleType::Car}, tooEarly).has_value(),
+           "entry rejects a timestamp before the business range");
+    expect(!service.enter({u8"晋A11111", smartpark::VehicleType::Car}, tooLate).has_value(),
+           "entry rejects a timestamp after the business range");
+    expect(service.enter({u8"晋A11111", smartpark::VehicleType::Car}, valid).has_value(),
+           "entry accepts a timestamp inside the business range");
+    expect(!service.leave(u8"晋A11111", tooEarly).has_value(),
+           "exit rejects a timestamp before the business range");
+    expect(service.leave(u8"晋A11111", valid + 15min).has_value(),
+           "exit accepts a timestamp inside the business range");
+    expect(!service.reserve({u8"晋A22222", smartpark::VehicleType::Car}, tooLate, 30min)
+               .has_value(),
+           "reservation rejects a timestamp after the business range");
+    expect(!service.reserve({u8"晋A22222", smartpark::VehicleType::Car}, valid,
+                            std::chrono::seconds(std::numeric_limits<std::int64_t>::max()))
+               .has_value(),
+           "reservation rejects an expiry that would overflow the clock");
+    expect(service.reserve({u8"晋A22222", smartpark::VehicleType::Car}, valid, 30min)
+               .has_value(),
+           "reservation accepts a timestamp inside the business range");
+
+    QTemporaryDir directory;
+    expect(directory.isValid(), "time validation test can create a temporary directory");
+    const QString databasePath = directory.filePath("smartpark.db");
+    {
+        smartpark::DatabaseManager database(databasePath);
+        expect(database.database().isOpen(), "time validation database opens");
+        smartpark::ParkingRepository repository(database.database());
+        expect(repository.saveLayout(layout), "time validation test stores the layout");
+
+        smartpark::ParkingSpot spot("A001");
+        const smartpark::Vehicle vehicle(u8"晋A55555", smartpark::VehicleType::Car);
+        expect(spot.reserve(vehicle, tooLate),
+               "model spot accepts an out-of-range reservation");
+        expect(!repository.saveReservation(spot),
+               "repository rejects an out-of-range reservation expiry");
+        expect(!repository.lastError().empty(),
+               "repository reports the out-of-range reservation expiry");
+    }
+    {
+        smartpark::DatabaseManager database(databasePath);
+        smartpark::ParkingRepository repository(database.database());
+        QSqlQuery spotCorruption(database.database());
+        expect(spotCorruption.exec(QStringLiteral(
+                   "UPDATE parking_spots SET status=2, plate_number='晋A66666',"
+                   "vehicle_type=0, reserved_until_ms=99999999999999"
+                   " WHERE identifier='A001'")),
+               "time validation test can corrupt the reserved expiry");
+        expect(repository.loadSpotStates().empty(),
+               "loader rejects an out-of-range persisted reservation expiry");
+        expect(!repository.lastError().empty(),
+               "loader reports the out-of-range persisted reservation expiry");
+
+        QSqlQuery recordCorruption(database.database());
+        expect(recordCorruption.exec(QStringLiteral(
+                   "INSERT INTO parking_records(plate_number,spot_id,"
+                   "entry_time_ms,exit_time_ms,fee)"
+                   " VALUES('晋A88888','A002',99999999999999,NULL,0)")),
+               "time validation test can insert an out-of-range entry time");
+        expect(repository.loadRecords().empty(),
+               "loader rejects an out-of-range persisted entry time");
+        expect(!repository.lastError().empty(),
+               "loader reports the out-of-range persisted entry time");
+    }
+}
+
 } // namespace
 
 int main()
@@ -462,6 +819,13 @@ int main()
     testCongestionAvoidanceAndStrategies();
     testMultiEntranceSelection();
     testSqlitePersistenceAndRecovery();
+    testPersistenceHelperRestoresAcrossRestart();
+    testLayoutMismatchRejected();
+    testExpiredReservationPersisted();
+    testDirtyActiveRecordsRejected();
+    testDisabledStateAndExpiryInvariants();
+    testLayoutSpotSetValidation();
+    testTimeValidationAndSafeConversion();
 
     if (failureCount != 0) {
         std::cerr << failureCount << " test assertion(s) failed\n";

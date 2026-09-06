@@ -1,4 +1,5 @@
 #include "core/service/ParkingService.h"
+#include "core/util/TimeUtil.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -61,7 +62,19 @@ void ParkingService::setWeights(AllocationWeights weights) noexcept
 void ParkingService::expireReservations(ParkingRecord::TimePoint now)
 {
     for (ParkingSpot &spot : spots_) {
-        spot.expireReservation(now);
+        if (spot.status() != SpotStatus::Reserved) {
+            continue;
+        }
+        const std::optional<Vehicle> previousVehicle = spot.parkedVehicle();
+        const std::optional<ParkingSpot::TimePoint> previousExpiry =
+            spot.reservationExpiresAt();
+        if (!spot.expireReservation(now)) {
+            continue;
+        }
+        if (repository_ != nullptr && !repository_->saveSpotState(spot)
+            && previousVehicle && previousExpiry) {
+            spot.reserve(*previousVehicle, *previousExpiry);
+        }
     }
 }
 
@@ -74,7 +87,8 @@ std::optional<AllocationResult> ParkingService::reserve(
     const Vehicle &vehicle, ParkingRecord::TimePoint now, std::chrono::seconds ttl)
 {
     expireReservations(now);
-    if (ttl <= std::chrono::seconds::zero() || activeRecord(vehicle.plateNumber())
+    if (ttl <= std::chrono::seconds::zero() || !timeutil::isValid(now)
+        || !timeutil::canAdd(now, ttl) || activeRecord(vehicle.plateNumber())
         || findReservedSpot(vehicle.plateNumber()) != nullptr) {
         return std::nullopt;
     }
@@ -98,6 +112,9 @@ std::optional<AllocationResult> ParkingService::reserve(
 std::optional<AllocationResult> ParkingService::enter(
     const Vehicle &vehicle, ParkingRecord::TimePoint entryTime)
 {
+    if (!timeutil::isValid(entryTime)) {
+        return std::nullopt;
+    }
     expireReservations(entryTime);
     if (activeRecord(vehicle.plateNumber())) {
         return std::nullopt;
@@ -130,6 +147,9 @@ std::optional<AllocationResult> ParkingService::enter(
 std::optional<ParkingRecord> ParkingService::leave(
     const std::string &plateNumber, ParkingRecord::TimePoint exitTime)
 {
+    if (!timeutil::isValid(exitTime)) {
+        return std::nullopt;
+    }
     expireReservations(exitTime);
     const auto record = std::find_if(
         records_.begin(), records_.end(), [&plateNumber](const ParkingRecord &item) {
@@ -178,22 +198,45 @@ bool ParkingService::release(const std::string &spotId)
         return false;
     }
 
-    const auto record = std::find_if(
-        records_.begin(), records_.end(), [&spotId](const ParkingRecord &item) {
-            return item.spotId() == spotId && !item.isClosed();
-        });
-    if (record != records_.end()) {
+    if (spot->status() == SpotStatus::Occupied) {
+        const auto record = std::find_if(
+            records_.begin(), records_.end(), [&spotId](const ParkingRecord &item) {
+                return item.spotId() == spotId && !item.isClosed();
+            });
+        if (record == records_.end()) {
+            // 防御路径：占用但无活跃记录，只写一次车位状态。
+            const std::optional<Vehicle> previousVehicle = spot->parkedVehicle();
+            if (!spot->release()) {
+                return false;
+            }
+            if (repository_ != nullptr && !repository_->saveSpotState(*spot)) {
+                if (previousVehicle) {
+                    spot->occupy(*previousVehicle);
+                }
+                return false;
+            }
+            return true;
+        }
+        // 正常离场：saveExit 在单个事务里同时关闭记录并置空车位，避免双写。
         const ParkingRecord::TimePoint exitTime = ParkingRecord::Clock::now();
         if (repository_ != nullptr && !repository_->saveExit(*record, exitTime)) {
             return false;
         }
         record->close(exitTime);
+        return spot->release();
     }
 
+    // 预留释放：单次写入车位状态，失败时回滚内存，保证与数据库一致。
+    const std::optional<Vehicle> previousVehicle = spot->parkedVehicle();
+    const std::optional<ParkingSpot::TimePoint> previousExpiry =
+        spot->reservationExpiresAt();
     if (!spot->release()) {
         return false;
     }
     if (repository_ != nullptr && !repository_->saveSpotState(*spot)) {
+        if (previousVehicle && previousExpiry) {
+            spot->reserve(*previousVehicle, *previousExpiry);
+        }
         return false;
     }
     return true;
@@ -361,6 +404,10 @@ void ParkingService::restore(ParkingRepository &repository)
             if (!state.vehicle || !state.reservationExpiresAt
                 || !spot->reserve(*state.vehicle, *state.reservationExpiresAt)) {
                 throw std::runtime_error("inconsistent reserved parking spot: " + state.spotId);
+            }
+        } else if (state.status == SpotStatus::Disabled) {
+            if (!spot->disable()) {
+                throw std::runtime_error("inconsistent disabled parking spot: " + state.spotId);
             }
         } else if (state.status == SpotStatus::Available) {
             if (spot->status() != SpotStatus::Available) {

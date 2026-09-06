@@ -34,10 +34,13 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 - CLI 自动演示与 Qt GUI 实时车位图、路线绘制、布局编辑和策略切换。
 - `ParkingService::enter()` / `leave()` / `reserve()` 入离场与预留流程。
 - `DatabaseManager` 与 `ParkingRepository`：SQLite 建表、入场/离场/预约持久化和重启恢复。
+- `Persistence` 辅助类：统一管理数据库连接，CLI 与 Qt Admin GUI 默认接入 SQLite，跨重启恢复车位状态与停车记录。
+- CLI 支持 `--db <路径>` 指定数据库、`--reset` 清空数据库后演示。
+- Qt Admin GUI 支持 `--db <路径>`，应用布局时若与数据库签名不一致会提示并可选重置数据库。
 
 下一步将实现收费服务、TCP 服务端与出入口终端。
 
-本阶段已完成核心 SQLite 持久化，但 CLI 与 GUI 仍使用内存演示流程；尚未接入 TCP 通信、OpenCV、HyperLPR3、多线程、用户端或统计图表。调研来源与明确不做的方案见 `docs/research-sources.md`。
+尚未接入 TCP 通信、OpenCV、HyperLPR3、多线程、用户端或统计图表。调研来源与明确不做的方案见 `docs/research-sources.md`。
 
 ## 技术栈
 
@@ -63,7 +66,7 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 ├── src/
 │   ├── core/
 │   │   ├── model/   # Geometry、Vehicle、ParkingSpot、ParkingLayout、ParkingRecord
-│   │   ├── persistence/ # DatabaseManager、ParkingRepository
+│   │   ├── persistence/ # DatabaseManager、ParkingRepository、Persistence
 │   │   └── service/ # GridPlanner、SpotAllocator、ParkingService
 │   ├── database/    # 数据库连接与仓储层
 │   ├── network/     # TCP 协议与通信实现
@@ -160,13 +163,16 @@ region C 71 40 10 2 1.2 5.5 6 left accessible
 /usr/bin/ctest --preset cli-tests
 ./build/cli/apps/cli/smartpark_cli
 ./build/cli/apps/cli/smartpark_cli my-layout.txt
+./build/cli/apps/cli/smartpark_cli --db /tmp/smartpark.db --reset
 ```
 
 如果需要全新构建，可先删除 `build/cli` 或整个 `build/` 目录。CLI 与 Qt 的 CMake 缓存分别保存在 `build/cli` 和 `build/qt`，互不影响。
 
 不带参数时使用内置 60 车位布局；带文本文件参数时加载自定义布局。程序自动执行验证，无需输入。它分配 3 辆车、释放 1 辆车并再次自动分配，同时打印车位编号、类型、入口距离、出口距离、附近占用数和综合评分；成功输出 `RESULT: PASS` 并返回 0。
 
-当前 CLI/GUI 演示仍不启用数据库；核心库已提供 SQLite 持久化能力，后续客户端接入后即可跨进程重启恢复。当前版本不包含网络或车牌识别。
+CLI 默认把车位与停车记录持久化到 SQLite：未指定 `--db` 时使用用户数据目录 `smartpark/smartpark.db`，重启后可恢复占用/预留状态与停车记录；`--reset` 在启动前删除数据库文件，适合反复演示。测试中的演示用例固定使用构建目录下的临时数据库并带 `--reset`，保证结果确定。
+
+当前版本不包含网络或车牌识别。
 
 ### 文件职责与运行流程
 
@@ -176,13 +182,16 @@ region C 71 40 10 2 1.2 5.5 6 left accessible
 | `CMakePresets.json` | 定义 CLI 与 Qt 的标准构建目录、构建参数和测试命令。 |
 | `docs/research-sources.md` | 记录仓库/论文评分，以及对本阶段路线的取舍。 |
 | `apps/cli/CMakeLists.txt` | 构建 `smartpark_cli`，链接核心库并注册终端演示测试。 |
-| `apps/cli/main.cpp` | 终端入口，加载默认或自定义布局并演示自动分配。 |
-| `src/core/CMakeLists.txt` | 将模型实现编译为 `smartpark_core` 静态库。 |
+| `apps/cli/main.cpp` | 终端入口，加载默认或自定义布局、SQLite 数据库参数并演示自动分配。 |
+| `src/core/CMakeLists.txt` | 将模型、服务与持久化实现编译为 `smartpark_core` 静态库。 |
 | `src/core/model/Geometry.h` | 定义坐标、矩形和几何工具。 |
 | `src/core/model/ParkingLayout.h/.cpp` | 解析自定义布局并生成车位矩形、类型和出入口。 |
 | `src/core/model/ParkingRecord.h/.cpp` | 保存一次停车的车牌、车位、时间、时长和费用。 |
 | `src/core/model/Vehicle.h` | 声明车辆类型、车辆数据与只读访问接口。 |
 | `src/core/model/Vehicle.cpp` | 实现车辆构造、非空车牌校验和数据访问。 |
+| `src/core/persistence/DatabaseManager.h/.cpp` | SQLite 连接与生命周期管理。 |
+| `src/core/persistence/ParkingRepository.h/.cpp` | 建表、入场/离场/预约持久化与状态恢复。 |
+| `src/core/persistence/Persistence.h/.cpp` | CLI/GUI 共用的数据库封装，提供默认路径与 RAII 生命周期。 |
 | `src/core/model/ParkingSpot.h` | 声明车位状态、类型、当前车辆、预留和占用接口。 |
 | `src/core/model/ParkingSpot.cpp` | 实现单个车位的状态转换，拒绝重复占用或释放。 |
 | `src/core/service/GridPlanner.h/.cpp` | 实现障碍感知栅格 A*、多目标搜索和拥堵边权。 |
@@ -191,8 +200,8 @@ region C 71 40 10 2 1.2 5.5 6 left accessible
 | `tests/CMakeLists.txt` | 构建并注册模型单元测试。 |
 | `tests/core_model_tests.cpp` | 验证模型、预留、类型匹配、拥堵绕行和多入口选择。 |
 | `apps/admin/CMakeLists.txt` | 构建可选 Qt 管理员端，Qt 自动处理只作用于该目标。 |
-| `apps/admin/main.cpp` | 独立 GUI 入口，不参与终端版本运行。 |
-| `apps/admin/MainWindow.h/.cpp` | 实现布局编辑、车位图、自动分配和路线显示。 |
+| `apps/admin/main.cpp` | 独立 GUI 入口，解析 `--db` 参数并启动主窗口。 |
+| `apps/admin/MainWindow.h/.cpp` | 实现布局编辑、车位图、自动分配、路线显示与数据库恢复/重置交互。 |
 
 运行流程：系统启动 `smartpark_cli` → 解析布局 → 构建障碍栅格 → `SpotAllocator` 按策略为候选车位计算路线和评分 → 选择最优车位并占用或预留 → 输出路线和状态 → 检查结果并返回退出码。
 

@@ -1,4 +1,5 @@
 #include "core/persistence/ParkingRepository.h"
+#include "core/util/TimeUtil.h"
 
 #include <QSqlError>
 #include <QSqlQuery>
@@ -6,6 +7,9 @@
 #include <QVariant>
 
 #include <chrono>
+#include <cmath>
+#include <limits>
+#include <set>
 #include <sstream>
 #include <utility>
 
@@ -13,18 +17,6 @@ namespace smartpark {
 namespace {
 
 constexpr qint64 invalidTime = -1;
-
-qint64 toMilliseconds(const ParkingRecord::TimePoint &time)
-{
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-               time.time_since_epoch())
-        .count();
-}
-
-ParkingRecord::TimePoint fromMilliseconds(qint64 milliseconds)
-{
-    return ParkingRecord::TimePoint{} + std::chrono::milliseconds(milliseconds);
-}
 
 bool validStatus(SpotStatus status) noexcept
 {
@@ -103,7 +95,9 @@ void ParkingRepository::createSchema()
                        "name TEXT PRIMARY KEY,"
                        "value TEXT NOT NULL)"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_parking_records_plate"
-                       " ON parking_records(plate_number)")
+                       " ON parking_records(plate_number)"),
+        QStringLiteral("CREATE UNIQUE INDEX IF NOT EXISTS idx_active_parking_record"
+                       " ON parking_records(plate_number) WHERE exit_time_ms IS NULL")
     };
 
     for (const QString &statement : statements) {
@@ -117,7 +111,7 @@ void ParkingRepository::createSchema()
 std::string ParkingRepository::layoutSignature(const ParkingLayout &layout) const
 {
     std::ostringstream stream;
-    stream.precision(15);
+    stream.precision(std::numeric_limits<double>::max_digits10);
     stream << layout.siteWidth() << '|' << layout.siteHeight();
     for (const Point &point : layout.entrances()) {
         stream << "|E" << point.x << ',' << point.y;
@@ -152,10 +146,34 @@ bool ParkingRepository::saveLayout(const ParkingLayout &layout)
         return false;
     }
     const std::string signature = layoutSignature(layout);
-    if (signatureQuery.next()
+    const bool hasStoredSignature = signatureQuery.next();
+    if (hasStoredSignature
         && signatureQuery.value(0).toString().toStdString() != signature) {
         lastError_ = "persisted layout differs from the current layout";
         return false;
+    }
+    if (hasStoredSignature) {
+        QSqlQuery idQuery(database_);
+        if (!prepare(idQuery,
+                     QStringLiteral("SELECT identifier FROM parking_spots"),
+                     lastError_)) {
+            return false;
+        }
+        if (!exec(idQuery, lastError_)) {
+            return false;
+        }
+        std::set<std::string> persistedIds;
+        while (idQuery.next()) {
+            persistedIds.insert(idQuery.value(0).toString().toStdString());
+        }
+        std::set<std::string> layoutIds;
+        for (const ParkingSpot &spot : layout.spots()) {
+            layoutIds.insert(spot.identifier());
+        }
+        if (persistedIds != layoutIds) {
+            lastError_ = "persisted spot identifiers differ from the current layout";
+            return false;
+        }
     }
 
     if (!database_.transaction()) {
@@ -232,6 +250,12 @@ bool ParkingRepository::saveEntry(const ParkingRecord &record, const ParkingSpot
         return false;
     }
 
+    qint64 entryMillis = 0;
+    if (!timeutil::toMilliseconds(record.entryTime(), entryMillis)) {
+        lastError_ = "entry time is out of the supported range";
+        return false;
+    }
+
     if (!database_.transaction()) {
         lastError_ = database_.lastError().text().toStdString();
         return false;
@@ -253,7 +277,7 @@ bool ParkingRepository::saveEntry(const ParkingRecord &record, const ParkingSpot
     query.bindValue(QStringLiteral(":plate"),
                     QString::fromStdString(record.plateNumber()));
     query.bindValue(QStringLiteral(":spot"), QString::fromStdString(record.spotId()));
-    query.bindValue(QStringLiteral(":entry"), toMilliseconds(record.entryTime()));
+    query.bindValue(QStringLiteral(":entry"), entryMillis);
     if (!exec(query, lastError_)) {
         database_.rollback();
         return false;
@@ -269,8 +293,10 @@ bool ParkingRepository::saveEntry(const ParkingRecord &record, const ParkingSpot
 
 bool ParkingRepository::saveReservation(const ParkingSpot &spot)
 {
+    qint64 expiryMillis = 0;
     if (spot.status() != SpotStatus::Reserved || !spot.parkedVehicle()
-        || !spot.reservationExpiresAt()) {
+        || !spot.reservationExpiresAt() || spot.parkedVehicle()->plateNumber().empty()
+        || !timeutil::toMilliseconds(*spot.reservationExpiresAt(), expiryMillis)) {
         lastError_ = "invalid reservation state";
         return false;
     }
@@ -281,8 +307,10 @@ bool ParkingRepository::saveExit(const ParkingRecord &record,
                                  const ParkingRecord::TimePoint &exitTime,
                                  double fee)
 {
-    if (record.isClosed() || exitTime < record.entryTime() || !std::isfinite(fee)
-        || fee < 0.0) {
+    qint64 exitMillis = 0;
+    if (record.isClosed() || exitTime < record.entryTime()
+        || !timeutil::toMilliseconds(exitTime, exitMillis)
+        || !std::isfinite(fee) || fee < 0.0) {
         lastError_ = "invalid parking exit state";
         return false;
     }
@@ -290,7 +318,7 @@ bool ParkingRepository::saveExit(const ParkingRecord &record,
         lastError_ = database_.lastError().text().toStdString();
         return false;
     }
-    if (!closeRecordInTransaction(record, exitTime, fee)
+    if (!closeRecordInTransaction(record, exitMillis, fee)
         || !markSpotAvailableInTransaction(record.spotId())) {
         database_.rollback();
         return false;
@@ -328,6 +356,15 @@ bool ParkingRepository::saveSpotStateInTransaction(const ParkingSpot &spot)
         lastError_ = "only reserved parking spots can store an expiry time";
         return false;
     }
+    std::optional<qint64> expiryMillis;
+    if (spot.reservationExpiresAt()) {
+        qint64 converted = 0;
+        if (!timeutil::toMilliseconds(*spot.reservationExpiresAt(), converted)) {
+            lastError_ = "reservation expiry time is out of the supported range";
+            return false;
+        }
+        expiryMillis = converted;
+    }
 
     QSqlQuery query(database_);
     if (!prepare(query,
@@ -346,9 +383,7 @@ bool ParkingRepository::saveSpotStateInTransaction(const ParkingSpot &spot)
                     hasVehicle ? QVariant(static_cast<int>(spot.parkedVehicle()->type()))
                                : QVariant());
     query.bindValue(QStringLiteral(":reservedUntil"),
-                    spot.reservationExpiresAt()
-                        ? QVariant(toMilliseconds(*spot.reservationExpiresAt()))
-                        : QVariant(invalidTime));
+                    expiryMillis ? QVariant(*expiryMillis) : QVariant());
     query.bindValue(QStringLiteral(":identifier"),
                     QString::fromStdString(spot.identifier()));
     if (!exec(query, lastError_)) {
@@ -402,7 +437,7 @@ bool ParkingRepository::markSpotAvailableInTransaction(const std::string &spotId
 }
 
 bool ParkingRepository::closeRecordInTransaction(const ParkingRecord &record,
-                                                 const ParkingRecord::TimePoint &exitTime,
+                                                 qint64 exitTimeMs,
                                                  double fee)
 {
     QSqlQuery query(database_);
@@ -413,7 +448,7 @@ bool ParkingRepository::closeRecordInTransaction(const ParkingRecord &record,
                  lastError_)) {
         return false;
     }
-    query.bindValue(QStringLiteral(":exit"), toMilliseconds(exitTime));
+    query.bindValue(QStringLiteral(":exit"), exitTimeMs);
     query.bindValue(QStringLiteral(":fee"), fee);
     query.bindValue(QStringLiteral(":plate"),
                     QString::fromStdString(record.plateNumber()));
@@ -465,12 +500,30 @@ std::vector<PersistedSpotState> ParkingRepository::loadSpotStates()
         const QVariant expiryValue = query.value(4);
         if (!expiryValue.isNull()) {
             const qint64 expiry = expiryValue.toLongLong();
-            state.reservationExpiresAt = fromMilliseconds(expiry);
+            // 兼容 0.5 版本写入的 -1 占位值，统一按 NULL 处理。
+            if (expiry != invalidTime) {
+                ParkingSpot::TimePoint expiryTime;
+                if (!timeutil::fromMilliseconds(expiry, expiryTime)) {
+                    lastError_ =
+                        "reservation expiry is out of the supported range: "
+                        + state.spotId;
+                    return {};
+                }
+                state.reservationExpiresAt = expiryTime;
+            }
         }
         if ((state.status == SpotStatus::Occupied
              || state.status == SpotStatus::Reserved)
             != state.vehicle.has_value()) {
             lastError_ = "inconsistent persisted parking spot: " + state.spotId;
+            return {};
+        }
+        if (state.status == SpotStatus::Reserved && !state.reservationExpiresAt) {
+            lastError_ = "reserved parking spot requires an expiry time: " + state.spotId;
+            return {};
+        }
+        if (state.status != SpotStatus::Reserved && state.reservationExpiresAt) {
+            lastError_ = "only reserved parking spots can store an expiry time: " + state.spotId;
             return {};
         }
         states.push_back(std::move(state));
@@ -496,13 +549,23 @@ std::vector<PersistedRecord> ParkingRepository::loadRecords()
         PersistedRecord record;
         record.plateNumber = query.value(0).toString().toStdString();
         record.spotId = query.value(1).toString().toStdString();
-        record.entryTime = fromMilliseconds(query.value(2).toLongLong());
+        if (!timeutil::fromMilliseconds(query.value(2).toLongLong(),
+                                        record.entryTime)) {
+            lastError_ = "persisted entry time is out of the supported range";
+            return {};
+        }
         const QVariant exitTimeValue = query.value(3);
         if (!exitTimeValue.isNull()) {
-            record.exitTime = fromMilliseconds(exitTimeValue.toLongLong());
+            ParkingRecord::TimePoint exitTime;
+            if (!timeutil::fromMilliseconds(exitTimeValue.toLongLong(), exitTime)) {
+                lastError_ = "persisted exit time is out of the supported range";
+                return {};
+            }
+            record.exitTime = exitTime;
         }
         record.fee = query.value(4).toDouble();
         if (record.plateNumber.empty() || record.spotId.empty()
+            || !std::isfinite(record.fee) || record.fee < 0.0
             || (record.exitTime && *record.exitTime < record.entryTime)) {
             lastError_ = "invalid persisted parking record";
             return {};
