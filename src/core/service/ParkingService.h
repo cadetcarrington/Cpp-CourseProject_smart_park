@@ -3,6 +3,7 @@
 #include "core/model/ParkingLayout.h"
 #include "core/model/ParkingRecord.h"
 #include "core/model/Vehicle.h"
+#include "core/persistence/ParkingRepository.h"
 #include "core/service/GridPlanner.h"
 #include "core/service/SpotAllocator.h"
 
@@ -31,7 +32,8 @@ class ParkingService
 {
 public:
     explicit ParkingService(ParkingLayout layout,
-                            AllocationStrategy strategy = AllocationStrategy::WeightedCost);
+                            AllocationStrategy strategy = AllocationStrategy::WeightedCost,
+                            ParkingRepository *repository = nullptr);
 
     const ParkingLayout &layout() const noexcept;
     const std::vector<ParkingSpot> &spots() const noexcept;
@@ -61,6 +63,7 @@ public:
 
 private:
     AllocationResult toResult(const AllocationProposal &proposal) const;
+    void restore(ParkingRepository &repository);
     ParkingSpot *findSpot(const std::string &spotId);
     const ParkingSpot *findReservedSpot(const std::string &plateNumber) const;
     ParkingSpot *findReservedSpot(const std::string &plateNumber);
@@ -71,6 +74,7 @@ private:
     GridPlanner planner_;
     SpotAllocator allocator_;
     std::vector<ParkingRecord> records_;
+    ParkingRepository *repository_{nullptr};
 };
 
 } // namespace smartpark

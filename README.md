@@ -18,7 +18,7 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 
 服务器将负责停车业务、车位状态、收费、车辆记录、用户与预约管理、数据库访问及网络通信。管理员端用于管理与可视化，出入口端用于车辆入场和离场处理。
 
-## 当前范围：SmartPark 0.4
+## 当前范围：SmartPark 0.5
 
 当前已完成：
 
@@ -33,17 +33,18 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 - 预留状态机：`Available -> Reserved(ttl) -> Occupied -> Available`。
 - CLI 自动演示与 Qt GUI 实时车位图、路线绘制、布局编辑和策略切换。
 - `ParkingService::enter()` / `leave()` / `reserve()` 入离场与预留流程。
+- `DatabaseManager` 与 `ParkingRepository`：SQLite 建表、入场/离场/预约持久化和重启恢复。
 
-下一步将实现 SQLite 持久化、收费服务、TCP 服务端与出入口终端。
+下一步将实现收费服务、TCP 服务端与出入口终端。
 
-本阶段不接入 SQLite、TCP 通信、OpenCV、HyperLPR3、多线程、用户端或统计图表。调研来源与明确不做的方案见 `docs/research-sources.md`。
+本阶段已完成核心 SQLite 持久化，但 CLI 与 GUI 仍使用内存演示流程；尚未接入 TCP 通信、OpenCV、HyperLPR3、多线程、用户端或统计图表。调研来源与明确不做的方案见 `docs/research-sources.md`。
 
 ## 技术栈
 
 - C++17
 - Qt 6 Widgets
 - CMake
-- SQLite 与 Qt SQL（后续）
+- SQLite 与 Qt SQL
 - QTcpServer 与 QTcpSocket（后续）
 - OpenCV 4 与 HyperLPR3（后续）
 - QThread、std::thread 与 STL
@@ -62,6 +63,7 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 ├── src/
 │   ├── core/
 │   │   ├── model/   # Geometry、Vehicle、ParkingSpot、ParkingLayout、ParkingRecord
+│   │   ├── persistence/ # DatabaseManager、ParkingRepository
 │   │   └── service/ # GridPlanner、SpotAllocator、ParkingService
 │   ├── database/    # 数据库连接与仓储层
 │   ├── network/     # TCP 协议与通信实现
@@ -80,7 +82,7 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 2. 纯 C++ 停车核心：实现停车位、车辆、停车记录和入场/离场流程。
 3. 停车场 GUI：实时展示车位状态、自动分配结果和行驶路线。
 4. 分配器重构：独立选位算法、拥堵边权、预留 TTL、车位类型和多出入口。
-5. SQLite 持久化：重启后保留停车数据。
+5. SQLite 持久化：核心层已完成，重启后可恢复车位状态与停车记录。
 6. 收费系统：根据停车时长计算费用。
 7. 服务端：以 TCP 建立管理员端与服务端架构。
 8. 出入口终端：手动输入车牌并通过服务端处理业务。
@@ -164,7 +166,7 @@ region C 71 40 10 2 1.2 5.5 6 left accessible
 
 不带参数时使用内置 60 车位布局；带文本文件参数时加载自定义布局。程序自动执行验证，无需输入。它分配 3 辆车、释放 1 辆车并再次自动分配，同时打印车位编号、类型、入口距离、出口距离、附近占用数和综合评分；成功输出 `RESULT: PASS` 并返回 0。
 
-当前版本不包含数据库、网络或车牌识别，状态和车辆只保存在内存中，程序结束后丢弃。
+当前 CLI/GUI 演示仍不启用数据库；核心库已提供 SQLite 持久化能力，后续客户端接入后即可跨进程重启恢复。当前版本不包含网络或车牌识别。
 
 ### 文件职责与运行流程
 
