@@ -1,7 +1,10 @@
 #include "core/model/ParkingSpot.h"
 #include "core/model/Vehicle.h"
+#include "core/service/ParkingService.h"
 
+#include <algorithm>
 #include <exception>
+#include <set>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -75,12 +78,59 @@ void testParkingSpotLifecycle()
         "parking spot rejects an empty identifier");
 }
 
+void testDefaultLayout()
+{
+    const smartpark::ParkingLayout layout = smartpark::ParkingLayout::defaultLayout();
+    std::set<std::string> identifiers;
+
+    expect(layout.spots().size() == 60, "default layout contains 60 spots");
+    expect(layout.regions().size() == 3, "default layout contains three regions");
+    for (const smartpark::ParkingSpot &spot : layout.spots()) {
+        identifiers.insert(spot.identifier());
+        expect(spot.bounds().width > 0.0 && spot.bounds().height > 0.0,
+               "each generated spot has positive bounds");
+    }
+    expect(identifiers.size() == layout.spots().size(), "generated spot identifiers are unique");
+}
+
+void testCustomLayoutAndAutomaticAllocation()
+{
+    const std::string description =
+        "site 80 40\n"
+        "entrance 0 20\n"
+        "exit 80 20\n"
+        "region A 5 5 8 2 1.2 5.5 6 left\n"
+        "region B 35 15 8 2 1.4 6.0 6 right\n";
+    smartpark::ParkingService service(smartpark::ParkingLayout::fromDescription(description));
+    expect(service.spots().size() == 32, "custom layout generates all requested spots");
+
+    const auto first = service.allocate({u8"晋A12345", smartpark::VehicleType::Car});
+    const auto second = service.allocate({u8"晋A88888", smartpark::VehicleType::Electric});
+    expect(first.has_value() && second.has_value(), "automatic allocation succeeds");
+    expect(first->spotId != second->spotId, "automatic allocation does not reuse a spot");
+    expect(first->entryRoute.points.size() >= 2 && first->exitRoute.points.size() >= 2,
+           "allocation includes entry and exit routes");
+    expect(first->entryRoute.distance > 0.0 && first->exitRoute.distance > 0.0,
+           "route distances are positive");
+
+    const auto firstSpot = std::find_if(
+        service.spots().begin(), service.spots().end(),
+        [&first](const smartpark::ParkingSpot &spot) {
+            return spot.identifier() == first->spotId;
+        });
+    expect(firstSpot != service.spots().end() && firstSpot->parkedVehicle().has_value(),
+           "allocated spot is occupied");
+    expect(service.release(first->spotId), "allocated spot can be released");
+}
+
 } // namespace
 
 int main()
 {
     testVehicle();
     testParkingSpotLifecycle();
+    testDefaultLayout();
+    testCustomLayoutAndAutomaticAllocation();
 
     if (failureCount != 0) {
         std::cerr << failureCount << " test assertion(s) failed\n";

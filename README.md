@@ -18,15 +18,19 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 
 服务器将负责停车业务、车位状态、收费、车辆记录、用户与预约管理、数据库访问及网络通信。管理员端用于管理与可视化，出入口端用于车辆入场和离场处理。
 
-## 当前范围：SmartPark 0.1
+## 当前范围：SmartPark 0.2
 
 当前已完成：
 
 - C++17、CMake 与 Qt 6 Widgets 的基础工程配置。
-- 可以启动的管理员端 `MainWindow`。
-- `Vehicle` 与 `ParkingSpot` 基础模型及其单元测试。
+- `Vehicle`、`ParkingSpot`、`ParkingLayout` 与 `ParkingService` 核心模型。
+- 默认 60 车位、3 个矩形分区的自动分配服务。
+- 用户自定义多矩形停车场布局，每个分区可有不同的车位长宽和通道位置。
+- 基于 0.5 米栅格的 A* 路径规划，自动避开车位障碍并生成入口/出口路线。
+- 自动选位综合入口距离、出口距离和 12 米范围拥堵度，减少局部拥堵。
+- CLI 自动演示与 Qt GUI 实时车位图、路线绘制、布局编辑。
 
-SmartPark 0.1 下一步将实现 `ParkingRecord`、`ParkingService`，并在内存中初始化和管理 60 个停车位。
+下一步将实现 `ParkingRecord`、SQLite 持久化、收费服务、TCP 服务端与出入口终端。
 
 本阶段不接入 SQLite、TCP 通信、OpenCV、HyperLPR3、多线程、用户端或统计图表。
 
@@ -69,12 +73,51 @@ SmartPark 0.1 下一步将实现 `ParkingRecord`、`ParkingService`，并在内�
 
 1. 工程跑起来：完成 CMake、Qt 6、C++17 和主窗口。
 2. 纯 C++ 停车核心：实现停车位、车辆、停车记录和入场/离场流程。
-3. 停车场 GUI：实时展示停车位状态。
+3. 停车场 GUI：实时展示车位状态、自动分配结果和行驶路线。
 4. SQLite 持久化：重启后保留停车数据。
 5. 收费系统：根据停车时长计算费用。
 6. 服务端：以 TCP 建立管理员端与服务端架构。
 7. 出入口终端：手动输入车牌并通过服务端处理业务。
 8. 车牌识别：接入 OpenCV 与 HyperLPR3。
+
+## 自动分配算法
+
+停车场由多个互不重叠的矩形分区组成。每个分区可独立设置行数、列数、车位宽、车位长、通道宽和通道位于左侧或右侧，因此可组合出长宽不同的车位和异形整体布局。
+
+构建布局时，系统验证：
+
+- 分区必须完全位于场地边界内。
+- 分区之间不能重叠。
+- 通道宽度至少 2.5 米。
+- 所有车位必须能从入口规划出可达路线。
+
+路径规划使用 0.5 米栅格 A* 算法，车位矩形为障碍，通道和空地为可通行区域。A* 支持 8 方向移动，禁止斜穿障碍，并增加转向代价，使路线更平顺。自动分配对每个空闲车位计算：
+
+```text
+score = entrance_distance + 0.35 * exit_distance + 2.5 * nearby_occupied_spots
+```
+
+选择评分最低的车位。这样可以兼顾入场效率、离场便利性和局部拥堵程度，避免大量车辆集中停在同一区域。
+
+## 自定义布局格式
+
+CLI 和 GUI 共用以下文本布局格式：
+
+```text
+site 100 60
+entrance 0 30
+exit 100 30
+region A 5 8 10 2 1.2 5.5 6 left
+region B 38 24 10 2 1.4 6.0 6 right
+region C 71 40 10 2 1.2 5.5 6 left
+```
+
+字段含义：
+
+- `site 宽 高`：场地边界，单位米。
+- `entrance x y` 和 `exit x y`：入口与出口坐标。
+- `region 名称 x y 行数 列数 车位宽 车位长 通道宽 left|right`：一个矩形分区；每一列都是“一条通道 + 一排车位”的独立车 bay，每个分区可以使用不同车位尺寸。
+- `#` 开头的行是注释。
 
 ## 终端验证（无需 Qt、Conda 或图形桌面）
 
@@ -84,15 +127,16 @@ SmartPark 0.1 下一步将实现 `ParkingRecord`、`ParkingService`，并在内�
 cmake -S . -B build-cli -G Ninja \
   -DSMARTPARK_BUILD_ADMIN=OFF -DCMAKE_BUILD_TYPE=Debug
 cmake --build build-cli --parallel
-./build-cli/apps/cli/smartpark_cli
 ctest --test-dir build-cli --output-on-failure
+./build-cli/apps/cli/smartpark_cli
+./build-cli/apps/cli/smartpark_cli my-layout.txt
 ```
 
 当前服务器也可以显式使用 `/usr/bin/cmake`、`/usr/bin/ctest`，并在配置时添加 `-DCMAKE_CXX_COMPILER=/usr/bin/g++`，避免当前激活环境影响工具选择。`build-cli` 与 Qt 版本的 `build` 缓存相互独立。
 
-程序自动执行验证，无需输入。它创建 A001、A002 两个车位和两辆车，依次占用车位、拒绝重复占用、释放车位、拒绝重复释放，最后恢复全部空闲。每个阶段打印状态和剩余车位数；成功输出 `RESULT: PASS` 并返回 0，检查失败输出 `RESULT: FAIL` 并返回 1。
+不带参数时使用内置 60 车位布局；带文本文件参数时加载自定义布局。程序自动执行验证，无需输入。它分配 3 辆车、释放 1 辆车并再次自动分配，同时打印车位编号、入口距离、出口距离、附近占用数和综合评分；成功输出 `RESULT: PASS` 并返回 0。
 
-这只是当前模型的演示，不是 60 车位管理服务，也不验证 GUI、数据库或网络。状态和车辆只保存在内存中，程序结束后丢弃。
+当前版本不包含数据库、网络或车牌识别，状态和车辆只保存在内存中，程序结束后丢弃。
 
 ### 文件职责与运行流程
 
@@ -100,19 +144,23 @@ ctest --test-dir build-cli --output-on-failure
 | --- | --- |
 | `CMakeLists.txt` | 设置 C++17、CTest 和各构建目标；关闭 `SMARTPARK_BUILD_ADMIN` 后不查找 Qt。 |
 | `apps/cli/CMakeLists.txt` | 构建 `smartpark_cli`，链接核心库并注册终端演示测试。 |
-| `apps/cli/main.cpp` | 终端入口，组织演示、打印状态、检查结果并返回退出码。 |
+| `apps/cli/main.cpp` | 终端入口，加载默认或自定义布局并演示自动分配。 |
 | `src/core/CMakeLists.txt` | 将模型实现编译为 `smartpark_core` 静态库。 |
+| `src/core/model/Geometry.h` | 定义坐标、矩形和几何工具。 |
+| `src/core/model/ParkingLayout.h/.cpp` | 解析自定义布局并生成车位矩形。 |
 | `src/core/model/Vehicle.h` | 声明车辆类型、车辆数据与只读访问接口。 |
 | `src/core/model/Vehicle.cpp` | 实现车辆构造、非空车牌校验和数据访问。 |
 | `src/core/model/ParkingSpot.h` | 声明车位状态、当前车辆及占用/释放接口。 |
 | `src/core/model/ParkingSpot.cpp` | 实现单个车位的状态转换，拒绝重复占用或释放。 |
+| `src/core/service/GridPlanner.h/.cpp` | 实现障碍感知栅格 A* 寻路。 |
+| `src/core/service/ParkingService.h/.cpp` | 实现自动选位、拥堵评估和车位释放。 |
 | `tests/CMakeLists.txt` | 构建并注册模型单元测试。 |
 | `tests/core_model_tests.cpp` | 验证模型属性、非法空值和占用/释放行为。 |
 | `apps/admin/CMakeLists.txt` | 构建可选 Qt 管理员端，Qt 自动处理只作用于该目标。 |
 | `apps/admin/main.cpp` | 独立 GUI 入口，不参与终端版本运行。 |
-| `apps/admin/MainWindow.h`、`MainWindow.cpp` | 声明与实现 Qt 空主窗口，不参与终端版本运行。 |
+| `apps/admin/MainWindow.h/.cpp` | 实现布局编辑、车位图、自动分配和路线显示。 |
 
-运行流程：系统启动 `smartpark_cli` → `main()` 创建模型 → 调用 `occupy()` / `release()` → 读取状态并打印 → 检查结果 → 返回退出码。CMake 只负责构建，CTest 负责执行测试，二者不是业务运行步骤。
+运行流程：系统启动 `smartpark_cli` → 解析布局 → 构建障碍栅格 → 对空闲车位计算路线和评分 → 选择最优车位并占用 → 输出路线和状态 → 检查结果并返回退出码。
 
 ## Linux 构建与运行
 

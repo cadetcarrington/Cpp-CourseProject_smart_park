@@ -15,3 +15,5 @@ target_link_libraries(smartpark_admin
         Qt6::Widgets
         smartpark_core
 )
+
+target_compile_features(smartpark_admin PRIVATE cxx_std_17)
