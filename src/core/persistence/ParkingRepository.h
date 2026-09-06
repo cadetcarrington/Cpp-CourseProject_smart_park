@@ -52,7 +52,7 @@ private:
     std::string layoutSignature(const ParkingLayout &layout) const;
     bool saveSpotStateInTransaction(const ParkingSpot &spot);
     bool closeRecordInTransaction(const ParkingRecord &record,
-                                  const ParkingRecord::TimePoint &exitTime,
+                                  qint64 exitTimeMs,
                                   double fee);
     bool markSpotAvailableInTransaction(const std::string &spotId);
 

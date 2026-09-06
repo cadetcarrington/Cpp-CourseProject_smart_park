@@ -93,6 +93,7 @@ public:
     bool reserve(const Vehicle &vehicle, TimePoint expiresAt);
     bool expireReservation(TimePoint now);
     bool release() noexcept;
+    bool disable() noexcept;
 
 private:
     void clearOccupancy() noexcept;

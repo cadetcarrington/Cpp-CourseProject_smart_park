@@ -133,6 +133,15 @@ bool ParkingSpot::release() noexcept
     return true;
 }
 
+bool ParkingSpot::disable() noexcept
+{
+    if (status_ != SpotStatus::Available) {
+        return false;
+    }
+    status_ = SpotStatus::Disabled;
+    return true;
+}
+
 void ParkingSpot::clearOccupancy() noexcept
 {
     parkedVehicle_.reset();

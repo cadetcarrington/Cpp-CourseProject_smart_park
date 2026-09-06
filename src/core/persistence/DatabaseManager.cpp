@@ -12,8 +12,8 @@ DatabaseManager::DatabaseManager(const QString &databasePath)
     database_.setDatabaseName(databasePath);
     if (!database_.open()) {
         lastError_ = database_.lastError().text();
-        QSqlDatabase::removeDatabase(connectionName_);
         database_ = QSqlDatabase();
+        QSqlDatabase::removeDatabase(connectionName_);
     }
 }
 
@@ -21,6 +21,7 @@ DatabaseManager::~DatabaseManager()
 {
     if (database_.isValid()) {
         database_.close();
+        database_ = QSqlDatabase();
     }
     if (!connectionName_.isEmpty()) {
         QSqlDatabase::removeDatabase(connectionName_);

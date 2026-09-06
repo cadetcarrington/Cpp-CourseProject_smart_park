@@ -2,6 +2,7 @@
 
 #include <QComboBox>
 #include <QColor>
+#include <QFile>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
@@ -20,6 +21,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <utility>
 
 namespace {
 
@@ -74,11 +76,28 @@ QPolygonF routePolygon(const smartpark::Route &route)
 
 } // namespace
 
-MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
+MainWindow::MainWindow(QString databasePath, QWidget *parent)
+    : QMainWindow(parent)
+    , databasePath_(std::move(databasePath))
 {
-    service_ = std::make_unique<smartpark::ParkingService>(smartpark::ParkingLayout::defaultLayout());
+    const bool persistenceActive = !databasePath_.isEmpty()
+        && applyService(smartpark::ParkingLayout::defaultLayout(),
+                        smartpark::AllocationStrategy::WeightedCost);
+    if (!persistenceActive) {
+        // 安全降级：先释放可能指向旧持久化的 service_，再进入内存模式。
+        service_.reset();
+        persistence_.reset();
+        service_ = std::make_unique<smartpark::ParkingService>(
+            smartpark::ParkingLayout::defaultLayout());
+    }
     buildUi();
     refreshScene();
+    if (!persistenceActive) {
+        statusLabel_->setText(
+            databaseFailed_
+                ? "数据库重置失败，已降级为内存模式：重启后数据不会保留。"
+                : "数据库未启用或恢复被取消，当前为内存模式，重启后数据不会保留。");
+    }
 }
 
 void MainWindow::buildUi()
@@ -161,6 +180,69 @@ smartpark::AllocationStrategy MainWindow::currentStrategy() const
         : smartpark::AllocationStrategy::WeightedCost;
 }
 
+bool MainWindow::applyService(const smartpark::ParkingLayout &layout,
+                              smartpark::AllocationStrategy strategy)
+{
+    if (databasePath_.isEmpty()) {
+        service_ = std::make_unique<smartpark::ParkingService>(layout, strategy);
+        return true;
+    }
+    if (databaseFailed_) {
+        // 终态错误：数据库已不可用，后续一律使用内存模式，保证 service_ 非空。
+        service_ = std::make_unique<smartpark::ParkingService>(layout, strategy);
+        return false;
+    }
+    try {
+        if (!persistence_) {
+            persistence_ = std::make_unique<smartpark::Persistence>(databasePath_);
+        }
+        service_ = std::make_unique<smartpark::ParkingService>(
+            layout, strategy, &persistence_->repository());
+        return true;
+    } catch (const std::exception &error) {
+        const QString message = QString::fromUtf8(error.what());
+        const auto choice = QMessageBox::question(
+            this, "无法恢复停车数据",
+            QString("数据库中的停车数据无法用于当前布局：\n%1\n\n"
+                    "是否重置数据库（清空历史停车记录）并应用当前布局？")
+                .arg(message),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (choice != QMessageBox::Yes) {
+            return false;
+        }
+        try {
+            // 先释放 service_（其持有 repository_ 指针），再释放 Persistence，
+            // 避免悬空指针；成功后重建两者。
+            service_.reset();
+            resetDatabase();
+            persistence_ = std::make_unique<smartpark::Persistence>(databasePath_);
+            service_ = std::make_unique<smartpark::ParkingService>(
+                layout, strategy, &persistence_->repository());
+            return true;
+        } catch (const std::exception &resetError) {
+            QMessageBox::warning(this, "数据库重置失败",
+                                 QString::fromUtf8(resetError.what()));
+            // 终态降级：立即转为内存模式，service_ 永不为空，禁止后续空指针。
+            databaseFailed_ = true;
+            service_.reset();
+            persistence_.reset();
+            service_ = std::make_unique<smartpark::ParkingService>(layout, strategy);
+            return false;
+        }
+    }
+}
+
+void MainWindow::resetDatabase()
+{
+    persistence_.reset();
+    if (databasePath_.isEmpty()) {
+        return;
+    }
+    QFile::remove(databasePath_);
+    QFile::remove(databasePath_ + QStringLiteral("-wal"));
+    QFile::remove(databasePath_ + QStringLiteral("-shm"));
+}
+
 void MainWindow::refreshScene()
 {
     scene_->clear();
@@ -216,14 +298,25 @@ void MainWindow::refreshScene()
 
 void MainWindow::applyLayout()
 {
+    std::optional<smartpark::ParkingLayout> layout;
     try {
-        service_ = std::make_unique<smartpark::ParkingService>(
-            smartpark::ParkingLayout::fromDescription(layoutEditor_->toPlainText().toStdString()),
-            currentStrategy());
+        layout = smartpark::ParkingLayout::fromDescription(
+            layoutEditor_->toPlainText().toStdString());
+    } catch (const std::exception &error) {
+        QMessageBox::warning(this, "布局错误", QString::fromUtf8(error.what()));
+        return;
+    }
+
+    const bool persisted = applyService(*layout, currentStrategy());
+    if (service_) {
         lastAllocation_.reset();
         refreshScene();
-    } catch (const std::exception &error) {
-        QMessageBox::warning(this, "布局错误", error.what());
+    }
+    if (databaseFailed_) {
+        statusLabel_->setText(
+            "数据库重置失败，已降级为内存模式：新布局仅保存在内存，重启后不会保留。");
+    } else if (!persisted) {
+        statusLabel_->setText("已取消数据库恢复，保留原有布局与数据。");
     }
 }
 
@@ -283,7 +376,10 @@ void MainWindow::releaseLastVehicle()
                                   .arg(QString::fromStdString(closedRecord->spotId()))
                                   .arg(duration.count())
                                   .arg(static_cast<int>(service_->records().size())));
+        lastAllocation_.reset();
+    } else {
+        QMessageBox::warning(this, "离场失败",
+                             "无法关闭该车辆的停车记录，分配结果已保留。");
     }
-    lastAllocation_.reset();
     refreshScene();
 }

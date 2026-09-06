@@ -8,6 +8,7 @@ add_library(smartpark_core STATIC
     model/ParkingSpot.h
     model/Vehicle.cpp
     model/Vehicle.h
+    util/TimeUtil.h
     service/GridPlanner.cpp
     service/GridPlanner.h
     service/ParkingService.cpp
@@ -16,6 +17,8 @@ add_library(smartpark_core STATIC
     service/SpotAllocator.h
     persistence/DatabaseManager.cpp
     persistence/DatabaseManager.h
+    persistence/Persistence.cpp
+    persistence/Persistence.h
     persistence/ParkingRepository.cpp
     persistence/ParkingRepository.h
 )

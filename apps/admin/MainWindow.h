@@ -1,8 +1,10 @@
 #pragma once
 
+#include "core/persistence/Persistence.h"
 #include "core/service/ParkingService.h"
 
 #include <QMainWindow>
+#include <QString>
 
 #include <memory>
 #include <optional>
@@ -18,7 +20,7 @@ class QPushButton;
 class MainWindow : public QMainWindow
 {
 public:
-    explicit MainWindow(QWidget *parent = nullptr);
+    explicit MainWindow(QString databasePath, QWidget *parent = nullptr);
     ~MainWindow() override = default;
 
 private slots:
@@ -30,8 +32,14 @@ private slots:
 private:
     void buildUi();
     void refreshScene();
+    bool applyService(const smartpark::ParkingLayout &layout,
+                      smartpark::AllocationStrategy strategy);
+    void resetDatabase();
     smartpark::AllocationStrategy currentStrategy() const;
 
+    QString databasePath_;
+    bool databaseFailed_{false};
+    std::unique_ptr<smartpark::Persistence> persistence_;
     std::unique_ptr<smartpark::ParkingService> service_;
     std::optional<smartpark::AllocationResult> lastAllocation_;
     QGraphicsScene *scene_{nullptr};
