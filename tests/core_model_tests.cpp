@@ -1,7 +1,12 @@
 #include "core/model/ParkingSpot.h"
 #include "core/model/ParkingRecord.h"
+#include "core/persistence/DatabaseManager.h"
+#include "core/persistence/ParkingRepository.h"
 #include "core/model/Vehicle.h"
 #include "core/service/ParkingService.h"
+
+#include <QTemporaryDir>
+#include <QSqlQuery>
 
 #include <algorithm>
 #include <chrono>
@@ -371,6 +376,70 @@ void testMultiEntranceSelection()
     expect(northern && northern->entranceIndex == 1, "northern parking uses the northern entrance");
 }
 
+void testSqlitePersistenceAndRecovery()
+{
+    using namespace std::chrono_literals;
+    const std::string description =
+        "site 60 30\n"
+        "entrance 0 15\n"
+        "exit 60 15\n"
+        "region A 10 10 1 3 1.2 5.5 6 left\n";
+    const auto layout = smartpark::ParkingLayout::fromDescription(description);
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(1000);
+
+    QTemporaryDir directory;
+    expect(directory.isValid(), "SQLite test can create a temporary directory");
+    const QString databasePath = directory.filePath("smartpark.db");
+    {
+        smartpark::DatabaseManager database(databasePath);
+        expect(database.database().isOpen(), "SQLite database opens");
+        smartpark::ParkingRepository repository(database.database());
+        smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                          &repository);
+
+        const auto first = service.enter({u8"晋A12345", smartpark::VehicleType::Car}, now);
+        const auto second = service.enter({u8"晋A22222", smartpark::VehicleType::Car}, now);
+        expect(first.has_value() && second.has_value(), "SQLite service accepts entries");
+        expect(service.leave(u8"晋A12345", now + 15min).has_value(),
+               "SQLite service closes the first record");
+        expect(service.reserve({u8"晋A33333", smartpark::VehicleType::Car}, now + 15min, 30min)
+                   .has_value(),
+               "SQLite service reserves a third spot");
+        expect(service.occupiedSpots() == 1 && service.reservedSpots() == 1,
+               "SQLite service has one occupied and one reserved spot");
+    }
+
+    smartpark::DatabaseManager database(databasePath);
+    smartpark::ParkingRepository repository(database.database());
+    smartpark::ParkingService restored(layout, smartpark::AllocationStrategy::Nearest,
+                                       &repository);
+    expect(restored.spots().size() == 3, "restart restores every parking spot");
+    expect(restored.records().size() == 2, "restart restores closed and active records");
+    expect(restored.occupiedSpots() == 1 && restored.reservedSpots() == 1,
+           "restart restores occupied and reserved states");
+    expect(restored.activeRecord(u8"晋A22222").has_value(),
+           "restart restores the active record");
+    expect(!restored.activeRecord(u8"晋A12345").has_value(),
+           "restart does not reopen a closed record");
+    restored.expireReservations(now + 46min);
+    expect(restored.reservedSpots() == 0 && restored.remainingSpots() == 2,
+           "restart preserves the reservation TTL");
+
+    expectThrows<std::invalid_argument>(
+        [] { const smartpark::Vehicle invalid("", smartpark::VehicleType::Car); },
+        "persistence rejects an empty plate number");
+
+    QSqlQuery invalidate(database.database());
+    invalidate.prepare(QStringLiteral(
+        "UPDATE parking_spots SET status=99 WHERE identifier='A001'"));
+    expect(invalidate.exec(), "SQLite test can corrupt a spot status");
+    smartpark::ParkingRepository invalidRepository(database.database());
+    expect(invalidRepository.loadSpotStates().empty(),
+           "loader rejects an invalid persisted spot status");
+    expect(!invalidRepository.lastError().empty(),
+           "loader reports an invalid persisted spot status");
+}
+
 } // namespace
 
 int main()
@@ -386,6 +455,7 @@ int main()
     testTypeMatching();
     testCongestionAvoidanceAndStrategies();
     testMultiEntranceSelection();
+    testSqlitePersistenceAndRecovery();
 
     if (failureCount != 0) {
         std::cerr << failureCount << " test assertion(s) failed\n";

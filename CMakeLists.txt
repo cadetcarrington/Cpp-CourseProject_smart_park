@@ -1,10 +1,12 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(SmartPark
-    VERSION 0.4.0
+    VERSION 0.5.0
     DESCRIPTION "Smart parking management system"
     LANGUAGES CXX
 )
+
+find_package(Qt6 6.2 REQUIRED COMPONENTS Sql)
 
 include(CTest)
 
