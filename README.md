@@ -53,13 +53,14 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 ```text
 .
 ├── apps/
-│   ├── admin/       # 管理员端 Qt GUI
-│   ├── server/      # SmartPark 服务端入口
-│   └── gate/        # 出入口终端入口
+│   ├── admin/       # 管理员端 Qt GUI：布局编辑、车位图、路线显示
+│   ├── cli/         # 终端演示程序：自动分配与自定义布局验证
+│   ├── server/      # SmartPark 服务端入口（预留）
+│   └── gate/        # 出入口终端入口（预留）
 ├── src/
 │   ├── core/
-│   │   ├── model/   # Vehicle、ParkingSpot、ParkingRecord 等领域模型
-│   │   └── service/ # ParkingService、BillingService 等业务服务
+│   │   ├── model/   # Geometry、Vehicle、ParkingSpot、ParkingLayout、ParkingRecord
+│   │   └── service/ # GridPlanner、ParkingService
 │   ├── database/    # 数据库连接与仓储层
 │   ├── network/     # TCP 协议与通信实现
 │   └── lpr/         # 车牌识别集成
@@ -67,7 +68,6 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 │   ├── icons/       # 图标资源
 │   ├── styles/      # Qt 样式表
 │   └── images/      # 图片资源
-├── data/            # 本地运行时 SQLite 数据库，不提交数据库文件
 ├── sql/             # 数据库建表与初始化脚本
 └── tests/           # 单元测试与集成测试
 ```
