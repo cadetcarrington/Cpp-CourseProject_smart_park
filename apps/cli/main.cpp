@@ -2,6 +2,7 @@
 #include "core/model/Vehicle.h"
 #include "core/service/ParkingService.h"
 
+#include <algorithm>
 #include <exception>
 #include <chrono>
 #include <fstream>
@@ -28,13 +29,36 @@ smartpark::ParkingLayout loadLayout(const std::string &path)
     return smartpark::ParkingLayout::fromDescription(buffer.str());
 }
 
-void printAllocation(const smartpark::AllocationResult &result)
+const smartpark::ParkingSpot *findSpot(const smartpark::ParkingService &service,
+                                       const std::string &spotId)
 {
+    const auto spot = std::find_if(
+        service.spots().begin(), service.spots().end(),
+        [&spotId](const smartpark::ParkingSpot &item) { return item.identifier() == spotId; });
+    if (spot == service.spots().end()) {
+        return nullptr;
+    }
+    return &(*spot);
+}
+
+void printAllocation(const smartpark::ParkingService &service,
+                     const smartpark::AllocationResult &result)
+{
+    const smartpark::ParkingSpot *spot = findSpot(service, result.spotId);
     std::cout << "  Spot: " << result.spotId
+              << " | Type: " << (spot != nullptr ? toString(spot->type()) : "unknown")
               << " | Entry: " << result.entryRoute.distance << "m"
               << " | Exit: " << result.exitRoute.distance << "m"
+              << " | Turns: " << (result.entryRoute.turnCount + result.exitRoute.turnCount)
               << " | Nearby occupied: " << result.nearbyOccupiedSpots
               << " | Score: " << result.score << '\n';
+    std::cout << "  Breakdown: entry=" << result.breakdown.entryPathCost
+              << " exit=" << result.breakdown.exitPathCost
+              << " congestion=" << result.breakdown.laneCongestionCost
+              << " turns=" << result.breakdown.turnCountCost
+              << " type=" << result.breakdown.typePenalty
+              << " | Gate: in#" << result.entranceIndex
+              << " out#" << result.exitIndex << '\n';
     if (!result.entryRoute.points.empty()) {
         const smartpark::Point &first = result.entryRoute.points.front();
         const smartpark::Point &last = result.entryRoute.points.back();
@@ -67,6 +91,8 @@ int main(int argc, char **argv)
         std::cout << "SmartPark CLI - automatic parking allocation\n"
                   << "Site: " << layout.siteWidth() << "m x " << layout.siteHeight()
                   << "m | Regions: " << layout.regions().size()
+                  << " | Entrances: " << layout.entrances().size()
+                  << " | Exits: " << layout.exits().size()
                   << " | Spots: " << layout.spots().size() << "\n\n";
 
         const std::vector<smartpark::Vehicle> vehicles = {
@@ -85,7 +111,7 @@ int main(int argc, char **argv)
                 throw std::runtime_error("automatic allocation failed");
             }
             std::cout << "Allocate " << vehicle.plateNumber() << ":\n";
-            printAllocation(*result);
+            printAllocation(service, *result);
             allocations.push_back(*result);
         }
 
@@ -107,9 +133,11 @@ int main(int argc, char **argv)
             || replacement->spotId == allocations[2].spotId) {
             throw std::runtime_error("replacement allocation failed");
         }
-        printAllocation(*replacement);
+        printAllocation(service, *replacement);
         std::cout << "\nRemaining spots: " << service.remainingSpots()
                   << "/" << service.spots().size()
+                  << " | Occupied: " << service.occupiedSpots()
+                  << " | Reserved: " << service.reservedSpots()
                   << " | Records: " << service.records().size() << '\n';
 
         if (layoutPath.empty() && layout.spots().size() != 60) {

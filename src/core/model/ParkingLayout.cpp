@@ -51,13 +51,25 @@ int readPositiveInt(std::istringstream &stream, const std::string &field)
     return value;
 }
 
+SpotType parseSpotTypeToken(std::string token)
+{
+    token = toLower(std::move(token));
+    const std::string prefix = "type=";
+    if (token.compare(0, prefix.size(), prefix) == 0) {
+        token = token.substr(prefix.size());
+    }
+    const auto type = spotTypeFromString(token);
+    if (!type) {
+        throw std::invalid_argument("unknown spot type: " + token);
+    }
+    return *type;
+}
+
 } // namespace
 
-ParkingLayout::ParkingLayout(double siteWidth, double siteHeight, Point entrance, Point exit)
+ParkingLayout::ParkingLayout(double siteWidth, double siteHeight)
     : siteWidth_(siteWidth)
     , siteHeight_(siteHeight)
-    , entrance_(entrance)
-    , exit_(exit)
 {
 }
 
@@ -77,9 +89,7 @@ ParkingLayout ParkingLayout::fromDescription(const std::string &description)
     std::istringstream input(description);
     std::string line;
     bool hasSite = false;
-    bool hasEntrance = false;
-    bool hasExit = false;
-    ParkingLayout layout(1.0, 1.0, {0.0, 0.0}, {1.0, 1.0});
+    ParkingLayout layout(1.0, 1.0);
 
     while (std::getline(input, line)) {
         std::istringstream stream(line);
@@ -98,7 +108,7 @@ ParkingLayout ParkingLayout::fromDescription(const std::string &description)
             if (width < 10.0 || height < 10.0) {
                 throw std::invalid_argument("site must be at least 10m x 10m");
             }
-            layout = ParkingLayout(width, height, {0.0, 0.0}, {width, height / 2.0});
+            layout = ParkingLayout(width, height);
             hasSite = true;
             continue;
         }
@@ -115,11 +125,9 @@ ParkingLayout ParkingLayout::fromDescription(const std::string &description)
                 throw std::invalid_argument(command + " must be inside the site");
             }
             if (command == "entrance") {
-                layout.entrance_ = point;
-                hasEntrance = true;
+                layout.entrances_.push_back(point);
             } else {
-                layout.exit_ = point;
-                hasExit = true;
+                layout.exits_.push_back(point);
             }
             continue;
         }
@@ -144,15 +152,25 @@ ParkingLayout ParkingLayout::fromDescription(const std::string &description)
             if (side != "left" && side != "right") {
                 throw std::invalid_argument("aisle side must be left or right");
             }
+            SpotType type = SpotType::Normal;
+            std::string typeToken;
+            if (stream >> typeToken) {
+                type = parseSpotTypeToken(typeToken);
+                std::string extra;
+                if (stream >> extra) {
+                    throw std::invalid_argument("unexpected region token: " + extra);
+                }
+            }
             layout.addRegion(name, {x, y}, rows, columns, spotWidth, spotLength,
-                             aisleWidth, side == "left" ? AisleSide::Left : AisleSide::Right);
+                             aisleWidth, side == "left" ? AisleSide::Left : AisleSide::Right,
+                             type);
             continue;
         }
 
         throw std::invalid_argument("unknown layout command: " + command);
     }
 
-    if (!hasSite || !hasEntrance || !hasExit) {
+    if (!hasSite || layout.entrances_.empty() || layout.exits_.empty()) {
         throw std::invalid_argument("layout requires site, entrance, and exit lines");
     }
     if (layout.spots_.empty()) {
@@ -163,7 +181,7 @@ ParkingLayout ParkingLayout::fromDescription(const std::string &description)
 
 void ParkingLayout::addRegion(const std::string &name, Point origin, int rows, int columns,
                               double spotWidth, double spotLength, double aisleWidth,
-                              AisleSide aisleSide)
+                              AisleSide aisleSide, SpotType type)
 {
     if (regions_.empty()) {
         spotPrefix_ = name;
@@ -198,7 +216,7 @@ void ParkingLayout::addRegion(const std::string &name, Point origin, int rows, i
             const Point accessPoint{accessX, bounds.center().y};
             spots_.emplace_back(
                 spotIdentifier(spotPrefix_, static_cast<int>(spots_.size()) + 1),
-                ParkingSpot::Geometry{name, row, column, bounds, accessPoint});
+                ParkingSpot::Geometry{name, row, column, bounds, accessPoint, type});
         }
     }
     regions_.push_back(region);
@@ -224,14 +242,30 @@ double ParkingLayout::siteHeight() const noexcept
     return siteHeight_;
 }
 
-const Point &ParkingLayout::entrance() const noexcept
+const std::vector<Point> &ParkingLayout::entrances() const noexcept
 {
-    return entrance_;
+    return entrances_;
 }
 
-const Point &ParkingLayout::exit() const noexcept
+const std::vector<Point> &ParkingLayout::exits() const noexcept
 {
-    return exit_;
+    return exits_;
+}
+
+const Point &ParkingLayout::entrance() const
+{
+    if (entrances_.empty()) {
+        throw std::logic_error("layout has no entrance");
+    }
+    return entrances_.front();
+}
+
+const Point &ParkingLayout::exit() const
+{
+    if (exits_.empty()) {
+        throw std::logic_error("layout has no exit");
+    }
+    return exits_.front();
 }
 
 } // namespace smartpark

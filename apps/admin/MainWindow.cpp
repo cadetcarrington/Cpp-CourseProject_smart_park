@@ -33,6 +33,36 @@ smartpark::VehicleType vehicleTypeFromIndex(int index)
     }
 }
 
+QString statusText(smartpark::SpotStatus status)
+{
+    switch (status) {
+    case smartpark::SpotStatus::Reserved:
+        return QStringLiteral("预留");
+    case smartpark::SpotStatus::Occupied:
+        return QStringLiteral("占用");
+    case smartpark::SpotStatus::Disabled:
+        return QStringLiteral("停用");
+    case smartpark::SpotStatus::Available:
+    default:
+        return QStringLiteral("空闲");
+    }
+}
+
+QColor statusColor(smartpark::SpotStatus status)
+{
+    switch (status) {
+    case smartpark::SpotStatus::Reserved:
+        return QColor(237, 201, 72);
+    case smartpark::SpotStatus::Occupied:
+        return QColor(226, 92, 92);
+    case smartpark::SpotStatus::Disabled:
+        return QColor(160, 160, 160);
+    case smartpark::SpotStatus::Available:
+    default:
+        return QColor(88, 182, 124);
+    }
+}
+
 QPolygonF routePolygon(const smartpark::Route &route)
 {
     QPolygonF polygon;
@@ -66,13 +96,15 @@ void MainWindow::buildUi()
         "site 100 60\n"
         "entrance 0 30\n"
         "exit 100 30\n"
-        "region A 5 8 10 2 1.2 5.5 6 left\n"
-        "region B 38 24 10 2 1.4 6.0 6 right\n"
-        "region C 71 40 10 2 1.2 5.5 6 left\n");
+        "region A 5 8 10 2 1.2 5.5 6 left normal\n"
+        "region B 38 24 10 2 1.4 6.0 6 right charging\n"
+        "region C 71 40 10 2 1.2 5.5 6 left accessible\n");
     layoutEditor_->setMinimumWidth(280);
     layoutLayout->addWidget(new QLabel(
-        "格式：site 宽 高 / entrance x y / exit x y /\\n"
-        "region 名称 x y 行数 列数 车位宽 车位长 通道宽 left|right", layoutGroup));
+        "格式：site 宽 高\n"
+        "entrance x y / exit x y，可写多条\n"
+        "region 名称 x y 行数 列数 车位宽 车位长 通道宽 left|right [normal|charging|accessible|vip]",
+        layoutGroup));
     layoutLayout->addWidget(layoutEditor_);
 
     auto *applyButton = new QPushButton("应用布局", layoutGroup);
@@ -98,10 +130,13 @@ void MainWindow::buildUi()
     plateInput_->setPlaceholderText("车牌，例如：晋A12345");
     vehicleTypeInput_ = new QComboBox(controlBar);
     vehicleTypeInput_->addItems({"轿车", "摩托车", "卡车", "电动车"});
+    strategyInput_ = new QComboBox(controlBar);
+    strategyInput_->addItems({"加权代价", "最近车位"});
     allocateButton_ = new QPushButton("自动分配车位", controlBar);
     releaseButton_ = new QPushButton("释放最近车位", controlBar);
     controlLayout->addWidget(plateInput_, 1);
     controlLayout->addWidget(vehicleTypeInput_);
+    controlLayout->addWidget(strategyInput_);
     controlLayout->addWidget(allocateButton_);
     controlLayout->addWidget(releaseButton_);
 
@@ -115,6 +150,15 @@ void MainWindow::buildUi()
 
     connect(allocateButton_, &QPushButton::clicked, this, &MainWindow::allocateVehicle);
     connect(releaseButton_, &QPushButton::clicked, this, &MainWindow::releaseLastVehicle);
+    connect(strategyInput_, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, &MainWindow::updateStrategy);
+}
+
+smartpark::AllocationStrategy MainWindow::currentStrategy() const
+{
+    return strategyInput_->currentIndex() == 1
+        ? smartpark::AllocationStrategy::Nearest
+        : smartpark::AllocationStrategy::WeightedCost;
 }
 
 void MainWindow::refreshScene()
@@ -131,26 +175,30 @@ void MainWindow::refreshScene()
     }
 
     for (const smartpark::ParkingSpot &spot : service_->spots()) {
-        const bool available = spot.isAvailable();
-        const QColor color = available ? QColor(88, 182, 124) : QColor(226, 92, 92);
         auto *item = scene_->addRect(spot.bounds().origin.x, spot.bounds().origin.y,
                                      spot.bounds().width, spot.bounds().height,
-                                     QPen(Qt::black, 0.08), QBrush(color));
-        item->setToolTip(QString("%1 | %2 | %3")
+                                     QPen(Qt::black, 0.08), QBrush(statusColor(spot.status())));
+        const QString plate = spot.parkedVehicle()
+            ? QString::fromStdString(spot.parkedVehicle()->plateNumber())
+            : QStringLiteral("-");
+        item->setToolTip(QString("%1 | %2 | %3 | %4")
                              .arg(QString::fromStdString(spot.identifier()))
-                             .arg(available ? "空闲" : "占用")
-                             .arg(available ? "-" : QString::fromStdString(
-                                                    spot.parkedVehicle()->plateNumber())));
+                             .arg(QString::fromUtf8(toString(spot.type())))
+                             .arg(statusText(spot.status()))
+                             .arg(plate));
     }
 
-    auto *entrance = scene_->addEllipse(layout.entrance().x - 1.0, layout.entrance().y - 1.0,
-                                        2.0, 2.0, QPen(Qt::darkBlue, 0.15),
-                                        QBrush(Qt::darkBlue));
-    entrance->setToolTip("入口");
-    auto *exit = scene_->addEllipse(layout.exit().x - 1.0, layout.exit().y - 1.0,
-                                    2.0, 2.0, QPen(QColor(180, 80, 0), 0.15),
-                                    QBrush(QColor(180, 80, 0)));
-    exit->setToolTip("出口");
+    for (const smartpark::Point &entrance : layout.entrances()) {
+        auto *item = scene_->addEllipse(entrance.x - 1.0, entrance.y - 1.0, 2.0, 2.0,
+                                        QPen(Qt::darkBlue, 0.15), QBrush(Qt::darkBlue));
+        item->setToolTip(QStringLiteral("入口"));
+    }
+    for (const smartpark::Point &exit : layout.exits()) {
+        auto *item = scene_->addEllipse(exit.x - 1.0, exit.y - 1.0, 2.0, 2.0,
+                                        QPen(QColor(180, 80, 0), 0.15),
+                                        QBrush(QColor(180, 80, 0)));
+        item->setToolTip(QStringLiteral("出口"));
+    }
 
     if (lastAllocation_) {
         scene_->addPolygon(routePolygon(lastAllocation_->entryRoute),
@@ -159,23 +207,30 @@ void MainWindow::refreshScene()
                            QPen(QColor(230, 132, 0), 0.22, Qt::DashLine));
     }
 
-    const auto availableCount = static_cast<int>(std::count_if(
-        service_->spots().begin(), service_->spots().end(),
-        [](const smartpark::ParkingSpot &spot) { return spot.isAvailable(); }));
-    statusLabel_->setText(QString("总车位：%1 / 空闲：%2")
+    statusLabel_->setText(QString("总车位：%1 / 空闲：%2 / 占用：%3 / 预留：%4")
                               .arg(static_cast<int>(service_->spots().size()))
-                              .arg(availableCount));
+                              .arg(service_->remainingSpots())
+                              .arg(service_->occupiedSpots())
+                              .arg(service_->reservedSpots()));
 }
 
 void MainWindow::applyLayout()
 {
     try {
         service_ = std::make_unique<smartpark::ParkingService>(
-            smartpark::ParkingLayout::fromDescription(layoutEditor_->toPlainText().toStdString()));
+            smartpark::ParkingLayout::fromDescription(layoutEditor_->toPlainText().toStdString()),
+            currentStrategy());
         lastAllocation_.reset();
         refreshScene();
     } catch (const std::exception &error) {
         QMessageBox::warning(this, "布局错误", error.what());
+    }
+}
+
+void MainWindow::updateStrategy()
+{
+    if (service_) {
+        service_->setStrategy(currentStrategy());
     }
 }
 
@@ -191,23 +246,25 @@ void MainWindow::allocateVehicle()
                                      vehicleTypeFromIndex(vehicleTypeInput_->currentIndex()));
     const std::optional<smartpark::AllocationResult> result = service_->enter(vehicle);
     if (!result) {
-        QMessageBox::warning(this, "无可用车位", "当前停车场已满或没有可达车位。");
+        QMessageBox::warning(this, "无可用车位", "当前停车场已满、车位已预留或没有可达车位。");
         return;
     }
 
     lastAllocation_ = result;
     refreshScene();
-    const auto availableCount = static_cast<int>(std::count_if(
-        service_->spots().begin(), service_->spots().end(),
-        [](const smartpark::ParkingSpot &spot) { return spot.isAvailable(); }));
-    statusLabel_->setText(QString("总车位：%1 / 空闲：%2 | 已分配：%3 | 入口距离：%4m | 出口距离：%5m | 综合评分：%6 | 记录：%7")
-                              .arg(static_cast<int>(service_->spots().size()))
-                              .arg(availableCount)
-                              .arg(QString::fromStdString(result->spotId))
-                              .arg(result->entryRoute.distance, 0, 'f', 1)
-                              .arg(result->exitRoute.distance, 0, 'f', 1)
-                              .arg(result->score, 0, 'f', 1)
-                              .arg(static_cast<int>(service_->records().size())));
+    statusLabel_->setText(
+        QString("总车位：%1 / 空闲：%2 / 占用：%3 | 已分配：%4 | 入口：%5m | 出口：%6m | "
+                "拥堵：%7 | 转向：%8 | 类型：%9 | 综合评分：%10")
+            .arg(static_cast<int>(service_->spots().size()))
+            .arg(service_->remainingSpots())
+            .arg(service_->occupiedSpots())
+            .arg(QString::fromStdString(result->spotId))
+            .arg(result->entryRoute.distance, 0, 'f', 1)
+            .arg(result->exitRoute.distance, 0, 'f', 1)
+            .arg(result->nearbyOccupiedSpots)
+            .arg(result->entryRoute.turnCount + result->exitRoute.turnCount)
+            .arg(result->breakdown.typePenalty, 0, 'f', 1)
+            .arg(result->score, 0, 'f', 1));
 }
 
 void MainWindow::releaseLastVehicle()

@@ -32,6 +32,11 @@ SpotStatus ParkingSpot::status() const noexcept
     return status_;
 }
 
+SpotType ParkingSpot::type() const noexcept
+{
+    return geometry_.type;
+}
+
 bool ParkingSpot::isAvailable() const noexcept
 {
     return status_ == SpotStatus::Available;
@@ -72,26 +77,67 @@ int ParkingSpot::column() const noexcept
     return geometry_.column;
 }
 
+const std::optional<ParkingSpot::TimePoint> &ParkingSpot::reservationExpiresAt() const noexcept
+{
+    return reservationExpiresAt_;
+}
+
 bool ParkingSpot::occupy(const Vehicle &vehicle)
+{
+    if (status_ == SpotStatus::Reserved) {
+        if (!parkedVehicle_ || parkedVehicle_->plateNumber() != vehicle.plateNumber()) {
+            return false;
+        }
+        parkedVehicle_ = vehicle;
+        reservationExpiresAt_.reset();
+        status_ = SpotStatus::Occupied;
+        return true;
+    }
+    if (status_ != SpotStatus::Available) {
+        return false;
+    }
+
+    parkedVehicle_ = vehicle;
+    reservationExpiresAt_.reset();
+    status_ = SpotStatus::Occupied;
+    return true;
+}
+
+bool ParkingSpot::reserve(const Vehicle &vehicle, TimePoint expiresAt)
 {
     if (!isAvailable()) {
         return false;
     }
 
     parkedVehicle_ = vehicle;
-    status_ = SpotStatus::Occupied;
+    reservationExpiresAt_ = expiresAt;
+    status_ = SpotStatus::Reserved;
+    return true;
+}
+
+bool ParkingSpot::expireReservation(TimePoint now)
+{
+    if (status_ != SpotStatus::Reserved || !reservationExpiresAt_ || now < *reservationExpiresAt_) {
+        return false;
+    }
+    clearOccupancy();
     return true;
 }
 
 bool ParkingSpot::release() noexcept
 {
-    if (status_ != SpotStatus::Occupied) {
+    if (status_ != SpotStatus::Occupied && status_ != SpotStatus::Reserved) {
         return false;
     }
-
-    parkedVehicle_.reset();
-    status_ = SpotStatus::Available;
+    clearOccupancy();
     return true;
+}
+
+void ParkingSpot::clearOccupancy() noexcept
+{
+    parkedVehicle_.reset();
+    reservationExpiresAt_.reset();
+    status_ = SpotStatus::Available;
 }
 
 } // namespace smartpark
