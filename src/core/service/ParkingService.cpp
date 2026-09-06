@@ -323,7 +323,6 @@ void ParkingService::ensureReachable() const
 
 void ParkingService::restore(ParkingRepository &repository)
 {
-    const ParkingRecord::TimePoint now = ParkingRecord::Clock::now();
     const std::vector<PersistedRecord> persistedRecords = repository.loadRecords();
     const std::vector<PersistedSpotState> persistedSpots = repository.loadSpotStates();
     if (!repository.lastError().empty()) {
@@ -360,11 +359,7 @@ void ParkingService::restore(ParkingRepository &repository)
             }
         } else if (state.status == SpotStatus::Reserved) {
             if (!state.vehicle || !state.reservationExpiresAt
-                || (*state.reservationExpiresAt <= now
-                    && (!spot->expireReservation(now)
-                        || !repository.saveSpotState(*spot)))
-                || (*state.reservationExpiresAt > now
-                    && !spot->reserve(*state.vehicle, *state.reservationExpiresAt))) {
+                || !spot->reserve(*state.vehicle, *state.reservationExpiresAt)) {
                 throw std::runtime_error("inconsistent reserved parking spot: " + state.spotId);
             }
         } else if (state.status == SpotStatus::Available) {
