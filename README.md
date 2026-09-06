@@ -18,7 +18,7 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 
 服务器将负责停车业务、车位状态、收费、车辆记录、用户与预约管理、数据库访问及网络通信。管理员端用于管理与可视化，出入口端用于车辆入场和离场处理。
 
-## 当前范围：SmartPark 0.2
+## 当前范围：SmartPark 0.3
 
 当前已完成：
 
@@ -29,8 +29,11 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 - 基于 0.5 米栅格的 A* 路径规划，自动避开车位障碍并生成入口/出口路线。
 - 自动选位综合入口距离、出口距离和 12 米范围拥堵度，减少局部拥堵。
 - CLI 自动演示与 Qt GUI 实时车位图、路线绘制、布局编辑。
+- `ParkingRecord` 停车记录，包含车牌、车位、入场/离场时间和停车时长。
+- `ParkingService::enter()` / `leave()` 完整入离场流程，自动创建和关闭停车记录。
+- 默认车位编号统一为 `A001`～`A060`，并支持查询剩余车位、占用车位和历史记录。
 
-下一步将实现 `ParkingRecord`、SQLite 持久化、收费服务、TCP 服务端与出入口终端。
+下一步将实现 SQLite 持久化、收费服务、TCP 服务端与出入口终端。
 
 本阶段不接入 SQLite、TCP 通信、OpenCV、HyperLPR3、多线程、用户端或统计图表。
 
@@ -148,14 +151,15 @@ ctest --test-dir build-cli --output-on-failure
 | `src/core/CMakeLists.txt` | 将模型实现编译为 `smartpark_core` 静态库。 |
 | `src/core/model/Geometry.h` | 定义坐标、矩形和几何工具。 |
 | `src/core/model/ParkingLayout.h/.cpp` | 解析自定义布局并生成车位矩形。 |
+| `src/core/model/ParkingRecord.h/.cpp` | 保存一次停车的车牌、车位、时间、时长和费用。 |
 | `src/core/model/Vehicle.h` | 声明车辆类型、车辆数据与只读访问接口。 |
 | `src/core/model/Vehicle.cpp` | 实现车辆构造、非空车牌校验和数据访问。 |
 | `src/core/model/ParkingSpot.h` | 声明车位状态、当前车辆及占用/释放接口。 |
 | `src/core/model/ParkingSpot.cpp` | 实现单个车位的状态转换，拒绝重复占用或释放。 |
 | `src/core/service/GridPlanner.h/.cpp` | 实现障碍感知栅格 A* 寻路。 |
-| `src/core/service/ParkingService.h/.cpp` | 实现自动选位、拥堵评估和车位释放。 |
+| `src/core/service/ParkingService.h/.cpp` | 实现自动选位、拥堵评估、车辆入场/离场、剩余车位和历史记录查询。 |
 | `tests/CMakeLists.txt` | 构建并注册模型单元测试。 |
-| `tests/core_model_tests.cpp` | 验证模型属性、非法空值和占用/释放行为。 |
+| `tests/core_model_tests.cpp` | 验证模型属性、非法空值、自动分配、入离场和记录行为。 |
 | `apps/admin/CMakeLists.txt` | 构建可选 Qt 管理员端，Qt 自动处理只作用于该目标。 |
 | `apps/admin/main.cpp` | 独立 GUI 入口，不参与终端版本运行。 |
 | `apps/admin/MainWindow.h/.cpp` | 实现布局编辑、车位图、自动分配和路线显示。 |

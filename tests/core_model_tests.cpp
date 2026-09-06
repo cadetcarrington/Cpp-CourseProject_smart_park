@@ -1,4 +1,5 @@
 #include "core/model/ParkingSpot.h"
+#include "core/model/ParkingRecord.h"
 #include "core/model/Vehicle.h"
 #include "core/service/ParkingService.h"
 
@@ -78,6 +79,34 @@ void testParkingSpotLifecycle()
         "parking spot rejects an empty identifier");
 }
 
+void testParkingRecordLifecycle()
+{
+    using namespace std::chrono_literals;
+    const smartpark::ParkingRecord::TimePoint entry =
+        smartpark::ParkingRecord::Clock::from_time_t(1000);
+    smartpark::ParkingRecord record(u8"晋A12345", "A001", entry);
+
+    expect(record.plateNumber() == u8"晋A12345", "parking record keeps the plate number");
+    expect(record.spotId() == "A001", "parking record keeps the spot id");
+    expect(record.entryTime() == entry, "parking record keeps the entry time");
+    expect(!record.isClosed(), "new parking record is active");
+    expect(record.duration() >= 0s, "new parking record has a non-negative duration");
+    expect(record.fee() == 0.0, "new parking record starts with zero fee");
+    expect(!record.close(entry - 1s), "parking record rejects an earlier exit time");
+    expect(record.close(entry + 90min, 15.0), "parking record can be closed");
+    expect(record.isClosed(), "closed parking record is no longer active");
+    expect(record.duration() == 90min, "parking record calculates duration");
+    expect(record.fee() == 15.0, "parking record keeps the fee");
+    expect(!record.close(entry + 100min), "parking record cannot be closed twice");
+
+    expectThrows<std::invalid_argument>(
+        [] { smartpark::ParkingRecord record("", "A001", smartpark::ParkingRecord::Clock::now()); },
+        "parking record rejects an empty plate number");
+    expectThrows<std::invalid_argument>(
+        [] { smartpark::ParkingRecord record(u8"晋A12345", "", smartpark::ParkingRecord::Clock::now()); },
+        "parking record rejects an empty spot id");
+}
+
 void testDefaultLayout()
 {
     const smartpark::ParkingLayout layout = smartpark::ParkingLayout::defaultLayout();
@@ -85,6 +114,8 @@ void testDefaultLayout()
 
     expect(layout.spots().size() == 60, "default layout contains 60 spots");
     expect(layout.regions().size() == 3, "default layout contains three regions");
+    expect(layout.spots().front().identifier() == "A001", "default layout starts at A001");
+    expect(layout.spots().back().identifier() == "A060", "default layout ends at A060");
     for (const smartpark::ParkingSpot &spot : layout.spots()) {
         identifiers.insert(spot.identifier());
         expect(spot.bounds().width > 0.0 && spot.bounds().height > 0.0,
@@ -104,9 +135,18 @@ void testCustomLayoutAndAutomaticAllocation()
     smartpark::ParkingService service(smartpark::ParkingLayout::fromDescription(description));
     expect(service.spots().size() == 32, "custom layout generates all requested spots");
 
-    const auto first = service.allocate({u8"晋A12345", smartpark::VehicleType::Car});
-    const auto second = service.allocate({u8"晋A88888", smartpark::VehicleType::Electric});
+    const smartpark::ParkingRecord::TimePoint entry =
+        smartpark::ParkingRecord::Clock::from_time_t(1000);
+    const auto first = service.enter({u8"晋A12345", smartpark::VehicleType::Car}, entry);
+    const auto second = service.enter({u8"晋A88888", smartpark::VehicleType::Electric}, entry);
     expect(first.has_value() && second.has_value(), "automatic allocation succeeds");
+    expect(service.remainingSpots() == 30, "parking service reports remaining spots");
+    expect(service.occupiedSpots() == 2, "parking service reports occupied spots");
+    expect(service.records().size() == 2, "parking service creates entry records");
+    expect(service.activeRecord(u8"晋A12345").has_value(), "parking service tracks active records");
+    expect(!service.enter({u8"晋A12345", smartpark::VehicleType::Car}, entry).has_value(),
+           "the same vehicle cannot enter twice");
+    expect(service.remainingSpots() == 30, "rejected duplicate entry does not consume a spot");
     expect(first->spotId != second->spotId, "automatic allocation does not reuse a spot");
     expect(first->entryRoute.points.size() >= 2 && first->exitRoute.points.size() >= 2,
            "allocation includes entry and exit routes");
@@ -120,7 +160,12 @@ void testCustomLayoutAndAutomaticAllocation()
         });
     expect(firstSpot != service.spots().end() && firstSpot->parkedVehicle().has_value(),
            "allocated spot is occupied");
-    expect(service.release(first->spotId), "allocated spot can be released");
+    const auto closedRecord = service.leave(u8"晋A12345", entry + std::chrono::minutes(90));
+    expect(closedRecord.has_value(), "parking service can process vehicle exit");
+    expect(closedRecord->duration() == std::chrono::minutes(90),
+           "closed record contains parking duration");
+    expect(service.remainingSpots() == 31, "exit restores the parking spot");
+    expect(!service.activeRecord(u8"晋A12345").has_value(), "exit closes the active record");
 }
 
 } // namespace
@@ -129,6 +174,7 @@ int main()
 {
     testVehicle();
     testParkingSpotLifecycle();
+    testParkingRecordLifecycle();
     testDefaultLayout();
     testCustomLayoutAndAutomaticAllocation();
 

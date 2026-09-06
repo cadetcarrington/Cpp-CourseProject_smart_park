@@ -3,6 +3,7 @@
 #include "core/service/ParkingService.h"
 
 #include <exception>
+#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -43,6 +44,13 @@ void printAllocation(const smartpark::AllocationResult &result)
     }
 }
 
+void printDuration(std::chrono::seconds duration)
+{
+    const auto hours = std::chrono::duration_cast<std::chrono::hours>(duration);
+    const auto minutes = std::chrono::duration_cast<std::chrono::minutes>(duration - hours);
+    std::cout << hours.count() << "h " << minutes.count() << "m";
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -67,10 +75,12 @@ int main(int argc, char **argv)
             {u8"晋B67890", smartpark::VehicleType::Truck},
         };
 
+        const smartpark::ParkingRecord::TimePoint entryTime =
+            smartpark::ParkingRecord::Clock::from_time_t(1000);
         std::vector<smartpark::AllocationResult> allocations;
         allocations.reserve(vehicles.size());
         for (const smartpark::Vehicle &vehicle : vehicles) {
-            const auto result = service.allocate(vehicle);
+            const auto result = service.enter(vehicle, entryTime);
             if (!result) {
                 throw std::runtime_error("automatic allocation failed");
             }
@@ -79,16 +89,28 @@ int main(int argc, char **argv)
             allocations.push_back(*result);
         }
 
-        std::cout << "\nRelease " << allocations.front().spotId << " and allocate another vehicle.\n";
-        if (!service.release(allocations.front().spotId)) {
-            throw std::runtime_error("release failed");
+        std::cout << "\nRelease " << allocations.front().plateNumber
+                  << " and allocate another vehicle.\n";
+        const auto closedRecord = service.leave(
+            allocations.front().plateNumber, entryTime + std::chrono::minutes(90));
+        if (!closedRecord) {
+            throw std::runtime_error("leave failed");
         }
-        const auto replacement = service.allocate({u8"晋C24680", smartpark::VehicleType::Car});
+        std::cout << "  Closed record: " << closedRecord->plateNumber()
+                  << " | Spot: " << closedRecord->spotId()
+                  << " | Duration: ";
+        printDuration(closedRecord->duration());
+        std::cout << " | Fee: " << closedRecord->fee() << " yuan\n";
+
+        const auto replacement = service.enter({u8"晋C24680", smartpark::VehicleType::Car}, entryTime);
         if (!replacement || replacement->spotId == allocations[1].spotId
             || replacement->spotId == allocations[2].spotId) {
             throw std::runtime_error("replacement allocation failed");
         }
         printAllocation(*replacement);
+        std::cout << "\nRemaining spots: " << service.remainingSpots()
+                  << "/" << service.spots().size()
+                  << " | Records: " << service.records().size() << '\n';
 
         if (layoutPath.empty() && layout.spots().size() != 60) {
             throw std::runtime_error("default layout must contain 60 spots");

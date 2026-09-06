@@ -34,6 +34,7 @@ private:
 
     std::vector<ParkingSpot> spots_;
     std::vector<Rectangle> regions_;
+    std::string spotPrefix_{"A"};
     double siteWidth_;
     double siteHeight_;
     Point entrance_;
