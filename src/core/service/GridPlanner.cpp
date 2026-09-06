@@ -31,11 +31,10 @@ const Direction directions[] = {
     {1, 1}, {1, -1}, {-1, 1}, {-1, -1}
 };
 
-double octileDistance(Point from, Point to, double cellSize)
+double octileDistance(Point from, Point to)
 {
     const double dx = std::abs(to.x - from.x);
     const double dy = std::abs(to.y - from.y);
-    (void)cellSize;
     return std::max(dx, dy) + (std::sqrt(2.0) - 1.0) * std::min(dx, dy);
 }
 
@@ -68,48 +67,125 @@ GridPlanner::GridPlanner(double siteWidth, double siteHeight,
     }
 }
 
-Route GridPlanner::plan(Point from, Point to) const
+OccupancyField GridPlanner::buildOccupancy(const std::vector<ParkingSpot> &spots,
+                                           double radius, double weight) const
 {
-    const int startIndex = nearestFreeCell(from);
-    const int goalIndex = nearestFreeCell(to);
-    if (startIndex < 0 || goalIndex < 0) {
-        return {};
+    OccupancyField field;
+    field.weight = weight;
+    field.occupancy.assign(blocked_.size(), 0);
+    if (radius <= 0.0) {
+        return field;
     }
 
+    const int columnCount = columns();
+    const int rowCount = rows();
+    const int radiusCells = static_cast<int>(std::ceil(radius / cellSize_));
+    for (const ParkingSpot &spot : spots) {
+        if (spot.status() != SpotStatus::Occupied && spot.status() != SpotStatus::Reserved) {
+            continue;
+        }
+        const int originColumn = std::clamp(
+            static_cast<int>(std::floor(spot.accessPoint().x / cellSize_)), 0, columnCount - 1);
+        const int originRow = std::clamp(
+            static_cast<int>(std::floor(spot.accessPoint().y / cellSize_)), 0, rowCount - 1);
+        for (int row = originRow - radiusCells; row <= originRow + radiusCells; ++row) {
+            for (int column = originColumn - radiusCells; column <= originColumn + radiusCells; ++column) {
+                if (row < 0 || row >= rowCount || column < 0 || column >= columnCount) {
+                    continue;
+                }
+                const int index = cellIndex(column, row);
+                if (!isFree(index)) {
+                    continue;
+                }
+                if (distance(cellCenter(column, row), spot.accessPoint()) <= radius) {
+                    ++field.occupancy[static_cast<std::size_t>(index)];
+                }
+            }
+        }
+    }
+    return field;
+}
+
+Route GridPlanner::plan(Point from, Point to, const OccupancyField *occupancy) const
+{
+    const int goalIndex = nearestFreeCell(to);
+    return reconstruct(searchFrom(from, occupancy, goalIndex), to);
+}
+
+std::vector<Route> GridPlanner::planFromToTargets(Point from,
+                                                  const std::vector<Point> &targets,
+                                                  const OccupancyField *occupancy) const
+{
+    const SearchResult search = searchFrom(from, occupancy, -1);
+    std::vector<Route> routes;
+    routes.reserve(targets.size());
+    for (const Point &target : targets) {
+        routes.push_back(reconstruct(search, target));
+    }
+    return routes;
+}
+
+double GridPlanner::occupancyMultiplier(int cellIndex, const OccupancyField *occupancy) const noexcept
+{
+    if (occupancy == nullptr
+        || occupancy->occupancy.size() != blocked_.size()
+        || cellIndex < 0
+        || cellIndex >= static_cast<int>(occupancy->occupancy.size())) {
+        return 1.0;
+    }
+    return 1.0 + occupancy->weight * static_cast<double>(occupancy->occupancy[static_cast<std::size_t>(cellIndex)]);
+}
+
+GridPlanner::SearchResult GridPlanner::searchFrom(
+    Point from, const OccupancyField *occupancy, int goalIndex) const
+{
+    SearchResult result;
+    result.startIndex = nearestFreeCell(from);
     const std::size_t nodeCount = blocked_.size();
+    result.bestCost.assign(nodeCount, std::numeric_limits<double>::infinity());
+    result.parent.assign(nodeCount, -1);
+    result.arrivalDirection.assign(nodeCount, -1);
+    if (result.startIndex < 0 || (goalIndex >= 0 && !isFree(goalIndex))) {
+        return result;
+    }
+
+    const int columnCount = columns();
+    const int rowCount = rows();
     const double turnPenalty = 0.35 * cellSize_;
-    std::vector<double> bestCost(nodeCount, std::numeric_limits<double>::infinity());
-    std::vector<int> parent(nodeCount, -1);
-    std::vector<signed char> arrivalDirection(nodeCount, -1);
+    const bool useHeuristic = goalIndex >= 0;
+    const Point goalPoint = useHeuristic
+        ? cellCenter(goalIndex % columnCount, goalIndex / columnCount)
+        : Point{};
     std::vector<bool> closed(nodeCount, false);
     std::priority_queue<SearchNode, std::vector<SearchNode>, std::greater<SearchNode>> openSet;
 
-    bestCost[startIndex] = 0.0;
-    openSet.push({octileDistance(from, to, cellSize_), startIndex});
+    result.bestCost[static_cast<std::size_t>(result.startIndex)] = 0.0;
+    const Point startPoint = cellCenter(result.startIndex % columnCount, result.startIndex / columnCount);
+    openSet.push({useHeuristic ? octileDistance(startPoint, goalPoint) : 0.0, result.startIndex});
 
     while (!openSet.empty()) {
         const int current = openSet.top().index;
         openSet.pop();
-        if (closed[current]) {
+        if (closed[static_cast<std::size_t>(current)]) {
             continue;
         }
-        closed[current] = true;
-        if (current == goalIndex) {
+        closed[static_cast<std::size_t>(current)] = true;
+        if (useHeuristic && current == goalIndex) {
             break;
         }
 
-        const int currentColumn = current % columns();
-        const int currentRow = current / columns();
+        const int currentColumn = current % columnCount;
+        const int currentRow = current / columnCount;
         const Point currentPoint = cellCenter(currentColumn, currentRow);
 
         for (int direction = 0; direction < 8; ++direction) {
             const int nextColumn = currentColumn + directions[direction].dx;
             const int nextRow = currentRow + directions[direction].dy;
-            if (nextColumn < 0 || nextColumn >= columns() || nextRow < 0 || nextRow >= rows()) {
+            if (nextColumn < 0 || nextColumn >= columnCount || nextRow < 0 || nextRow >= rowCount) {
                 continue;
             }
             const int next = cellIndex(nextColumn, nextRow);
-            if (!isFree(next) || closed[next]) {
+            if (!isFree(next) || closed[static_cast<std::size_t>(next)]) {
                 continue;
             }
             if (direction >= 4) {
@@ -121,36 +197,56 @@ Route GridPlanner::plan(Point from, Point to) const
             }
 
             const Point nextPoint = cellCenter(nextColumn, nextRow);
-            const double stepCost = distance(currentPoint, nextPoint)
-                + (arrivalDirection[current] >= 0 && arrivalDirection[current] != direction
-                       ? turnPenalty : 0.0);
-            const double nextCost = bestCost[current] + stepCost;
-            if (nextCost < bestCost[next]) {
-                bestCost[next] = nextCost;
-                parent[next] = current;
-                arrivalDirection[next] = static_cast<signed char>(direction);
-                openSet.push({nextCost + octileDistance(nextPoint, to, cellSize_), next});
+            const double turnCost =
+                result.arrivalDirection[static_cast<std::size_t>(current)] >= 0
+                    && result.arrivalDirection[static_cast<std::size_t>(current)] != static_cast<signed char>(direction)
+                ? turnPenalty
+                : 0.0;
+            const double stepCost = (distance(currentPoint, nextPoint) + turnCost)
+                * occupancyMultiplier(next, occupancy);
+            const double nextCost = result.bestCost[static_cast<std::size_t>(current)] + stepCost;
+            if (nextCost < result.bestCost[static_cast<std::size_t>(next)]) {
+                result.bestCost[static_cast<std::size_t>(next)] = nextCost;
+                result.parent[static_cast<std::size_t>(next)] = current;
+                result.arrivalDirection[static_cast<std::size_t>(next)] = static_cast<signed char>(direction);
+                const double priority = useHeuristic
+                    ? nextCost + octileDistance(nextPoint, goalPoint)
+                    : nextCost;
+                openSet.push({priority, next});
             }
         }
     }
+    return result;
+}
 
-    if (!std::isfinite(bestCost[goalIndex])) {
+Route GridPlanner::reconstruct(const SearchResult &search, Point to) const
+{
+    const int goalIndex = nearestFreeCell(to);
+    if (search.startIndex < 0 || goalIndex < 0
+        || !std::isfinite(search.bestCost[static_cast<std::size_t>(goalIndex)])) {
         return {};
     }
 
-    std::vector<Point> reversedPoints;
-    for (int index = goalIndex; index >= 0; index = parent[index]) {
-        reversedPoints.push_back(cellCenter(index % columns(), index / columns()));
-        if (index == startIndex) {
+    std::vector<int> cells;
+    for (int index = goalIndex; index >= 0; index = search.parent[static_cast<std::size_t>(index)]) {
+        cells.push_back(index);
+        if (index == search.startIndex) {
             break;
         }
     }
-    if (reversedPoints.empty()) {
+    if (cells.empty() || cells.back() != search.startIndex) {
         return {};
     }
-    std::reverse(reversedPoints.begin(), reversedPoints.end());
+    std::reverse(cells.begin(), cells.end());
+
+    std::vector<Point> reversedPoints;
+    reversedPoints.reserve(cells.size());
+    for (int index : cells) {
+        reversedPoints.push_back(cellCenter(index % columns(), index / columns()));
+    }
 
     Route route;
+    route.cost = search.bestCost[static_cast<std::size_t>(goalIndex)];
     route.points.push_back(reversedPoints.front());
     for (std::size_t index = 1; index + 1 < reversedPoints.size(); ++index) {
         const Point previous = reversedPoints[index - 1];
@@ -168,6 +264,13 @@ Route GridPlanner::plan(Point from, Point to) const
 
     for (std::size_t index = 1; index < reversedPoints.size(); ++index) {
         route.distance += distance(reversedPoints[index - 1], reversedPoints[index]);
+        const signed char previousDirection =
+            search.arrivalDirection[static_cast<std::size_t>(cells[index - 1])];
+        const signed char currentDirection =
+            search.arrivalDirection[static_cast<std::size_t>(cells[index])];
+        if (previousDirection >= 0 && currentDirection >= 0 && previousDirection != currentDirection) {
+            ++route.turnCount;
+        }
     }
     return route;
 }

@@ -23,22 +23,24 @@ public:
     const std::vector<Rectangle> &regions() const noexcept;
     double siteWidth() const noexcept;
     double siteHeight() const noexcept;
-    const Point &entrance() const noexcept;
-    const Point &exit() const noexcept;
+    const std::vector<Point> &entrances() const noexcept;
+    const std::vector<Point> &exits() const noexcept;
+    const Point &entrance() const;
+    const Point &exit() const;
 
 private:
-    ParkingLayout(double siteWidth, double siteHeight, Point entrance, Point exit);
+    explicit ParkingLayout(double siteWidth, double siteHeight);
     void addRegion(const std::string &name, Point origin, int rows, int columns,
                    double spotWidth, double spotLength, double aisleWidth,
-                   AisleSide aisleSide);
+                   AisleSide aisleSide, SpotType type);
 
     std::vector<ParkingSpot> spots_;
     std::vector<Rectangle> regions_;
     std::string spotPrefix_{"A"};
     double siteWidth_;
     double siteHeight_;
-    Point entrance_;
-    Point exit_;
+    std::vector<Point> entrances_;
+    std::vector<Point> exits_;
 };
 
 } // namespace smartpark

@@ -25,10 +25,12 @@ private slots:
     void applyLayout();
     void allocateVehicle();
     void releaseLastVehicle();
+    void updateStrategy();
 
 private:
     void buildUi();
     void refreshScene();
+    smartpark::AllocationStrategy currentStrategy() const;
 
     std::unique_ptr<smartpark::ParkingService> service_;
     std::optional<smartpark::AllocationResult> lastAllocation_;
@@ -37,6 +39,7 @@ private:
     QPlainTextEdit *layoutEditor_{nullptr};
     QLineEdit *plateInput_{nullptr};
     QComboBox *vehicleTypeInput_{nullptr};
+    QComboBox *strategyInput_{nullptr};
     QPushButton *allocateButton_{nullptr};
     QPushButton *releaseButton_{nullptr};
     QLabel *statusLabel_{nullptr};

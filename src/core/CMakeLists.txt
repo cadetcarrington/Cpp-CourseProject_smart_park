@@ -12,6 +12,8 @@ add_library(smartpark_core STATIC
     service/GridPlanner.h
     service/ParkingService.cpp
     service/ParkingService.h
+    service/SpotAllocator.cpp
+    service/SpotAllocator.h
 )
 
 target_compile_features(smartpark_core PUBLIC cxx_std_17)
