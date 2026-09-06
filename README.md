@@ -42,6 +42,29 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 
 尚未接入 TCP 通信、OpenCV、HyperLPR3、多线程、用户端或统计图表。调研来源与明确不做的方案见 `docs/research-sources.md`。
 
+## 当前进度
+
+截至 2026-09-07，项目处于 **SmartPark 0.5**：
+
+- 已完成核心模型、60 车位自动分配、自定义多矩形布局、栅格 A* / Dijkstra 路线、拥堵边权、预留 TTL、CLI 与 Qt GUI。
+- SQLite 持久化已接入 CLI 与 Admin GUI，支持跨重启恢复车位状态、预约和停车记录。
+- 在 `s1` 上验证：CLI 与 Qt 构建通过，`cli-tests` / `qt-tests` 均为 2/2 通过，GUI offscreen 启动正常。
+- CLI 默认持久化可重复运行，连续运行至 60/60 满场后仍稳定输出 `RESULT: PASS`。
+
+尚未完成：`BillingService`、TCP Server、Gate Terminal、OpenCV + HyperLPR3、用户端与统计图表。
+
+## 后续发展路线
+
+按调研结论推进，优先级从高到低：
+
+1. **P0 — BillingService**：费率规则、免费时长、日封顶、离场宽限，独立于 UI 与服务端。
+2. **P0.5 — TCP 协议与服务端**：先写 `docs/tcp-protocol.md`，再用 `QTcpServer` 实现登录、心跳和入场/离场事件。
+3. **P1 — Gate Terminal + Fake LPR + 离线队列**：先以假识别打通出入口，再补齐断线缓存和补报。
+4. **P2 — OpenCV + HyperLPR3 + CCPD 评测**：协议稳定后接入真实车牌识别，并用 CCPD 做可复现评测。
+5. **P3 — 支付、图表、用户端**：在前述链路稳定后再扩展外围能力。
+
+明确不做：EasyPR、纯云端计费、微信小程序、Go 微服务，以及把 LPR 放进 `ParkingService`。
+
 ## 技术栈
 
 - C++17
@@ -81,15 +104,40 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 
 ## 开发里程碑
 
-1. 工程跑起来：完成 CMake、Qt 6、C++17 和主窗口。
-2. 纯 C++ 停车核心：实现停车位、车辆、停车记录和入场/离场流程。
-3. 停车场 GUI：实时展示车位状态、自动分配结果和行驶路线。
-4. 分配器重构：独立选位算法、拥堵边权、预留 TTL、车位类型和多出入口。
-5. SQLite 持久化：核心层已完成，重启后可恢复车位状态与停车记录。
-6. 收费系统：根据停车时长计算费用。
-7. 服务端：以 TCP 建立管理员端与服务端架构。
-8. 出入口终端：手动输入车牌并通过服务端处理业务。
-9. 车牌识别：接入 OpenCV 与 HyperLPR3。
+1. ✅ 工程跑起来：完成 CMake、Qt 6、C++17 和主窗口。
+2. ✅ 纯 C++ 停车核心：实现停车位、车辆、停车记录和入场/离场流程。
+3. ✅ 停车场 GUI：实时展示车位状态、自动分配结果和行驶路线。
+4. ✅ 分配器重构：独立选位算法、拥堵边权、预留 TTL、车位类型和多出入口。
+5. ✅ SQLite 持久化：核心层已完成，CLI/GUI 已接入并支持重启恢复。
+6. ⬜ 收费系统：根据停车时长计算费用。
+7. ⬜ 服务端：以 TCP 建立管理员端与服务端架构。
+8. ⬜ 出入口终端：手动输入车牌并通过服务端处理业务。
+9. ⬜ 车牌识别：接入 OpenCV 与 HyperLPR3。
+
+## 最近工作记录
+
+最近一轮完成“客户端 SQLite 持久化接入”：
+
+- 新增 `Persistence` RAII 封装，统一数据库连接与默认路径。
+- CLI 新增 `--db <路径>` 与 `--reset`；默认演示使用唯一车牌，可重复运行并处理满场状态。
+- Admin GUI 新增 `--db`，布局签名不一致时可重置数据库或安全降级，避免空指针。
+- 修复预约过期未落库、Disabled 状态恢复、active record 唯一性、车位集合校验和毫秒级时间边界。
+- 对应提交：`bf0aa55 feat: connect clients to sqlite persistence`、`6615bc3 docs: add smart parking research sources`。
+
+## 文献调研
+
+调研来源、评分和取舍记录在 `docs/research-sources.md`。当前重点参考：
+
+- [DB4403/T 313 智慧停车业务数据与接口规范](https://amr.sz.gov.cn/attachment/1/1566/1566543/9772236.pdf)：TCP 登录、心跳和事件清单。
+- [PARCS 五层架构与费率引擎](https://parkingpaymentguide.com/payment-systems/how-parking-payment-systems-work/)：费率引擎、离线队列和宽限期。
+- [MDPI SPMS 参考架构](https://www.mdpi.com/2079-8954/13/2/70)：Server / Gate / Admin 分层。
+- [佛山禅城 2026 停车收费新规](https://www.163.com/dy/article/L5OVP5IU05129QAF.html)：15 分钟计费、30 分钟免费和日封顶。
+- [HyperLPR3](https://github.com/szad670401/HyperLPR)：后续车牌识别后端，只放在 Gate，不进入 core。
+- [CCPD](https://github.com/detectRecog/CCPD)：中文车牌识别评测集。
+- [北京 DB11/T 3001 ETC 停车场接口](https://jtw.beijing.gov.cn/xxgk/flfg/jthy/201912/P020191231388015746585.pdf)：Gate 作为 TCP 客户端、请求应答与重传。
+- [深圳公共智慧停车平台数据接入规范](https://jtys.sz.gov.cn/attachment/1/1596/1596572/12076334.pdf)：心跳、NTP 和断线补报。
+
+以上来源用于提炼接口、计费规则和架构边界，不直接复制外部项目代码。
 
 ## 自动分配算法
 
