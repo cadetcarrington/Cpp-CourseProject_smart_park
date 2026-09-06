@@ -17,11 +17,10 @@ std::string toLower(std::string value)
     return value;
 }
 
-std::string spotIdentifier(const std::string &zone, int row, int column)
+std::string spotIdentifier(const std::string &zone, int serialNumber)
 {
     std::ostringstream stream;
-    stream << zone << std::setw(2) << std::setfill('0') << row + 1
-           << std::setw(2) << std::setfill('0') << column + 1;
+    stream << zone << std::setw(3) << std::setfill('0') << serialNumber;
     return stream.str();
 }
 
@@ -166,6 +165,9 @@ void ParkingLayout::addRegion(const std::string &name, Point origin, int rows, i
                               double spotWidth, double spotLength, double aisleWidth,
                               AisleSide aisleSide)
 {
+    if (regions_.empty()) {
+        spotPrefix_ = name;
+    }
     const double bayWidth = spotLength + aisleWidth;
     const double regionWidth = columns * bayWidth;
     const double regionHeight = rows * spotWidth;
@@ -185,7 +187,6 @@ void ParkingLayout::addRegion(const std::string &name, Point origin, int rows, i
 
     for (int row = 0; row < rows; ++row) {
         for (int column = 0; column < columns; ++column) {
-            const double bayOriginX = origin.x + column * bayWidth;
             const double spotX = origin.x + column * bayWidth
                 + (aisleSide == AisleSide::Left ? aisleWidth : 0.0);
             const double spotY = origin.y + row * spotWidth;
@@ -196,7 +197,7 @@ void ParkingLayout::addRegion(const std::string &name, Point origin, int rows, i
                 : bounds.origin.x + bounds.width + laneOffset;
             const Point accessPoint{accessX, bounds.center().y};
             spots_.emplace_back(
-                spotIdentifier(name, row, column),
+                spotIdentifier(spotPrefix_, static_cast<int>(spots_.size()) + 1),
                 ParkingSpot::Geometry{name, row, column, bounds, accessPoint});
         }
     }

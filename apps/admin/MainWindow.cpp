@@ -19,6 +19,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <chrono>
 
 namespace {
 
@@ -188,7 +189,7 @@ void MainWindow::allocateVehicle()
 
     const smartpark::Vehicle vehicle(plate.toStdString(),
                                      vehicleTypeFromIndex(vehicleTypeInput_->currentIndex()));
-    const std::optional<smartpark::AllocationResult> result = service_->allocate(vehicle);
+    const std::optional<smartpark::AllocationResult> result = service_->enter(vehicle);
     if (!result) {
         QMessageBox::warning(this, "无可用车位", "当前停车场已满或没有可达车位。");
         return;
@@ -199,13 +200,14 @@ void MainWindow::allocateVehicle()
     const auto availableCount = static_cast<int>(std::count_if(
         service_->spots().begin(), service_->spots().end(),
         [](const smartpark::ParkingSpot &spot) { return spot.isAvailable(); }));
-    statusLabel_->setText(QString("总车位：%1 / 空闲：%2 | 已分配：%3 | 入口距离：%4m | 出口距离：%5m | 综合评分：%6")
+    statusLabel_->setText(QString("总车位：%1 / 空闲：%2 | 已分配：%3 | 入口距离：%4m | 出口距离：%5m | 综合评分：%6 | 记录：%7")
                               .arg(static_cast<int>(service_->spots().size()))
                               .arg(availableCount)
                               .arg(QString::fromStdString(result->spotId))
                               .arg(result->entryRoute.distance, 0, 'f', 1)
                               .arg(result->exitRoute.distance, 0, 'f', 1)
-                              .arg(result->score, 0, 'f', 1));
+                              .arg(result->score, 0, 'f', 1)
+                              .arg(static_cast<int>(service_->records().size())));
 }
 
 void MainWindow::releaseLastVehicle()
@@ -215,7 +217,16 @@ void MainWindow::releaseLastVehicle()
         return;
     }
 
-    service_->release(lastAllocation_->spotId);
+    const auto closedRecord = service_->leave(lastAllocation_->plateNumber);
+    if (closedRecord) {
+        const auto duration = std::chrono::duration_cast<std::chrono::minutes>(
+            closedRecord->duration());
+        statusLabel_->setText(QString("离场完成：%1 | 车位：%2 | 停车时长：%3分钟 | 总记录：%4")
+                                  .arg(QString::fromStdString(closedRecord->plateNumber()))
+                                  .arg(QString::fromStdString(closedRecord->spotId()))
+                                  .arg(duration.count())
+                                  .arg(static_cast<int>(service_->records().size())));
+    }
     lastAllocation_.reset();
     refreshScene();
 }
