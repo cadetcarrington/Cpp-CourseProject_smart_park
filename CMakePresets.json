@@ -1,0 +1,52 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "cli-debug",
+      "displayName": "SmartPark CLI Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/cli",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SMARTPARK_BUILD_ADMIN": "OFF"
+      }
+    },
+    {
+      "name": "qt-debug",
+      "displayName": "SmartPark Qt Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/qt",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SMARTPARK_BUILD_ADMIN": "ON",
+        "CMAKE_PREFIX_PATH": "$env{CONDA_PREFIX}"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "cli-debug",
+      "configurePreset": "cli-debug"
+    },
+    {
+      "name": "qt-debug",
+      "configurePreset": "qt-debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "cli-tests",
+      "configurePreset": "cli-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "qt-tests",
+      "configurePreset": "qt-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

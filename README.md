@@ -124,18 +124,17 @@ region C 71 40 10 2 1.2 5.5 6 left
 
 ## 终端验证（无需 Qt、Conda 或图形桌面）
 
-在项目根目录执行，需 CMake 3.21+、Ninja 和支持 C++17 的编译器：
+项目使用 CMake Presets 统一管理构建目录。所有构建产物都放在根目录的 `build/` 下，其中 `build/cli` 是终端版本，`build/qt` 是 Qt 版本。在项目根目录执行，需 CMake 3.21+、Ninja 和支持 C++17 的编译器：
 
 ```bash
-cmake -S . -B build-cli -G Ninja \
-  -DSMARTPARK_BUILD_ADMIN=OFF -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-cli --parallel
-ctest --test-dir build-cli --output-on-failure
-./build-cli/apps/cli/smartpark_cli
-./build-cli/apps/cli/smartpark_cli my-layout.txt
+/usr/bin/cmake --preset cli-debug
+/usr/bin/cmake --build --preset cli-debug --parallel
+/usr/bin/ctest --preset cli-tests
+./build/cli/apps/cli/smartpark_cli
+./build/cli/apps/cli/smartpark_cli my-layout.txt
 ```
 
-当前服务器也可以显式使用 `/usr/bin/cmake`、`/usr/bin/ctest`，并在配置时添加 `-DCMAKE_CXX_COMPILER=/usr/bin/g++`，避免当前激活环境影响工具选择。`build-cli` 与 Qt 版本的 `build` 缓存相互独立。
+如果需要全新构建，可先删除 `build/cli` 或整个 `build/` 目录。CLI 与 Qt 的 CMake 缓存分别保存在 `build/cli` 和 `build/qt`，互不影响。
 
 不带参数时使用内置 60 车位布局；带文本文件参数时加载自定义布局。程序自动执行验证，无需输入。它分配 3 辆车、释放 1 辆车并再次自动分配，同时打印车位编号、入口距离、出口距离、附近占用数和综合评分；成功输出 `RESULT: PASS` 并返回 0。
 
@@ -146,6 +145,7 @@ ctest --test-dir build-cli --output-on-failure
 | 文件 | 用途 |
 | --- | --- |
 | `CMakeLists.txt` | 设置 C++17、CTest 和各构建目标；关闭 `SMARTPARK_BUILD_ADMIN` 后不查找 Qt。 |
+| `CMakePresets.json` | 定义 CLI 与 Qt 的标准构建目录、构建参数和测试命令。 |
 | `apps/cli/CMakeLists.txt` | 构建 `smartpark_cli`，链接核心库并注册终端演示测试。 |
 | `apps/cli/main.cpp` | 终端入口，加载默认或自定义布局并演示自动分配。 |
 | `src/core/CMakeLists.txt` | 将模型实现编译为 `smartpark_core` 静态库。 |
@@ -174,18 +174,16 @@ ctest --test-dir build-cli --output-on-failure
 source ~/miniforge3/etc/profile.d/conda.sh
 conda activate smartpark-qt68
 
-cmake -S . -B build -G Ninja \
-  -DCMAKE_BUILD_TYPE=Debug \
-  -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"
-cmake --build build --parallel
-ctest --test-dir build --output-on-failure
-./build/apps/admin/smartpark_admin
+cmake --preset qt-debug
+cmake --build --preset qt-debug --parallel
+ctest --preset qt-tests
+./build/qt/apps/admin/smartpark_admin
 ```
 
 如果当前终端没有图形显示，可以使用 Qt 的 offscreen 平台插件做启动检查：
 
 ```bash
-QT_QPA_PLATFORM=offscreen ./build/apps/admin/smartpark_admin
+QT_QPA_PLATFORM=offscreen ./build/qt/apps/admin/smartpark_admin
 ```
 
 该 Conda 环境用于构建 Linux x86_64 版本。Windows 和 Android 版本后续需要分别使用对应平台的 Qt Kit。
