@@ -40,7 +40,7 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 
 下一步将实现收费服务、TCP 服务端与出入口终端。
 
-尚未接入 TCP 通信、OpenCV、HyperLPR3、多线程、用户端或统计图表。调研来源与明确不做的方案见 `docs/research-sources.md`。
+尚未接入 TCP 通信、真实 LPR、多线程、用户端或统计图表。调研来源与明确不做的方案见 `docs/research-sources.md`。
 
 ## 当前进度
 
@@ -51,7 +51,7 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 - 在 `s1` 上验证：CLI 与 Qt 构建通过，`cli-tests` / `qt-tests` 均为 2/2 通过，GUI offscreen 启动正常。
 - CLI 默认持久化可重复运行，连续运行至 60/60 满场后仍稳定输出 `RESULT: PASS`。
 
-尚未完成：`BillingService`、TCP Server、Gate Terminal、OpenCV + HyperLPR3、用户端与统计图表。
+尚未完成：`BillingService`、TCP Server、Gate Terminal、真实 LPR、用户端与统计图表。
 
 ## 后续发展路线
 
@@ -60,7 +60,7 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 1. **P0 — BillingService**：费率规则、免费时长、日封顶、离场宽限，独立于 UI 与服务端。
 2. **P0.5 — TCP 协议与服务端**：先写 `docs/tcp-protocol.md`，再用 `QTcpServer` 实现登录、心跳和入场/离场事件。
 3. **P1 — Gate Terminal + Fake LPR + 离线队列**：先以假识别打通出入口，再补齐断线缓存和补报。
-4. **P2 — OpenCV + HyperLPR3 + CCPD 评测**：协议稳定后接入真实车牌识别，并用 CCPD 做可复现评测。
+4. **P2 — 双路线真实 LPR**：先接入 HyperLPR3 作为可运行基线，再训练 `YOLO11m + PP-OCRv5` 中国车牌专用模型；使用 CCPD 与 SmartPark 场景数据做统一评测。
 5. **P3 — 支付、图表、用户端**：在前述链路稳定后再扩展外围能力。
 
 明确不做：EasyPR、纯云端计费、微信小程序、Go 微服务，以及把 LPR 放进 `ParkingService`。
@@ -72,7 +72,10 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 - CMake
 - SQLite 与 Qt SQL
 - QTcpServer 与 QTcpSocket（后续）
-- OpenCV 4 与 HyperLPR3（后续）
+- OpenCV 4
+- HyperLPR3（LPR 基线）
+- YOLO11m + PP-OCRv5（中国车牌专用训练路线）
+- ONNX / ONNX Runtime（自训练模型的 C++ 部署目标）
 - QThread、std::thread 与 STL
 - Qt Charts（后期）
 
@@ -93,7 +96,9 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 │   │   └── service/ # GridPlanner、SpotAllocator、ParkingService
 │   ├── database/    # 数据库连接与仓储层
 │   ├── network/     # TCP 协议与通信实现
-│   └── lpr/         # 车牌识别集成
+│   └── lpr/         # 车牌识别统一接口及两种后端实现
+├── models/          # 后续：ONNX / HyperLPR 模型资源；大权重不直接提交 Git
+├── training/        # 后续：检测、识别、数据转换与评测脚本
 ├── resources/
 │   ├── icons/       # 图标资源
 │   ├── styles/      # Qt 样式表
@@ -112,7 +117,7 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 6. ⬜ 收费系统：根据停车时长计算费用。
 7. ⬜ 服务端：以 TCP 建立管理员端与服务端架构。
 8. ⬜ 出入口终端：手动输入车牌并通过服务端处理业务。
-9. ⬜ 车牌识别：接入 OpenCV 与 HyperLPR3。
+9. ⬜ 车牌识别：实现 HyperLPR3 基线，并完成 YOLO11m + PP-OCRv5 中国车牌专用模型训练、评测与 C++ 部署。
 
 ## 最近工作记录
 
@@ -132,12 +137,375 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 - [PARCS 五层架构与费率引擎](https://parkingpaymentguide.com/payment-systems/how-parking-payment-systems-work/)：费率引擎、离线队列和宽限期。
 - [MDPI SPMS 参考架构](https://www.mdpi.com/2079-8954/13/2/70)：Server / Gate / Admin 分层。
 - [佛山禅城 2026 停车收费新规](https://www.163.com/dy/article/L5OVP5IU05129QAF.html)：15 分钟计费、30 分钟免费和日封顶。
-- [HyperLPR3](https://github.com/szad670401/HyperLPR)：后续车牌识别后端，只放在 Gate，不进入 core。
-- [CCPD](https://github.com/detectRecog/CCPD)：中文车牌识别评测集。
+- [HyperLPR3](https://github.com/szad670401/HyperLPR)：中文车牌识别基线，只放在 Gate，不进入 core。
+- [CCPD](https://github.com/detectRecog/CCPD)：中国城市停车场车牌数据集，作为检测、识别与统一评测的核心数据来源。
 - [北京 DB11/T 3001 ETC 停车场接口](https://jtw.beijing.gov.cn/xxgk/flfg/jthy/201912/P020191231388015746585.pdf)：Gate 作为 TCP 客户端、请求应答与重传。
 - [深圳公共智慧停车平台数据接入规范](https://jtys.sz.gov.cn/attachment/1/1596/1596572/12076334.pdf)：心跳、NTP 和断线补报。
 
 以上来源用于提炼接口、计费规则和架构边界，不直接复制外部项目代码。
+
+## 车牌识别（LPR）方案
+
+SmartPark 的 LPR 只部署在 `Gate Terminal`，不进入 `ParkingService`。Gate 从摄像头或测试图片获取画面，完成车牌识别后，仅把标准化后的车牌号、置信度、时间戳等结构化结果发送给 SmartPark Server。
+
+为了兼顾课程项目的可实现性和模型训练研究价值，项目保留两条路线：
+
+- **路线 A：HyperLPR3** —— 快速建立稳定、可运行的中文车牌识别基线。
+- **路线 B：YOLO11m + PP-OCRv5** —— 项目的主要训练路线，针对中国停车场车牌进行检测和字符识别微调。
+
+### 路线 A：HyperLPR3 基线
+
+```text
+Camera / Image
+      |
+      v
+    OpenCV
+      |
+      v
+  HyperLPR3
+      |
+      v
+ Plate Result
+      |
+      v
+Gate Terminal -> SmartPark Server
+```
+
+该路线主要承担以下作用：
+
+- 尽快打通真实摄像头到 Gate、TCP Server、停车业务的完整链路。
+- 提供中国车牌识别的 baseline，避免自训练模型尚未完成时阻塞系统开发。
+- 与自训练路线在完全相同的测试集上比较整牌准确率、困难场景准确率和推理延迟。
+- 保持 LPR 与停车核心解耦，后续可以无侵入切换识别引擎。
+
+HyperLPR3 对常见中国蓝牌、黄牌、新能源车牌等已有专门支持，并提供 C/C++ 推理接口，因此适合用作 Gate 端基线。
+
+### 路线 B：YOLO11m + PP-OCRv5 中国车牌专用模型
+
+最终主路线采用“检测 + 序列识别”的两阶段结构：
+
+```text
+Camera / Image
+      |
+      v
+    OpenCV
+      |
+      v
+YOLO11m Plate Detector
+  CCPD Fine-tuning
+      |
+      v
+ Bounding Box
+      |
+      v
+Crop / Perspective Rectification
+      |
+      v
+PP-OCRv5 Server Recognizer
+Chinese Plate Fine-tuning
+      |
+      v
+ PlateValidator
+      |
+      v
+   晋A12345
+      |
+      v
+Gate Terminal -> SmartPark Server
+```
+
+#### 车牌检测模型
+
+初始权重：
+
+```text
+yolo11m.pt
+```
+
+选择 `YOLO11m` 的原因：
+
+- 属于中量级检测模型，复杂度明显高于 `n/s`，又没有 `l/x` 的部署成本。
+- 车牌通常只占 1080p 入口画面中的较小区域，中量模型在困难、小目标场景中有更大的精度空间。
+- 训练生态成熟，便于从 PyTorch 导出 ONNX，并在 C++ Gate 中部署。
+- 检测阶段只设置一个类别：`license_plate`，不让 YOLO 承担中文字符分类。
+
+建议首轮训练配置以 `imgsz=960` 为起点，并额外对 `640 / 960 / 1280` 做分辨率对比实验。
+
+最终检测权重命名建议：
+
+```text
+smartpark_plate_yolo11m_best.pt
+smartpark_plate_yolo11m.onnx
+```
+
+#### 字符识别模型
+
+初始模型采用：
+
+```text
+PP-OCRv5_server_rec
+```
+
+检测得到车牌区域后，先完成裁剪和必要的透视矫正，再由 OCR 直接输出完整字符序列。项目不采用“第二个 YOLO 逐字符检测”的方案，避免字符漏检、字符排序、粘连字符和新能源 8 位车牌带来的额外复杂度。
+
+OCR 将使用中国车牌专用字典缩小识别空间，核心字符包括：
+
+```text
+省级简称：京 沪 津 渝 冀 豫 云 辽 黑 湘 皖 鲁 新 苏 浙 赣 鄂 桂 甘 晋 蒙 陕 吉 闽 贵 粤 青 藏 川 宁 琼
+数字：0-9
+字母：A-Z
+按需求扩展：警 学 港 澳 使 领 挂 等特殊字符
+```
+
+最终识别权重命名建议：
+
+```text
+smartpark_plate_rec.onnx
+plate_dict.txt
+```
+
+### 两条路线对比
+
+| 项目 | 路线 A：HyperLPR3 | 路线 B：YOLO11m + PP-OCRv5 |
+| --- | --- | --- |
+| 项目定位 | 可运行 baseline / 保底方案 | 最终主路线 / 训练研究方案 |
+| 中国车牌针对性 | 已针对中国车牌设计 | 使用中国车牌数据进一步专门微调 |
+| 是否需要自行训练 | 否 | 是 |
+| 检测 | 框架内部完成 | YOLO11m 独立检测 |
+| 字符识别 | 框架内部完成 | PP-OCRv5 序列识别 |
+| 模型可控性 | 中 | 高，可控制训练集、增强、字典与阈值 |
+| 训练难度 | 低 | 中高 |
+| C++ 集成难度 | 低到中 | 中，计划统一导出 ONNX |
+| 可解释/可做实验内容 | 中 | 高，可进行检测、OCR、分辨率、数据集消融实验 |
+| 对 SmartPark 的价值 | 快速打通 Gate 实机链路 | 形成项目自身的中国车牌识别能力 |
+
+最终不把两条路线设计成互斥方案，而是通过统一接口并存：
+
+```text
+ILicensePlateRecognizer
+          |
+     +----+----+
+     |         |
+     v         v
+HyperLPR3   SmartParkLPR
+ Baseline    YOLO11m
+                +
+             PP-OCRv5
+```
+
+这样可以在相同 Gate 输入与相同测试集上直接切换识别引擎并完成公平对比。
+
+### 数据集方案
+
+训练和评测以中国停车场场景为核心，不使用只包含欧美车牌的数据作为主训练集。
+
+#### 1. CCPD2019
+
+核心数据集使用 [CCPD — Chinese City Parking Dataset](https://github.com/detectRecog/CCPD)。该数据集来自中国城市停车场场景，并包含大量带车牌位置和车牌字符标注的图片，非常适合本项目。
+
+计划使用的主要子集包括：
+
+| 子集 | 用途 |
+| --- | --- |
+| `CCPD-Base` | 主训练集和基础评测 |
+| `CCPD-DB` | 不同亮度、曝光场景 |
+| `CCPD-Blur` | 模糊、运动模糊场景 |
+| `CCPD-Rotate` | 车牌旋转场景 |
+| `CCPD-Tilt` | 倾斜和透视形变场景 |
+| `CCPD-FN` | 困难检测场景 |
+| `CCPD-Challenge` | 综合困难场景评测 |
+
+CCPD 文件名中的标注信息可以转换为：
+
+- YOLO 所需的车牌检测框标签；
+- OCR 所需的车牌裁剪图与完整字符序列标签。
+
+因此同一份数据能够分别支持 Detector 和 Recognizer 的训练。
+
+#### 2. CCPD2020 Green
+
+新能源车牌使用 `CCPD2020 / CCPD-Green` 补充训练和独立评测，重点解决中国新能源 8 位绿色车牌。
+
+目标至少覆盖：
+
+```text
+普通蓝牌：晋A12345
+新能源牌：晋AD12345
+```
+
+新能源数据不能只混入总测试集，还应保留单独的 Green 指标，以避免整体准确率掩盖新能源车牌效果。
+
+#### 3. 黄牌与特殊车牌扩展数据
+
+如果后期基础模型已经稳定，可进一步加入包含黄牌以及更多车牌类型的公开数据，或选择合适的 `CCPD-Plus` 类扩展数据作为补充。
+
+这部分作为增强项，不阻塞第一版 LPR：
+
+```text
+第一阶段：CCPD2019 + CCPD Green
+第二阶段：黄牌 / 特殊牌照扩展
+```
+
+#### 4. SmartPark 自建停车场场景集
+
+公共数据负责获得通用中国车牌能力，但最终微调应加入少量与实际 Gate 摄像头分布一致的数据。
+
+建议后期采集或合规制作约 `2,000 ~ 5,000` 张 SmartPark 场景图片，覆盖：
+
+- 入口与出口不同摄像机视角；
+- 白天、夜间、逆光和车灯干扰；
+- 雨天、反光和轻度污损；
+- 不同车辆距离和不同车牌占画面比例；
+- 水平、倾斜和透视角度；
+- 蓝牌与新能源牌。
+
+自建数据不作为公开车牌隐私数据直接提交 GitHub；仓库只保存数据格式说明、脱敏示例和训练脚本。
+
+### 数据处理与目录规划
+
+训练代码和 C++ 应用代码分离。Python 可以用于模型训练和数据转换，但最终 Gate 不依赖 Python 运行环境。
+
+计划目录：
+
+```text
+training/
+├── detector/
+│   ├── prepare_ccpd.py
+│   ├── ccpd.yaml
+│   └── train.py
+├── recognizer/
+│   ├── prepare_recognition.py
+│   ├── plate_dict.txt
+│   └── configs/
+└── evaluation/
+    ├── evaluate_detector.py
+    └── evaluate_lpr.py
+
+models/
+├── detector/
+│   ├── smartpark_plate_yolo11m.onnx
+│   └── metadata.json
+└── recognizer/
+    ├── smartpark_plate_rec.onnx
+    └── plate_dict.txt
+```
+
+其中 Detector 数据转换为典型 YOLO 结构：
+
+```text
+datasets/ccpd_yolo/
+├── images/
+│   ├── train/
+│   ├── val/
+│   └── test/
+├── labels/
+│   ├── train/
+│   ├── val/
+│   └── test/
+└── ccpd.yaml
+```
+
+Recognizer 将车牌区域裁剪出来并生成“图片路径 + 完整车牌字符串”的标签：
+
+```text
+train/plate_000001.jpg    晋A12345
+train/plate_000002.jpg    京B88888
+train/plate_000003.jpg    粤AD12345
+```
+
+### C++ 部署方案
+
+自训练模型计划统一导出 ONNX：
+
+```text
+Training
+PyTorch / Paddle
+      |
+      v
+     ONNX
+      |
+      v
+OpenCV + ONNX Runtime
+      |
+      v
+C++ Qt Gate Terminal
+```
+
+Gate 只对上层暴露稳定的识别结果结构，不让业务层感知 YOLO、OCR 或 HyperLPR 的实现细节。
+
+建议接口：
+
+```cpp
+struct PlateRecognitionResult {
+    std::string plateNumber;
+    float detectionConfidence;
+    float recognitionConfidence;
+    cv::Rect boundingBox;
+};
+
+class ILicensePlateRecognizer {
+public:
+    virtual ~ILicensePlateRecognizer() = default;
+
+    virtual std::optional<PlateRecognitionResult>
+    recognize(const cv::Mat& frame) = 0;
+};
+```
+
+后续分别实现：
+
+```text
+HyperLPRRecognizer
+SmartParkLprRecognizer
+```
+
+### 车牌规则后处理
+
+OCR 结果后增加独立的 `PlateValidator`，用于格式校验、标准化和低置信度拒绝，但不允许用规则“伪造”模型未识别出的字符。
+
+主要校验包括：
+
+- 第一位是否为合法省级简称；
+- 第二位是否符合车牌字母规则；
+- 普通车牌与新能源车牌长度是否合法；
+- 是否包含不允许出现的字符；
+- OCR 置信度是否低于 Gate 的人工确认阈值。
+
+低置信度时 Gate 应进入人工确认流程，而不是自动放行。
+
+### LPR 评测设计
+
+两条路线必须在相同测试划分上比较，至少记录：
+
+| 指标 | 说明 |
+| --- | --- |
+| Detection Precision / Recall | 车牌检测精确率和召回率 |
+| `mAP@0.5` / `mAP@0.5:0.95` | Detector 检测质量 |
+| Character Accuracy | 单字符识别准确率 |
+| Full Plate Accuracy | 整块车牌完全正确的比例，作为核心业务指标 |
+| Green Plate Accuracy | 新能源车牌整牌准确率 |
+| Blur / Tilt / Challenge Accuracy | 困难子集整牌准确率 |
+| End-to-End Latency | 从输入帧到最终车牌字符串的耗时 |
+| Model Size / Memory | Gate 部署资源占用 |
+
+最终课程报告计划至少比较三个实验组：
+
+```text
+A. HyperLPR3
+
+B. YOLO11m + 原始 PP-OCRv5
+
+C. SmartPark LPR
+   YOLO11m CCPD fine-tune
+   + PP-OCRv5 中国车牌 fine-tune
+   + 专用字符字典
+   + SmartPark 场景数据
+   + PlateValidator
+```
+
+其中 C 为最终模型。通过 B → C 的变化可以量化“中国车牌专用微调”带来的收益，而 A 则提供成熟专用框架的工程基线。
+
+> 注意：训练数据、预训练模型和第三方框架均应遵循各自许可证与数据使用要求。特别是自建真实车牌数据应考虑隐私与脱敏；模型权重如体积较大，优先使用 Release、Git LFS 或独立下载说明，不直接放入普通 Git 历史。
 
 ## 自动分配算法
 
