@@ -23,3 +23,6 @@ Makefile
 # Operating system files
 .DS_Store
 Thumbs.db
+
+# Machine learning assets and training outputs
+/model/

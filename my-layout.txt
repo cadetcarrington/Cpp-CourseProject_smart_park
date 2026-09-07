@@ -1,0 +1,13 @@
+# SmartPark 60 车位示例布局
+# 格式：site 宽 高
+site 100 60
+
+# 入口和出口可以写多个，当前示例各一个
+entrance 0 30
+exit 100 30
+
+# region 名称 x y 行数 列数 车位宽 车位长 通道宽 通道位置 [类型]
+# 三个分区，每个分区 20 个车位，共 60 个车位
+region A 5 8 10 2 1.2 5.5 6 left normal
+region B 38 24 10 2 1.4 6.0 6 right charging
+region C 71 40 10 2 1.2 5.5 6 left accessible

@@ -9,6 +9,8 @@ add_library(smartpark_core STATIC
     model/Vehicle.cpp
     model/Vehicle.h
     util/TimeUtil.h
+    service/Billing.cpp
+    service/Billing.h
     service/GridPlanner.cpp
     service/GridPlanner.h
     service/ParkingService.cpp

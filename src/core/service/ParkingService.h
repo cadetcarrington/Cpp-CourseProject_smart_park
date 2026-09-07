@@ -1,21 +1,17 @@
 #pragma once
-
 #include "core/model/ParkingLayout.h"
 #include "core/model/ParkingRecord.h"
 #include "core/model/Vehicle.h"
 #include "core/persistence/ParkingRepository.h"
 #include "core/service/GridPlanner.h"
 #include "core/service/SpotAllocator.h"
-
+#include "core/service/Billing.h"
 #include <chrono>
 #include <optional>
 #include <string>
 #include <vector>
-
-namespace smartpark {
-
-struct AllocationResult
-{
+namespace smartpark{
+struct AllocationResult{
     std::string plateNumber;
     std::string spotId;
     Route entryRoute;
@@ -27,21 +23,19 @@ struct AllocationResult
     std::size_t exitIndex{0};
     AllocationStrategy strategy{AllocationStrategy::WeightedCost};
 };
-
-class ParkingService
-{
+class ParkingService{
 public:
     explicit ParkingService(ParkingLayout layout,
                             AllocationStrategy strategy = AllocationStrategy::WeightedCost,
-                            ParkingRepository *repository = nullptr);
-
+                            ParkingRepository *repository = nullptr,
+                            BillingRule billingRule = BillingRule{});
     const ParkingLayout &layout() const noexcept;
     const std::vector<ParkingSpot> &spots() const noexcept;
+    const BillingService &billing() const noexcept;
     AllocationStrategy strategy() const noexcept;
     void setStrategy(AllocationStrategy strategy) noexcept;
     void setWeights(AllocationWeights weights) noexcept;
     void expireReservations(ParkingRecord::TimePoint now);
-
     std::optional<AllocationResult> reserve(
         const Vehicle &vehicle,
         ParkingRecord::TimePoint now,
@@ -60,7 +54,6 @@ public:
     int reservedSpots() const noexcept;
     const std::vector<ParkingRecord> &records() const noexcept;
     std::optional<ParkingRecord> activeRecord(const std::string &plateNumber) const;
-
 private:
     AllocationResult toResult(const AllocationProposal &proposal) const;
     void restore(ParkingRepository &repository);
@@ -68,13 +61,12 @@ private:
     const ParkingSpot *findReservedSpot(const std::string &plateNumber) const;
     ParkingSpot *findReservedSpot(const std::string &plateNumber);
     void ensureReachable() const;
-
     ParkingLayout layout_;
     std::vector<ParkingSpot> spots_;
     GridPlanner planner_;
     SpotAllocator allocator_;
     std::vector<ParkingRecord> records_;
     ParkingRepository *repository_{nullptr};
+    BillingService billing_;
 };
-
 } // namespace smartpark

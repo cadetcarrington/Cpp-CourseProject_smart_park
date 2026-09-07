@@ -1,16 +1,12 @@
 #include <QApplication>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
-
 #include "MainWindow.h"
 #include "core/persistence/Persistence.h"
-
-int main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]){
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("SmartPark Admin"));
     QApplication::setOrganizationName(QStringLiteral("SmartPark"));
-
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("SmartPark 管理员端"));
     parser.addHelpOption();
@@ -20,13 +16,10 @@ int main(int argc, char *argv[])
         QStringLiteral("path"));
     parser.addOption(databaseOption);
     parser.process(app);
-
     const QString databasePath = parser.isSet(databaseOption)
         ? parser.value(databaseOption)
         : smartpark::Persistence::defaultDatabasePath();
-
     MainWindow window(databasePath);
     window.show();
-
     return app.exec();
 }
