@@ -1,80 +1,61 @@
 #include "core/model/ParkingLayout.h"
-
 #include <algorithm>
 #include <cctype>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
-
-namespace smartpark {
-namespace {
-
-std::string toLower(std::string value)
-{
+namespace smartpark{
+namespace{
+std::string toLower(std::string value){
     std::transform(value.begin(), value.end(), value.begin(),
                    [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
     return value;
 }
-
-std::string spotIdentifier(const std::string &zone, int serialNumber)
-{
+std::string spotIdentifier(const std::string &zone, int serialNumber){
     std::ostringstream stream;
     stream << zone << std::setw(3) << std::setfill('0') << serialNumber;
     return stream.str();
 }
-
-double readPositiveDouble(std::istringstream &stream, const std::string &field)
-{
+double readPositiveDouble(std::istringstream &stream, const std::string &field){
     double value = 0.0;
-    if (!(stream >> value) || value <= 0.0) {
+    if (!(stream >> value) || value <= 0.0){
         throw std::invalid_argument(field + " must be positive");
     }
     return value;
 }
-
-double readNonNegativeDouble(std::istringstream &stream, const std::string &field)
-{
+double readNonNegativeDouble(std::istringstream &stream, const std::string &field){
     double value = 0.0;
-    if (!(stream >> value) || value < 0.0) {
+    if (!(stream >> value) || value < 0.0){
         throw std::invalid_argument(field + " cannot be negative");
     }
     return value;
 }
-
-int readPositiveInt(std::istringstream &stream, const std::string &field)
-{
+int readPositiveInt(std::istringstream &stream, const std::string &field){
     int value = 0;
-    if (!(stream >> value) || value <= 0) {
+    if (!(stream >> value) || value <= 0){
         throw std::invalid_argument(field + " must be positive");
     }
     return value;
 }
-
-SpotType parseSpotTypeToken(std::string token)
-{
+SpotType parseSpotTypeToken(std::string token){
     token = toLower(std::move(token));
     const std::string prefix = "type=";
-    if (token.compare(0, prefix.size(), prefix) == 0) {
+    if (token.compare(0, prefix.size(), prefix) == 0){
         token = token.substr(prefix.size());
     }
     const auto type = spotTypeFromString(token);
-    if (!type) {
+    if (!type){
         throw std::invalid_argument("unknown spot type: " + token);
     }
     return *type;
 }
-
 } // namespace
-
 ParkingLayout::ParkingLayout(double siteWidth, double siteHeight)
     : siteWidth_(siteWidth)
-    , siteHeight_(siteHeight)
-{
+    , siteHeight_(siteHeight){
 }
-
-ParkingLayout ParkingLayout::defaultLayout()
-{
+ParkingLayout ParkingLayout::defaultLayout(){
     return fromDescription(
         "site 100 60\n"
         "entrance 0 30\n"
@@ -83,58 +64,51 @@ ParkingLayout ParkingLayout::defaultLayout()
         "region B 38 24 10 2 1.4 6.0 6 right\n"
         "region C 71 40 10 2 1.2 5.5 6 left\n");
 }
-
-ParkingLayout ParkingLayout::fromDescription(const std::string &description)
-{
+ParkingLayout ParkingLayout::fromDescription(const std::string &description){
     std::istringstream input(description);
     std::string line;
     bool hasSite = false;
     ParkingLayout layout(1.0, 1.0);
-
-    while (std::getline(input, line)) {
+    while (std::getline(input, line)){
         std::istringstream stream(line);
         std::string command;
-        if (!(stream >> command) || command.front() == '#') {
+        if (!(stream >> command) || command.front() == '#'){
             continue;
         }
-
         command = toLower(command);
-        if (command == "site") {
-            if (hasSite) {
+        if (command == "site"){
+            if (hasSite){
                 throw std::invalid_argument("duplicate site line");
             }
             const double width = readPositiveDouble(stream, "site width");
             const double height = readPositiveDouble(stream, "site height");
-            if (width < 10.0 || height < 10.0) {
+            if (width < 10.0 || height < 10.0){
                 throw std::invalid_argument("site must be at least 10m x 10m");
             }
             layout = ParkingLayout(width, height);
             hasSite = true;
             continue;
         }
-
-        if (!hasSite) {
+        if (!hasSite){
             throw std::invalid_argument("the first layout command must be site");
         }
-
-        if (command == "entrance" || command == "exit") {
+        if (command == "entrance" || command == "exit"){
             const double x = readNonNegativeDouble(stream, command + " x");
             const double y = readNonNegativeDouble(stream, command + " y");
             const Point point{x, y};
-            if (!Rectangle{{0.0, 0.0}, layout.siteWidth_, layout.siteHeight_}.contains(point)) {
+            if (!Rectangle{{0.0, 0.0}, layout.siteWidth_, layout.siteHeight_}.contains(point)){
                 throw std::invalid_argument(command + " must be inside the site");
             }
-            if (command == "entrance") {
+            if (command == "entrance"){
                 layout.entrances_.push_back(point);
-            } else {
+            } else{
                 layout.exits_.push_back(point);
             }
             continue;
         }
-
-        if (command == "region") {
+        if (command == "region"){
             std::string name;
-            if (!(stream >> name) || name.empty()) {
+            if (!(stream >> name) || name.empty()){
                 throw std::invalid_argument("region name cannot be empty");
             }
             const double x = readNonNegativeDouble(stream, "region x");
@@ -145,19 +119,19 @@ ParkingLayout ParkingLayout::fromDescription(const std::string &description)
             const double spotLength = readPositiveDouble(stream, "spot length");
             const double aisleWidth = readPositiveDouble(stream, "aisle width");
             std::string sideText;
-            if (!(stream >> sideText)) {
+            if (!(stream >> sideText)){
                 throw std::invalid_argument("aisle side is required");
             }
             const std::string side = toLower(sideText);
-            if (side != "left" && side != "right") {
+            if (side != "left" && side != "right"){
                 throw std::invalid_argument("aisle side must be left or right");
             }
             SpotType type = SpotType::Normal;
             std::string typeToken;
-            if (stream >> typeToken) {
+            if (stream >> typeToken){
                 type = parseSpotTypeToken(typeToken);
                 std::string extra;
-                if (stream >> extra) {
+                if (stream >> extra){
                     throw std::invalid_argument("unexpected region token: " + extra);
                 }
             }
@@ -166,45 +140,39 @@ ParkingLayout ParkingLayout::fromDescription(const std::string &description)
                              type);
             continue;
         }
-
         throw std::invalid_argument("unknown layout command: " + command);
     }
-
-    if (!hasSite || layout.entrances_.empty() || layout.exits_.empty()) {
+    if (!hasSite || layout.entrances_.empty() || layout.exits_.empty()){
         throw std::invalid_argument("layout requires site, entrance, and exit lines");
     }
-    if (layout.spots_.empty()) {
+    if (layout.spots_.empty()){
         throw std::invalid_argument("layout requires at least one region");
     }
     return layout;
 }
-
 void ParkingLayout::addRegion(const std::string &name, Point origin, int rows, int columns,
                               double spotWidth, double spotLength, double aisleWidth,
-                              AisleSide aisleSide, SpotType type)
-{
-    if (regions_.empty()) {
+                              AisleSide aisleSide, SpotType type){
+    if (regions_.empty()){
         spotPrefix_ = name;
     }
     const double bayWidth = spotLength + aisleWidth;
     const double regionWidth = columns * bayWidth;
     const double regionHeight = rows * spotWidth;
     const Rectangle region{origin, regionWidth, regionHeight};
-
     if (origin.x < 0.0 || origin.y < 0.0
-        || origin.x + regionWidth > siteWidth_ || origin.y + regionHeight > siteHeight_) {
+        || origin.x + regionWidth > siteWidth_ || origin.y + regionHeight > siteHeight_){
         throw std::invalid_argument("region " + name + " is outside the site");
     }
     if (std::any_of(regions_.begin(), regions_.end(),
-                    [&region](const Rectangle &other) { return rectanglesOverlap(region, other); })) {
+                    [&region](const Rectangle &other) { return rectanglesOverlap(region, other); })){
         throw std::invalid_argument("region " + name + " overlaps another region");
     }
-    if (aisleWidth < 2.5) {
+    if (aisleWidth < 2.5){
         throw std::invalid_argument("region " + name + " aisle must be at least 2.5m wide");
     }
-
-    for (int row = 0; row < rows; ++row) {
-        for (int column = 0; column < columns; ++column) {
+    for (int row = 0; row < rows; ++row){
+        for (int column = 0; column < columns; ++column){
             const double spotX = origin.x + column * bayWidth
                 + (aisleSide == AisleSide::Left ? aisleWidth : 0.0);
             const double spotY = origin.y + row * spotWidth;
@@ -221,51 +189,34 @@ void ParkingLayout::addRegion(const std::string &name, Point origin, int rows, i
     }
     regions_.push_back(region);
 }
-
-const std::vector<ParkingSpot> &ParkingLayout::spots() const noexcept
-{
+const std::vector<ParkingSpot> &ParkingLayout::spots() const noexcept{
     return spots_;
 }
-
-const std::vector<Rectangle> &ParkingLayout::regions() const noexcept
-{
+const std::vector<Rectangle> &ParkingLayout::regions() const noexcept{
     return regions_;
 }
-
-double ParkingLayout::siteWidth() const noexcept
-{
+double ParkingLayout::siteWidth() const noexcept{
     return siteWidth_;
 }
-
-double ParkingLayout::siteHeight() const noexcept
-{
+double ParkingLayout::siteHeight() const noexcept{
     return siteHeight_;
 }
-
-const std::vector<Point> &ParkingLayout::entrances() const noexcept
-{
+const std::vector<Point> &ParkingLayout::entrances() const noexcept{
     return entrances_;
 }
-
-const std::vector<Point> &ParkingLayout::exits() const noexcept
-{
+const std::vector<Point> &ParkingLayout::exits() const noexcept{
     return exits_;
 }
-
-const Point &ParkingLayout::entrance() const
-{
-    if (entrances_.empty()) {
+const Point &ParkingLayout::entrance() const{
+    if (entrances_.empty()){
         throw std::logic_error("layout has no entrance");
     }
     return entrances_.front();
 }
-
-const Point &ParkingLayout::exit() const
-{
-    if (exits_.empty()) {
+const Point &ParkingLayout::exit() const{
+    if (exits_.empty()){
         throw std::logic_error("layout has no exit");
     }
     return exits_.front();
 }
-
 } // namespace smartpark

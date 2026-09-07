@@ -6,11 +6,10 @@
 #include "core/util/TimeUtil.h"
 #include "core/model/Vehicle.h"
 #include "core/service/ParkingService.h"
-
+#include "core/service/Billing.h"
 #include <QCoreApplication>
 #include <QTemporaryDir>
 #include <QSqlQuery>
-
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -20,66 +19,51 @@
 #include <memory>
 #include <set>
 #include <string>
-
-namespace {
-
+namespace{
 int failureCount = 0;
-
-void expect(bool condition, const std::string &message)
-{
-    if (!condition) {
+void expect(bool condition, const std::string &message){
+    if (!condition){
         std::cerr << "FAILED: " << message << '\n';
         ++failureCount;
     }
 }
-
 template<typename Exception, typename Function>
-void expectThrows(Function function, const std::string &message)
-{
-    try {
+void expectThrows(Function function, const std::string &message){
+    try{
         function();
         expect(false, message);
-    } catch (const Exception &) {
-    } catch (...) {
+    } catch (const Exception &){
+    } catch (...){
         expect(false, message + " (unexpected exception type)");
     }
 }
-
 const smartpark::ParkingSpot *findSpot(const smartpark::ParkingService &service,
-                                       const std::string &spotId)
-{
+                                       const std::string &spotId){
     const auto spot = std::find_if(
         service.spots().begin(), service.spots().end(),
         [&spotId](const smartpark::ParkingSpot &item) { return item.identifier() == spotId; });
-    if (spot == service.spots().end()) {
+    if (spot == service.spots().end()){
         return nullptr;
     }
     return &(*spot);
 }
-
-void testVehicle()
-{
+void testVehicle(){
     const smartpark::Vehicle vehicle(u8"晋A12345", smartpark::VehicleType::Car);
-
     expect(vehicle.plateNumber() == u8"晋A12345", "vehicle keeps its plate number");
     expect(vehicle.type() == smartpark::VehicleType::Car, "vehicle keeps its type");
     expectThrows<std::invalid_argument>(
         [] { smartpark::Vehicle vehicle("", smartpark::VehicleType::Car); },
         "vehicle rejects an empty plate number");
 }
-
-void testParkingSpotLifecycle()
-{
+void testParkingSpotLifecycle(){
     smartpark::ParkingSpot spot("A001");
     const smartpark::Vehicle firstVehicle(u8"晋A12345", smartpark::VehicleType::Car);
     const smartpark::Vehicle secondVehicle(u8"晋A88888", smartpark::VehicleType::Electric);
-
     expect(spot.identifier() == "A001", "parking spot keeps its identifier");
     expect(spot.isAvailable(), "new parking spot is available");
     expect(spot.status() == smartpark::SpotStatus::Available,
            "new parking spot has available status");
     expect(!spot.parkedVehicle().has_value(), "new parking spot has no vehicle");
-
     expect(spot.occupy(firstVehicle), "available parking spot accepts a vehicle");
     expect(!spot.isAvailable(), "occupied parking spot is unavailable");
     expect(spot.status() == smartpark::SpotStatus::Occupied,
@@ -87,29 +71,23 @@ void testParkingSpotLifecycle()
     expect(spot.parkedVehicle().has_value(), "occupied parking spot keeps its vehicle");
     expect(spot.parkedVehicle()->plateNumber() == firstVehicle.plateNumber(),
            "parking spot keeps the correct vehicle");
-
     expect(!spot.occupy(secondVehicle), "occupied parking spot rejects another vehicle");
     expect(spot.parkedVehicle()->plateNumber() == firstVehicle.plateNumber(),
            "failed occupancy does not replace the parked vehicle");
-
     expect(spot.release(), "occupied parking spot can be released");
     expect(spot.isAvailable(), "released parking spot becomes available");
     expect(!spot.parkedVehicle().has_value(), "released parking spot clears its vehicle");
     expect(!spot.release(), "available parking spot cannot be released twice");
-
     expectThrows<std::invalid_argument>(
         [] { smartpark::ParkingSpot spot(""); },
         "parking spot rejects an empty identifier");
 }
-
-void testParkingSpotReservation()
-{
+void testParkingSpotReservation(){
     using namespace std::chrono_literals;
     smartpark::ParkingSpot spot("A001");
     const smartpark::Vehicle owner(u8"晋A12345", smartpark::VehicleType::Car);
     const smartpark::Vehicle other(u8"晋A88888", smartpark::VehicleType::Car);
     const auto now = smartpark::ParkingSpot::Clock::from_time_t(1000);
-
     expect(spot.reserve(owner, now + 30s), "available parking spot can be reserved");
     expect(spot.status() == smartpark::SpotStatus::Reserved, "reserved spot has reserved status");
     expect(!spot.isAvailable(), "reserved spot is not available");
@@ -119,20 +97,16 @@ void testParkingSpotReservation()
     expect(spot.occupy(owner), "the reserved vehicle can occupy the spot");
     expect(spot.status() == smartpark::SpotStatus::Occupied, "confirmed reservation becomes occupied");
     expect(spot.release(), "occupied reserved spot can be released");
-
     expect(spot.reserve(owner, now + 30s), "spot can be reserved again");
     expect(spot.expireReservation(now + 30s), "expired reservation is released");
     expect(spot.isAvailable(), "expired reservation returns the spot to available");
     expect(spot.occupy(other), "another vehicle can occupy a spot after ttl");
 }
-
-void testParkingRecordLifecycle()
-{
+void testParkingRecordLifecycle(){
     using namespace std::chrono_literals;
     const smartpark::ParkingRecord::TimePoint entry =
         smartpark::ParkingRecord::Clock::from_time_t(1700000000);
     smartpark::ParkingRecord record(u8"晋A12345", "A001", entry);
-
     expect(record.plateNumber() == u8"晋A12345", "parking record keeps the plate number");
     expect(record.spotId() == "A001", "parking record keeps the spot id");
     expect(record.entryTime() == entry, "parking record keeps the entry time");
@@ -145,7 +119,6 @@ void testParkingRecordLifecycle()
     expect(record.duration() == 90min, "parking record calculates duration");
     expect(record.fee() == 15.0, "parking record keeps the fee");
     expect(!record.close(entry + 100min), "parking record cannot be closed twice");
-
     expectThrows<std::invalid_argument>(
         [] { smartpark::ParkingRecord record("", "A001", smartpark::ParkingRecord::Clock::now()); },
         "parking record rejects an empty plate number");
@@ -154,18 +127,39 @@ void testParkingRecordLifecycle()
         "parking record rejects an empty spot id");
 }
 
-void testDefaultLayout()
-{
+void testBillingService(){
+    using namespace std::chrono_literals;
+    const smartpark::BillingService billing;
+
+    expect(billing.calculateFee(std::chrono::seconds(-1)) == 0.0,
+           "billing rejects negative durations");
+    expect(billing.calculateFee(0s) == 0.0,
+           "billing charges nothing for zero duration");
+    expect(billing.calculateFee(29min + 59s) == 0.0,
+           "billing keeps the first thirty minutes free");
+    expect(billing.calculateFee(30min) == 0.0,
+           "billing keeps the thirtieth minute free");
+    expect(billing.calculateFee(30min + 1s) == 5.0,
+           "billing charges the first unit after the free period");
+    expect(billing.calculateFee(60min) == 5.0,
+           "billing charges one unit for exactly thirty paid minutes");
+    expect(billing.calculateFee(60min + 1s) == 10.0,
+           "billing rounds the second unit up");
+    expect(billing.calculateFee(90min) == 10.0,
+           "billing charges two units for sixty paid minutes");
+    expect(billing.calculateFee(11h) == 100.0,
+           "billing applies the daily fee cap");
+}
+void testDefaultLayout(){
     const smartpark::ParkingLayout layout = smartpark::ParkingLayout::defaultLayout();
     std::set<std::string> identifiers;
-
     expect(layout.spots().size() == 60, "default layout contains 60 spots");
     expect(layout.regions().size() == 3, "default layout contains three regions");
     expect(layout.entrances().size() == 1 && layout.exits().size() == 1,
            "default layout has a single entrance and exit");
     expect(layout.spots().front().identifier() == "A001", "default layout starts at A001");
     expect(layout.spots().back().identifier() == "A060", "default layout ends at A060");
-    for (const smartpark::ParkingSpot &spot : layout.spots()) {
+    for (const smartpark::ParkingSpot &spot : layout.spots()){
         identifiers.insert(spot.identifier());
         expect(spot.bounds().width > 0.0 && spot.bounds().height > 0.0,
                "each generated spot has positive bounds");
@@ -173,9 +167,7 @@ void testDefaultLayout()
     }
     expect(identifiers.size() == layout.spots().size(), "generated spot identifiers are unique");
 }
-
-void testCustomLayoutAndAutomaticAllocation()
-{
+void testCustomLayoutAndAutomaticAllocation(){
     const std::string description =
         "site 80 40\n"
         "entrance 0 20\n"
@@ -184,7 +176,6 @@ void testCustomLayoutAndAutomaticAllocation()
         "region B 35 15 8 2 1.4 6.0 6 right\n";
     smartpark::ParkingService service(smartpark::ParkingLayout::fromDescription(description));
     expect(service.spots().size() == 32, "custom layout generates all requested spots");
-
     const smartpark::ParkingRecord::TimePoint entry =
         smartpark::ParkingRecord::Clock::from_time_t(1700000000);
     const auto first = service.enter({u8"晋A12345", smartpark::VehicleType::Car}, entry);
@@ -203,7 +194,6 @@ void testCustomLayoutAndAutomaticAllocation()
     expect(first->entryRoute.distance > 0.0 && first->exitRoute.distance > 0.0,
            "route distances are positive");
     expect(first->breakdown.total == first->score, "allocation score matches the breakdown total");
-
     const auto firstSpot = findSpot(service, first->spotId);
     expect(firstSpot != nullptr && firstSpot->parkedVehicle().has_value(),
            "allocated spot is occupied");
@@ -214,9 +204,7 @@ void testCustomLayoutAndAutomaticAllocation()
     expect(service.remainingSpots() == 31, "exit restores the parking spot");
     expect(!service.activeRecord(u8"晋A12345").has_value(), "exit closes the active record");
 }
-
-void testLayoutTypesAndMultipleGates()
-{
+void testLayoutTypesAndMultipleGates(){
     const std::string description =
         "site 90 50\n"
         "entrance 0 8\n"
@@ -233,23 +221,20 @@ void testLayoutTypesAndMultipleGates()
            "region type is applied to generated spots");
     expect(layout.spots().back().type() == smartpark::SpotType::Accessible,
            "type= prefix is accepted");
-
     expectThrows<std::invalid_argument>(
-        [] {
+        []{
             smartpark::ParkingLayout::fromDescription(
                 "site 40 30\nentrance 0 15\nregion A 10 10 1 1 1.2 5.5 6 left\n");
         },
         "layout rejects a missing exit");
     expectThrows<std::invalid_argument>(
-        [] {
+        []{
             smartpark::ParkingLayout::fromDescription(
                 "site 40 30\nentrance 0 15\nexit 40 15\nregion A 10 10 1 1 1.2 5.5 6 left hover\n");
         },
         "layout rejects an unknown spot type");
 }
-
-void testReservationTtlAndConflict()
-{
+void testReservationTtlAndConflict(){
     using namespace std::chrono_literals;
     const std::string description =
         "site 40 30\n"
@@ -260,7 +245,6 @@ void testReservationTtlAndConflict()
     const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
     const smartpark::Vehicle owner(u8"晋A12345", smartpark::VehicleType::Car);
     const smartpark::Vehicle other(u8"晋A88888", smartpark::VehicleType::Car);
-
     const auto reserved = service.reserve(owner, now, 30s);
     expect(reserved.has_value(), "allocator can reserve the only available spot");
     expect(service.reservedSpots() == 1, "reserved spots are counted separately");
@@ -268,13 +252,11 @@ void testReservationTtlAndConflict()
     expect(!service.enter(other, now).has_value(), "another vehicle cannot take a reserved spot");
     expect(!service.reserve(other, now, 30s).has_value(),
            "another vehicle cannot reserve an already reserved spot");
-
     const auto confirmed = service.enter(owner, now);
     expect(confirmed.has_value() && confirmed->spotId == reserved->spotId,
            "the reserved vehicle can confirm occupancy");
     expect(service.occupiedSpots() == 1, "confirmed reservation becomes occupied");
     expect(service.leave(owner.plateNumber(), now + 5min).has_value(), "confirmed vehicle can leave");
-
     const auto again = service.reserve(owner, now + 6min, 30s);
     expect(again.has_value(), "spot can be reserved after it is released");
     service.expireReservations(now + 6min + 29s);
@@ -283,9 +265,7 @@ void testReservationTtlAndConflict()
            "expired reservations are released on the next operation");
     expect(service.occupiedSpots() == 1, "the next vehicle occupies the expired reservation");
 }
-
-void testTypeMatching()
-{
+void testTypeMatching(){
     const std::string description =
         "site 80 40\n"
         "entrance 0 20\n"
@@ -294,7 +274,6 @@ void testTypeMatching()
         "region B 28 14 2 1 1.2 5.5 6 left charging\n";
     smartpark::ParkingService service(smartpark::ParkingLayout::fromDescription(description));
     const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
-
     const auto car = service.enter({u8"晋A12345", smartpark::VehicleType::Car}, now);
     const auto ev = service.enter({u8"晋A88888", smartpark::VehicleType::Electric}, now);
     expect(car.has_value() && ev.has_value(), "type-aware allocation succeeds");
@@ -305,9 +284,7 @@ void testTypeMatching()
     expect(evSpot != nullptr && evSpot->type() == smartpark::SpotType::Charging,
            "electric vehicles prefer charging spots");
 }
-
-void testCongestionAvoidanceAndStrategies()
-{
+void testCongestionAvoidanceAndStrategies(){
     const std::string description =
         "site 100 60\n"
         "entrance 0 8\n"
@@ -316,10 +293,9 @@ void testCongestionAvoidanceAndStrategies()
         "region B 36 40 6 2 1.2 5.5 6 left\n";
     const auto layout = smartpark::ParkingLayout::fromDescription(description);
     const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
-
     smartpark::ParkingService nearest(layout, smartpark::AllocationStrategy::Nearest);
     std::optional<smartpark::AllocationResult> lastNearest;
-    for (int index = 0; index < 6; ++index) {
+    for (int index = 0; index < 6; ++index){
         lastNearest = nearest.enter(
             {std::string(u8"晋N000") + std::to_string(index), smartpark::VehicleType::Car}, now);
         expect(lastNearest.has_value(), "nearest strategy keeps allocating");
@@ -327,12 +303,11 @@ void testCongestionAvoidanceAndStrategies()
     const auto nearestSpot = findSpot(nearest, lastNearest->spotId);
     expect(nearestSpot != nullptr && nearestSpot->zone() == "A",
            "nearest strategy continues filling the closer cluster");
-
     smartpark::ParkingService weighted(layout, smartpark::AllocationStrategy::Nearest);
     smartpark::AllocationWeights weights;
     weights.laneCongestion = 8.0;
     weighted.setWeights(weights);
-    for (int index = 0; index < 5; ++index) {
+    for (int index = 0; index < 5; ++index){
         expect(weighted.enter(
                    {std::string(u8"晋W000") + std::to_string(index), smartpark::VehicleType::Car}, now)
                    .has_value(),
@@ -345,9 +320,7 @@ void testCongestionAvoidanceAndStrategies()
            "weighted cost avoids a congested nearby cluster");
     expect(diverted->nearbyOccupiedSpots == 0, "the chosen cluster is not locally congested");
 }
-
-void testMultiEntranceSelection()
-{
+void testMultiEntranceSelection(){
     const std::string description =
         "site 90 60\n"
         "entrance 0 8\n"
@@ -368,7 +341,6 @@ void testMultiEntranceSelection()
     expect(distance(first->entryRoute.points.front(), service.layout().entrances()[0])
                <= distance(first->entryRoute.points.front(), service.layout().entrances()[1]) + 1.0,
            "the selected entry route starts near the chosen entrance");
-
     expect(service.enter({u8"晋A22222", smartpark::VehicleType::Car}, now).has_value(),
            "second southern spot can be filled");
     expect(service.enter({u8"晋A33333", smartpark::VehicleType::Car}, now).has_value(),
@@ -380,9 +352,7 @@ void testMultiEntranceSelection()
            "later vehicles move to the northern region");
     expect(northern && northern->entranceIndex == 1, "northern parking uses the northern entrance");
 }
-
-void testSqlitePersistenceAndRecovery()
-{
+void testSqlitePersistenceAndRecovery(){
     using namespace std::chrono_literals;
     const std::string description =
         "site 60 30\n"
@@ -391,18 +361,15 @@ void testSqlitePersistenceAndRecovery()
         "region A 10 10 1 3 1.2 5.5 6 left\n";
     const auto layout = smartpark::ParkingLayout::fromDescription(description);
     const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
-
     QTemporaryDir directory;
     expect(directory.isValid(), "SQLite test can create a temporary directory");
-    const QString databasePath = directory.filePath("smartpark.db");
-    {
+    const QString databasePath = directory.filePath("smartpark.db");{
         smartpark::DatabaseManager database(databasePath);
         expect(database.database().isOpen(), "SQLite database opens");
         smartpark::ParkingRepository repository(database.database());
         expect(repository.saveLayout(layout), "the first database can store the layout");
         smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
                                           &repository);
-
         const auto first = service.enter({u8"晋A12345", smartpark::VehicleType::Car}, now);
         const auto second = service.enter({u8"晋A22222", smartpark::VehicleType::Car}, now);
         expect(first.has_value() && second.has_value(), "SQLite service accepts entries");
@@ -414,7 +381,6 @@ void testSqlitePersistenceAndRecovery()
         expect(service.occupiedSpots() == 1 && service.reservedSpots() == 1,
                "SQLite service has one occupied and one reserved spot");
     }
-
     smartpark::DatabaseManager database(databasePath);
     smartpark::ParkingRepository repository(database.database());
     expect(repository.saveLayout(layout), "the restored database accepts the same layout");
@@ -431,11 +397,9 @@ void testSqlitePersistenceAndRecovery()
     restored.expireReservations(now + 46min);
     expect(restored.reservedSpots() == 0 && restored.remainingSpots() == 2,
            "restart preserves the reservation TTL");
-
     expectThrows<std::invalid_argument>(
         [] { const smartpark::Vehicle invalid("", smartpark::VehicleType::Car); },
         "persistence rejects an empty plate number");
-
     QSqlQuery invalidate(database.database());
     invalidate.prepare(QStringLiteral(
         "UPDATE parking_spots SET status=99 WHERE identifier='A001'"));
@@ -446,9 +410,7 @@ void testSqlitePersistenceAndRecovery()
     expect(!invalidRepository.lastError().empty(),
            "loader reports an invalid persisted spot status");
 }
-
-void testPersistenceHelperRestoresAcrossRestart()
-{
+void testPersistenceHelperRestoresAcrossRestart(){
     using namespace std::chrono_literals;
     const std::string description =
         "site 60 30\n"
@@ -457,11 +419,9 @@ void testPersistenceHelperRestoresAcrossRestart()
         "region A 10 10 1 3 1.2 5.5 6 left\n";
     const auto layout = smartpark::ParkingLayout::fromDescription(description);
     const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
-
     QTemporaryDir directory;
     expect(directory.isValid(), "Persistence test can create a temporary directory");
-    const QString databasePath = directory.filePath("smartpark.db");
-    {
+    const QString databasePath = directory.filePath("smartpark.db");{
         smartpark::Persistence persistence(databasePath);
         expect(persistence.databaseManager().database().isOpen(),
                "Persistence helper opens the SQLite database");
@@ -475,7 +435,6 @@ void testPersistenceHelperRestoresAcrossRestart()
         expect(service.leave(u8"晋A11111", now + 15min).has_value(),
                "Persistence-backed service closes a record");
     }
-
     smartpark::Persistence restored(databasePath);
     smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
                                       &restored.repository());
@@ -484,7 +443,7 @@ void testPersistenceHelperRestoresAcrossRestart()
            "Persistence helper restores the reservation but not the released spot");
     const auto reserved = std::find_if(
         service.spots().begin(), service.spots().end(),
-        [](const smartpark::ParkingSpot &spot) {
+        [](const smartpark::ParkingSpot &spot){
             return spot.status() == smartpark::SpotStatus::Reserved;
         });
     expect(reserved != service.spots().end() && reserved->parkedVehicle()
@@ -493,9 +452,7 @@ void testPersistenceHelperRestoresAcrossRestart()
     service.expireReservations(now + 46min);
     expect(service.reservedSpots() == 0, "restart preserves the reservation TTL");
 }
-
-void testLayoutMismatchRejected()
-{
+void testLayoutMismatchRejected(){
     const std::string firstDescription =
         "site 60 30\n"
         "entrance 0 15\n"
@@ -508,25 +465,21 @@ void testLayoutMismatchRejected()
         "region A 10 10 1 3 1.2 5.5 6 left\n";
     const auto firstLayout = smartpark::ParkingLayout::fromDescription(firstDescription);
     const auto secondLayout = smartpark::ParkingLayout::fromDescription(secondDescription);
-
     QTemporaryDir directory;
     expect(directory.isValid(), "mismatch test can create a temporary directory");
     smartpark::Persistence persistence(directory.filePath("smartpark.db"));
     smartpark::ParkingService first(firstLayout, smartpark::AllocationStrategy::Nearest,
                                     &persistence.repository());
     expect(first.spots().size() == 3, "first layout initializes against the database");
-
     expectThrows<std::runtime_error>(
-        [&] {
+        [&]{
             smartpark::ParkingService mismatched(secondLayout,
                                                  smartpark::AllocationStrategy::Nearest,
                                                  &persistence.repository());
         },
         "a different layout is rejected against the persisted signature");
 }
-
-void testExpiredReservationPersisted()
-{
+void testExpiredReservationPersisted(){
     using namespace std::chrono_literals;
     const std::string description =
         "site 60 30\n"
@@ -535,11 +488,9 @@ void testExpiredReservationPersisted()
         "region A 10 10 1 3 1.2 5.5 6 left\n";
     const auto layout = smartpark::ParkingLayout::fromDescription(description);
     const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
-
     QTemporaryDir directory;
     expect(directory.isValid(), "expiry test can create a temporary directory");
-    const QString databasePath = directory.filePath("smartpark.db");
-    {
+    const QString databasePath = directory.filePath("smartpark.db");{
         smartpark::Persistence persistence(databasePath);
         smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
                                           &persistence.repository());
@@ -549,7 +500,6 @@ void testExpiredReservationPersisted()
         service.expireReservations(now + 46min);
         expect(service.reservedSpots() == 0, "expired reservation is released in memory");
     }
-
     smartpark::Persistence restored(databasePath);
     smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
                                       &restored.repository());
@@ -558,9 +508,7 @@ void testExpiredReservationPersisted()
     expect(service.remainingSpots() == 3,
            "the expired spot is available after restart");
 }
-
-void testDirtyActiveRecordsRejected()
-{
+void testDirtyActiveRecordsRejected(){
     using namespace std::chrono_literals;
     const std::string description =
         "site 60 30\n"
@@ -569,7 +517,6 @@ void testDirtyActiveRecordsRejected()
         "region A 10 10 1 3 1.2 5.5 6 left\n";
     const auto layout = smartpark::ParkingLayout::fromDescription(description);
     const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
-
     QTemporaryDir directory;
     expect(directory.isValid(), "dirty record test can create a temporary directory");
     smartpark::Persistence persistence(directory.filePath("smartpark.db"));
@@ -577,7 +524,6 @@ void testDirtyActiveRecordsRejected()
                                       &persistence.repository());
     expect(service.enter({u8"晋A12345", smartpark::VehicleType::Car}, now).has_value(),
            "dirty record test can enter a vehicle");
-
     QSqlQuery duplicate(persistence.databaseManager().database());
     duplicate.prepare(QStringLiteral(
         "INSERT INTO parking_records(plate_number,spot_id,entry_time_ms,exit_time_ms,fee)"
@@ -587,7 +533,6 @@ void testDirtyActiveRecordsRejected()
     duplicate.bindValue(QStringLiteral(":entry"), 0);
     expect(!duplicate.exec(),
            "partial unique index blocks a duplicate active record");
-
     QSqlQuery drop(persistence.databaseManager().database());
     expect(drop.exec(QStringLiteral("DROP INDEX idx_active_parking_record")),
            "can drop the active record index for the corruption scenario");
@@ -601,16 +546,14 @@ void testDirtyActiveRecordsRejected()
     expect(secondDuplicate.exec(),
            "duplicate active record can be inserted without the index");
     expectThrows<std::runtime_error>(
-        [&] {
+        [&]{
             smartpark::ParkingService dirty(layout,
                                             smartpark::AllocationStrategy::Nearest,
                                             &persistence.repository());
         },
         "dirty duplicate active records are rejected on restore");
 }
-
-void testDisabledStateAndExpiryInvariants()
-{
+void testDisabledStateAndExpiryInvariants(){
     const std::string description =
         "site 60 30\n"
         "entrance 0 15\n"
@@ -618,11 +561,9 @@ void testDisabledStateAndExpiryInvariants()
         "region A 10 10 1 3 1.2 5.5 6 left\n";
     const auto layout = smartpark::ParkingLayout::fromDescription(description);
     const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
-
     QTemporaryDir directory;
     expect(directory.isValid(), "invariant test can create a temporary directory");
-
-    const auto corrupt = [&](const QString &path, const char *update) {
+    const auto corrupt = [&](const QString &path, const char *update){
         smartpark::Persistence persistence(path);
         smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
                                           &persistence.repository());
@@ -631,33 +572,28 @@ void testDisabledStateAndExpiryInvariants()
             "UPDATE parking_spots SET %1 WHERE identifier='A001'").arg(QString::fromUtf8(update)));
         expect(query.exec(), "invariant test can corrupt a parking spot");
     };
-    const auto reopen = [&](const QString &path) {
+    const auto reopen = [&](const QString &path){
         smartpark::Persistence persistence(path);
         smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
                                           &persistence.repository());
     };
-
     corrupt(directory.filePath("reserved_without_expiry.db"),
             "status=2, plate_number='晋A9', vehicle_type=0, reserved_until_ms=NULL");
     expectThrows<std::runtime_error>(
         [&] { reopen(directory.filePath("reserved_without_expiry.db")); },
         "a reserved spot without an expiry time is rejected on restore");
-
     corrupt(directory.filePath("available_with_expiry.db"),
             "status=0, plate_number=NULL, vehicle_type=NULL, reserved_until_ms=12345");
     expectThrows<std::runtime_error>(
         [&] { reopen(directory.filePath("available_with_expiry.db")); },
         "a non-reserved spot with an expiry time is rejected on restore");
-
     corrupt(directory.filePath("disabled_with_vehicle.db"),
             "status=3, plate_number='晋A9', vehicle_type=0, reserved_until_ms=NULL");
     expectThrows<std::runtime_error>(
         [&] { reopen(directory.filePath("disabled_with_vehicle.db")); },
         "a disabled spot with a vehicle is rejected on restore");
-
     corrupt(directory.filePath("disabled_ok.db"),
-            "status=3, plate_number=NULL, vehicle_type=NULL, reserved_until_ms=NULL");
-    {
+            "status=3, plate_number=NULL, vehicle_type=NULL, reserved_until_ms=NULL");{
         smartpark::Persistence persistence(directory.filePath("disabled_ok.db"));
         smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
                                           &persistence.repository());
@@ -670,23 +606,19 @@ void testDisabledStateAndExpiryInvariants()
                "a disabled spot is not counted as available");
     }
 }
-
-void testLayoutSpotSetValidation()
-{
+void testLayoutSpotSetValidation(){
     const std::string description =
         "site 60 30\n"
         "entrance 0 15\n"
         "exit 60 15\n"
         "region A 10 10 1 3 1.2 5.5 6 left\n";
     const auto layout = smartpark::ParkingLayout::fromDescription(description);
-
     QTemporaryDir directory;
     expect(directory.isValid(), "layout set test can create a temporary directory");
     smartpark::Persistence persistence(directory.filePath("smartpark.db"));
     smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
                                       &persistence.repository());
     expect(service.spots().size() == 3, "layout set test initializes the layout");
-
     QSqlQuery extra(persistence.databaseManager().database());
     extra.prepare(QStringLiteral(
         "INSERT INTO parking_spots("
@@ -694,16 +626,14 @@ void testLayoutSpotSetValidation()
         " VALUES('A099','X',0,0,0,1,1,1,1,1,1,0)"));
     expect(extra.exec(), "layout set test can insert an extra spot row");
     expectThrows<std::runtime_error>(
-        [&] {
+        [&]{
             smartpark::ParkingService mismatched(layout,
                                                  smartpark::AllocationStrategy::Nearest,
                                                  &persistence.repository());
         },
         "a persisted spot id set differing from the layout is rejected");
 }
-
-void testTimeValidationAndSafeConversion()
-{
+void testTimeValidationAndSafeConversion(){
     using namespace std::chrono_literals;
     const std::string description =
         "site 60 30\n"
@@ -714,7 +644,6 @@ void testTimeValidationAndSafeConversion()
     const auto valid = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
     const auto tooEarly = smartpark::ParkingRecord::Clock::from_time_t(500);
     const auto tooLate = smartpark::ParkingRecord::Clock::from_time_t(8000000000LL);
-
     const auto maxPoint = smartpark::ParkingRecord::Clock::time_point{} +
         std::chrono::milliseconds(smartpark::timeutil::maxValidSeconds * 1000);
     expect(smartpark::timeutil::isValid(maxPoint),
@@ -730,7 +659,6 @@ void testTimeValidationAndSafeConversion()
     expect(!smartpark::timeutil::canAdd(maxPoint - std::chrono::milliseconds(999),
                                         std::chrono::seconds(2)),
            "canAdd rejects an addend crossing the max boundary");
-
     smartpark::ParkingService service(layout);
     expect(!service.enter({u8"晋A11111", smartpark::VehicleType::Car}, tooEarly).has_value(),
            "entry rejects a timestamp before the business range");
@@ -752,16 +680,13 @@ void testTimeValidationAndSafeConversion()
     expect(service.reserve({u8"晋A22222", smartpark::VehicleType::Car}, valid, 30min)
                .has_value(),
            "reservation accepts a timestamp inside the business range");
-
     QTemporaryDir directory;
     expect(directory.isValid(), "time validation test can create a temporary directory");
-    const QString databasePath = directory.filePath("smartpark.db");
-    {
+    const QString databasePath = directory.filePath("smartpark.db");{
         smartpark::DatabaseManager database(databasePath);
         expect(database.database().isOpen(), "time validation database opens");
         smartpark::ParkingRepository repository(database.database());
         expect(repository.saveLayout(layout), "time validation test stores the layout");
-
         smartpark::ParkingSpot spot("A001");
         const smartpark::Vehicle vehicle(u8"晋A55555", smartpark::VehicleType::Car);
         expect(spot.reserve(vehicle, tooLate),
@@ -770,8 +695,7 @@ void testTimeValidationAndSafeConversion()
                "repository rejects an out-of-range reservation expiry");
         expect(!repository.lastError().empty(),
                "repository reports the out-of-range reservation expiry");
-    }
-    {
+    }{
         smartpark::DatabaseManager database(databasePath);
         smartpark::ParkingRepository repository(database.database());
         QSqlQuery spotCorruption(database.database());
@@ -784,7 +708,6 @@ void testTimeValidationAndSafeConversion()
                "loader rejects an out-of-range persisted reservation expiry");
         expect(!repository.lastError().empty(),
                "loader reports the out-of-range persisted reservation expiry");
-
         QSqlQuery recordCorruption(database.database());
         expect(recordCorruption.exec(QStringLiteral(
                    "INSERT INTO parking_records(plate_number,spot_id,"
@@ -797,20 +720,17 @@ void testTimeValidationAndSafeConversion()
                "loader reports the out-of-range persisted entry time");
     }
 }
-
 } // namespace
-
-int main()
-{
+int main(){
     int argc = 0;
     char programName[] = "smartpark_core_tests";
     char *argv[] = {programName, nullptr};
     QCoreApplication app(argc, argv);
-
     testVehicle();
     testParkingSpotLifecycle();
     testParkingSpotReservation();
     testParkingRecordLifecycle();
+    testBillingService();
     testDefaultLayout();
     testCustomLayoutAndAutomaticAllocation();
     testLayoutTypesAndMultipleGates();
@@ -826,12 +746,10 @@ int main()
     testDisabledStateAndExpiryInvariants();
     testLayoutSpotSetValidation();
     testTimeValidationAndSafeConversion();
-
-    if (failureCount != 0) {
+    if (failureCount != 0){
         std::cerr << failureCount << " test assertion(s) failed\n";
         return 1;
     }
-
     std::cout << "All core model tests passed\n";
     return 0;
 }

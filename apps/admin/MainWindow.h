@@ -17,8 +17,7 @@ class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
 
-class MainWindow : public QMainWindow
-{
+class MainWindow : public QMainWindow{
 public:
     explicit MainWindow(QString databasePath, QWidget *parent = nullptr);
     ~MainWindow() override = default;
@@ -36,7 +35,6 @@ private:
                       smartpark::AllocationStrategy strategy);
     void resetDatabase();
     smartpark::AllocationStrategy currentStrategy() const;
-
     QString databasePath_;
     bool databaseFailed_{false};
     std::unique_ptr<smartpark::Persistence> persistence_;
@@ -51,4 +49,5 @@ private:
     QPushButton *allocateButton_{nullptr};
     QPushButton *releaseButton_{nullptr};
     QLabel *statusLabel_{nullptr};
+    QLabel *billingLabel_{nullptr};
 };
