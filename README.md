@@ -18,7 +18,7 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 
 服务器将负责停车业务、车位状态、收费、车辆记录、用户与预约管理、数据库访问及网络通信。管理员端用于管理与可视化，出入口端用于车辆入场和离场处理。
 
-## 当前范围：SmartPark 0.5
+## 当前范围：SmartPark 0.6
 
 当前已完成：
 
@@ -35,33 +35,50 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 - `ParkingService::enter()` / `leave()` / `reserve()` 入离场与预留流程。
 - `DatabaseManager` 与 `ParkingRepository`：SQLite 建表、入场/离场/预约持久化和重启恢复。
 - `Persistence` 辅助类：统一管理数据库连接，CLI 与 Qt Admin GUI 默认接入 SQLite，跨重启恢复车位状态与停车记录。
+- `BillingRule` 与 `BillingService`：免费时长、计费单元、首单元费用、后续单元费用和单次封顶；`ParkingService` 在离场/释放车位时自动计算费用并写入停车记录。
 - CLI 支持 `--db <路径>` 指定数据库、`--reset` 清空数据库后演示。
 - Qt Admin GUI 支持 `--db <路径>`，应用布局时若与数据库签名不一致会提示并可选重置数据库。
 
-下一步将实现收费服务、TCP 服务端与出入口终端。
+CLI 启动时打印默认计费规则，离场时打印本次费用；Qt Admin GUI 显示计费规则，并在释放最近车位后显示本次费用。
+
+下一步将实现 TCP 服务端与出入口终端，并把 `BillingRule` 扩展为 GUI 可配置、可持久化。
 
 尚未接入 TCP 通信、真实 LPR、多线程、用户端或统计图表。调研来源与明确不做的方案见 `docs/research-sources.md`。
 
+## 计费规则
+
+当前内置默认规则：
+
+| 项目 | 默认值 |
+| --- | --- |
+| 免费时长 | 30 分钟 |
+| 计费单元 | 30 分钟 |
+| 首单元费用 | 5 元 |
+| 后续每单元费用 | 5 元 |
+| 单次封顶 | 100 元 |
+
+计费采用“免费时长后向上取整到计费单元”的方式。`ParkingService::leave()` 与 `ParkingService::release()` 会先调用 `BillingService::calculateFee()`，再通过 `ParkingRepository::saveExit()` 在同一事务中写入费用、关闭停车记录并释放车位。
+
 ## 当前进度
 
-截至 2026-09-07，项目处于 **SmartPark 0.5**：
+截至 2026-09-07，项目处于 **SmartPark 0.6**：
 
 - 已完成核心模型、60 车位自动分配、自定义多矩形布局、栅格 A* / Dijkstra 路线、拥堵边权、预留 TTL、CLI 与 Qt GUI。
 - SQLite 持久化已接入 CLI 与 Admin GUI，支持跨重启恢复车位状态、预约和停车记录。
+- 收费服务已接入 `ParkingService`、CLI 与 Admin GUI；离场费用随停车记录持久化。
 - 在 `s1` 上验证：CLI 与 Qt 构建通过，`cli-tests` / `qt-tests` 均为 2/2 通过，GUI offscreen 启动正常。
 - CLI 默认持久化可重复运行，连续运行至 60/60 满场后仍稳定输出 `RESULT: PASS`。
 
-尚未完成：`BillingService`、TCP Server、Gate Terminal、真实 LPR、用户端与统计图表。
+尚未完成：TCP Server、Gate Terminal、真实 LPR、用户端与统计图表。
 
 ## 后续发展路线
 
 按调研结论推进，优先级从高到低：
 
-1. **P0 — BillingService**：费率规则、免费时长、日封顶、离场宽限，独立于 UI 与服务端。
-2. **P0.5 — TCP 协议与服务端**：先写 `docs/tcp-protocol.md`，再用 `QTcpServer` 实现登录、心跳和入场/离场事件。
-3. **P1 — Gate Terminal + Fake LPR + 离线队列**：先以假识别打通出入口，再补齐断线缓存和补报。
-4. **P2 — 双路线真实 LPR**：先接入 HyperLPR3 作为可运行基线，再训练 `YOLO11m + PP-OCRv5` 中国车牌专用模型；使用 CCPD 与 SmartPark 场景数据做统一评测。
-5. **P3 — 支付、图表、用户端**：在前述链路稳定后再扩展外围能力。
+1. **P0 — TCP 协议与服务端**：先写 `docs/tcp-protocol.md`，再用 `QTcpServer` 实现登录、心跳和入场/离场事件。
+2. **P1 — Gate Terminal + Fake LPR + 离线队列**：先以假识别打通出入口，再补齐断线缓存和补报。
+3. **P2 — 双路线真实 LPR**：先接入 HyperLPR3 作为可运行基线，再训练 `YOLO11m + PP-OCRv5` 中国车牌专用模型；使用 CCPD 与 SmartPark 场景数据做统一评测。
+4. **P3 — BillingRule 配置化、支付、图表、用户端**：在前述链路稳定后再扩展外围能力。
 
 明确不做：EasyPR、纯云端计费、微信小程序、Go 微服务，以及把 LPR 放进 `ParkingService`。
 
@@ -114,20 +131,19 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 3. ✅ 停车场 GUI：实时展示车位状态、自动分配结果和行驶路线。
 4. ✅ 分配器重构：独立选位算法、拥堵边权、预留 TTL、车位类型和多出入口。
 5. ✅ SQLite 持久化：核心层已完成，CLI/GUI 已接入并支持重启恢复。
-6. ⬜ 收费系统：根据停车时长计算费用。
+6. ✅ 收费系统：根据停车时长、免费时长、计费单元和单次封顶计算并持久化费用，CLI/GUI 已展示。
 7. ⬜ 服务端：以 TCP 建立管理员端与服务端架构。
 8. ⬜ 出入口终端：手动输入车牌并通过服务端处理业务。
 9. ⬜ 车牌识别：实现 HyperLPR3 基线，并完成 YOLO11m + PP-OCRv5 中国车牌专用模型训练、评测与 C++ 部署。
 
 ## 最近工作记录
 
-最近一轮完成“客户端 SQLite 持久化接入”：
+最近一轮完成“BillingService 接入 CLI/GUI”：
 
-- 新增 `Persistence` RAII 封装，统一数据库连接与默认路径。
-- CLI 新增 `--db <路径>` 与 `--reset`；默认演示使用唯一车牌，可重复运行并处理满场状态。
-- Admin GUI 新增 `--db`，布局签名不一致时可重置数据库或安全降级，避免空指针。
-- 修复预约过期未落库、Disabled 状态恢复、active record 唯一性、车位集合校验和毫秒级时间边界。
-- 对应提交：`bf0aa55 feat: connect clients to sqlite persistence`、`6615bc3 docs: add smart parking research sources`。
+- 新增 `BillingRule` / `BillingService`，离场费用在 `ParkingService` 中统一计算并写入 `ParkingRecord`。
+- `ParkingRepository::saveExit()` 保留费用参数，费用与停车记录在同一 SQLite 事务中持久化。
+- CLI 打印默认计费规则与离场费用；Admin GUI 增加计费规则说明，并在释放车位时显示本次费用。
+- 对应提交：`9416bf9 feat: integrate parking billing and layout improvements`。
 
 ## 文献调研
 
@@ -584,7 +600,7 @@ region C 71 40 10 2 1.2 5.5 6 left accessible
 
 如果需要全新构建，可先删除 `build/cli` 或整个 `build/` 目录。CLI 与 Qt 的 CMake 缓存分别保存在 `build/cli` 和 `build/qt`，互不影响。
 
-不带参数时使用内置 60 车位布局；带文本文件参数时加载自定义布局。程序自动执行验证，无需输入。它分配 3 辆车、释放 1 辆车并再次自动分配，同时打印车位编号、类型、入口距离、出口距离、附近占用数和综合评分；成功输出 `RESULT: PASS` 并返回 0。
+不带参数时使用内置 60 车位布局；带文本文件参数时加载自定义布局。程序自动执行验证，无需输入。它打印默认计费规则，分配 3 辆车、释放 1 辆车并再次自动分配，同时打印车位编号、类型、入口距离、出口距离、附近占用数、综合评分和离场费用；成功输出 `RESULT: PASS` 并返回 0。
 
 CLI 默认把车位与停车记录持久化到 SQLite：未指定 `--db` 时使用用户数据目录 `smartpark/smartpark.db`，重启后可恢复占用/预留状态与停车记录；`--reset` 在启动前删除数据库文件，适合反复演示。测试中的演示用例固定使用构建目录下的临时数据库并带 `--reset`，保证结果确定。
 
@@ -612,9 +628,10 @@ CLI 默认把车位与停车记录持久化到 SQLite：未指定 `--db` 时使�
 | `src/core/model/ParkingSpot.cpp` | 实现单个车位的状态转换，拒绝重复占用或释放。 |
 | `src/core/service/GridPlanner.h/.cpp` | 实现障碍感知栅格 A*、多目标搜索和拥堵边权。 |
 | `src/core/service/SpotAllocator.h/.cpp` | 独立选位、策略、评分和路径缓存。 |
-| `src/core/service/ParkingService.h/.cpp` | 实现入场、离场、预留 TTL、剩余车位和历史记录查询。 |
+| `src/core/service/Billing.h/.cpp` | 定义计费规则并计算离场费用。 |
+| `src/core/service/ParkingService.h/.cpp` | 实现入场、离场、计费、预留 TTL、剩余车位和历史记录查询。 |
 | `tests/CMakeLists.txt` | 构建并注册模型单元测试。 |
-| `tests/core_model_tests.cpp` | 验证模型、预留、类型匹配、拥堵绕行和多入口选择。 |
+| `tests/core_model_tests.cpp` | 验证模型、预留、计费边界、类型匹配、拥堵绕行和多入口选择。 |
 | `apps/admin/CMakeLists.txt` | 构建可选 Qt 管理员端，Qt 自动处理只作用于该目标。 |
 | `apps/admin/main.cpp` | 独立 GUI 入口，解析 `--db` 参数并启动主窗口。 |
 | `apps/admin/MainWindow.h/.cpp` | 实现布局编辑、车位图、自动分配、路线显示与数据库恢复/重置交互。 |
