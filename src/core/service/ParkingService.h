@@ -54,6 +54,7 @@ public:
     int reservedSpots() const noexcept;
     const std::vector<ParkingRecord> &records() const noexcept;
     std::optional<ParkingRecord> activeRecord(const std::string &plateNumber) const;
+    double totalRevenue() const noexcept;
 private:
     AllocationResult toResult(const AllocationProposal &proposal) const;
     void restore(ParkingRepository &repository);
