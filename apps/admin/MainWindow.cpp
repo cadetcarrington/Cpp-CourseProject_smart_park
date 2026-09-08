@@ -334,11 +334,12 @@ void MainWindow::releaseLastVehicle(){
     if (closedRecord){
         const auto duration = std::chrono::duration_cast<std::chrono::minutes>(
             closedRecord->duration());
-        statusLabel_->setText(QString("离场完成：%1 | 车位：%2 | 停车时长：%3分钟 | 费用：%4元 | 总记录：%5")
+        statusLabel_->setText(QString("离场完成：%1 | 车位：%2 | 停车时长：%3分钟 | 本次费用：%4元 | 累计收费：%5元 | 总记录：%6")
                                   .arg(QString::fromStdString(closedRecord->plateNumber()))
                                   .arg(QString::fromStdString(closedRecord->spotId()))
                                   .arg(duration.count())
                                   .arg(closedRecord->fee(), 0, 'f', 2)
+                                  .arg(service_->totalRevenue(), 0, 'f', 2)
                                   .arg(static_cast<int>(service_->records().size())));
         lastAllocation_.reset();
     } else{

@@ -267,6 +267,15 @@ namespace smartpark{
         }
         return *record;
     }
+    double ParkingService::totalRevenue() const noexcept{
+        double total = 0.0;
+        for (const ParkingRecord &record : records_){
+            if (record.isClosed()){
+                total += record.fee();
+            }
+        }
+        return total;
+    }
     AllocationResult ParkingService::toResult(const AllocationProposal &proposal) const{
         AllocationResult result;
         result.plateNumber = proposal.plateNumber;
