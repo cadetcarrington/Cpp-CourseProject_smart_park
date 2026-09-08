@@ -26,3 +26,6 @@ Thumbs.db
 
 # Machine learning assets and training outputs
 /model/
+/runs/
+/weights/
+scripts/__pycache__/
