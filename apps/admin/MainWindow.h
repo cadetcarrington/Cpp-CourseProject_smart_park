@@ -10,12 +10,14 @@
 #include <optional>
 
 class QComboBox;
+class QDateTimeEdit;
 class QGraphicsScene;
 class QGraphicsView;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
+class QTableWidget;
 
 class MainWindow : public QMainWindow{
 public:
@@ -27,10 +29,14 @@ private slots:
     void allocateVehicle();
     void releaseLastVehicle();
     void updateStrategy();
+    void bookVehicle();
+    void checkInBooking();
+    void cancelActiveBooking();
 
 private:
     void buildUi();
     void refreshScene();
+    void refreshBookings();
     bool applyService(const smartpark::ParkingLayout &layout,
                       smartpark::AllocationStrategy strategy);
     void resetDatabase();
@@ -48,6 +54,12 @@ private:
     QComboBox *strategyInput_{nullptr};
     QPushButton *allocateButton_{nullptr};
     QPushButton *releaseButton_{nullptr};
+    QDateTimeEdit *arrivalInput_{nullptr};
+    QPushButton *bookButton_{nullptr};
+    QPushButton *checkInButton_{nullptr};
+    QPushButton *cancelBookingButton_{nullptr};
+    QTableWidget *bookingsTable_{nullptr};
+    QLabel *depositLabel_{nullptr};
     QLabel *statusLabel_{nullptr};
     QLabel *billingLabel_{nullptr};
 };

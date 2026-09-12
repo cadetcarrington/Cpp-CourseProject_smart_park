@@ -39,6 +39,7 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 - CLI 支持 `--db <路径>` 指定数据库、`--reset` 清空数据库后演示。
 - Qt Admin GUI 支持 `--db <路径>`，应用布局时若与数据库签名不一致会提示并可选重置数据库。
 - `Booking` 模型与预约 API：远程预约、近一周时间窗、预付定金、到场确认、取消、爽约扣定金与预期路线，持久化到 `bookings` 表并跨重启恢复。
+- 预约可操作化：CLI 支持 `--book` / `--checkin` / `--cancel` / `--bookings` / `--expire-bookings` 预约命令与 `--at` / `--in` 基准时间参数（指定命令时只执行预约流程，不运行自动演示）；Qt Admin GUI 新增预约面板（到场时间选择、预约 / 到场确认 / 取消按钮、预约记录表格与定金统计），车位图同步显示预约预期路线。
 
 CLI 启动时打印默认计费规则，批量演示入场/离场并汇总累计停车费；同时演示预约流程（远程预约返回预期路线、到场确认、爽约没收定金），并汇总待结算与爽约没收定金。
 
@@ -145,7 +146,7 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
 
 ## 当前进度
 
-截至 2026-09-12，项目处于 **SmartPark 0.7**：预约系统第一版（`Booking`）已实现，完整的远程时间段预约（`Reservation`）已完成需求设计、尚未编码：
+截至 2026-09-12，项目处于 **SmartPark 0.7**：预约系统第一版（`Booking`）已实现并在 CLI 与 Admin GUI 可操作化，完整的远程时间段预约（`Reservation`）已完成需求设计、尚未编码：
 
 - 已完成核心模型、60 车位自动分配、自定义多矩形布局、栅格 A* / Dijkstra 路线、拥堵边权、预留 TTL、CLI 与 Qt GUI。
 - SQLite 持久化已接入 CLI 与 Admin GUI，支持跨重启恢复车位状态、预约和停车记录。
@@ -226,6 +227,12 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
 11. ⬜ 车牌识别：实现 HyperLPR3 基线，并完成 YOLO11m + PP-OCRv5 中国车牌专用模型训练、评测与 C++ 部署。
 
 ## 最近工作记录
+
+2026-09-12 预约系统 CLI / GUI 可操作化：
+
+- CLI 新增预约命令：`--book <车牌>`（`--in` / `--at` 指定到场时间，`--type` 指定车辆类型）、`--checkin <车牌>`、`--cancel <车牌>`、`--bookings`、`--expire-bookings`；带预约命令时跳过自动演示，并新增 `smartpark_cli_booking` CTest 用例（CMake 脚本驱动完整生命周期：预约 -> 到场确认 -> 重复确认应失败 -> 再预约 -> 取消 -> 列表）。
+- Admin GUI 新增“车位预约”面板：到场时间 `QDateTimeEdit`（默认 60 分钟后，限当前时间至最多提前 7 天）、预约 / 到场确认 / 取消按钮、8 列预约记录表格（编号、车牌、车位、创建 / 到场 / 宽限截止时间、定金、状态）与定金统计（待结算 / 爽约没收）；预约与到场确认会把预期路线画到车位图。
+- 本轮验证（`/opt/mamba/envs/smartpark`，`MAMBA_ROOT_PREFIX=/opt/mamba`）：CLI 与 Qt 构建通过，`cli-tests` / `qt-tests` 均为 3/3 通过；GUI offscreen 冒烟与预约面板交互测试（预约、到场确认退定金、取消退定金）全部通过。
 
 2026-09-12 已同步 SmartPark 0.7 预约需求：
 
@@ -743,16 +750,22 @@ CLI 默认把车位与停车记录持久化到 SQLite：未指定 `--db` 时使�
 
 ## Linux 构建与运行
 
-当前 Linux 开发环境使用独立的 Conda 环境 `smartpark-qt68`，其中包含 Qt 6.8.4、CMake、Ninja 和 C++ 编译器。
+当前 Linux 开发环境使用位于 `/opt/mamba` 的 mamba 环境 `smartpark`（`export MAMBA_ROOT_PREFIX=/opt/mamba`），其中包含 Qt 6、CMake、Ninja 和 C++ 编译器。
 
 ```bash
-source ~/miniforge3/etc/profile.d/conda.sh
-conda activate smartpark-qt68
+export MAMBA_ROOT_PREFIX=/opt/mamba
+export PATH=/opt/mamba/envs/smartpark/bin:$PATH
+export CONDA_PREFIX=/opt/mamba/envs/smartpark
 
 cmake --preset qt-debug
 cmake --build --preset qt-debug --parallel
 ctest --preset qt-tests
 ./build/qt/apps/admin/smartpark_admin
+
+# 预约命令示例
+./build/cli/apps/cli/smartpark_cli --db /tmp/p.db --book 晋A12345 --in 90
+./build/cli/apps/cli/smartpark_cli --db /tmp/p.db --checkin 晋A12345 --in 90
+./build/cli/apps/cli/smartpark_cli --db /tmp/p.db --bookings
 ```
 
 如果当前终端没有图形显示，可以使用 Qt 的 offscreen 平台插件做启动检查：
