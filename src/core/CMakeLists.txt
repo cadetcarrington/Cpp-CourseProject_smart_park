@@ -1,5 +1,7 @@
 add_library(smartpark_core STATIC
     model/Geometry.h
+    model/Booking.cpp
+    model/Booking.h
     model/ParkingLayout.cpp
     model/ParkingLayout.h
     model/ParkingRecord.cpp

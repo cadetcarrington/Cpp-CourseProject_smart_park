@@ -1,4 +1,5 @@
 #include "core/model/ParkingSpot.h"
+#include "core/model/Booking.h"
 #include "core/model/ParkingRecord.h"
 #include "core/persistence/DatabaseManager.h"
 #include "core/persistence/ParkingRepository.h"
@@ -721,6 +722,185 @@ void testTimeValidationAndSafeConversion(){
     }
 }
 } // namespace
+void testBookingModelLifecycle(){
+    using namespace std::chrono_literals;
+    const auto created = smartpark::Booking::Clock::from_time_t(1700000000);
+    const auto arrival = created + 2h;
+    const auto deadline = arrival + 30min;
+    smartpark::Booking booked("BK001", u8"晋A12345", "A001", created, arrival, deadline, 20.0);
+    expect(booked.id() == "BK001", "booking keeps its id");
+    expect(booked.plateNumber() == u8"晋A12345", "booking keeps its plate number");
+    expect(booked.spotId() == "A001", "booking keeps its spot id");
+    expect(booked.createdAt() == created && booked.arrivalTime() == arrival
+               && booked.arrivalDeadline() == deadline,
+           "booking keeps its timestamps");
+    expect(booked.deposit() == 20.0, "booking keeps its deposit");
+    expect(booked.status() == smartpark::BookingStatus::Booked, "new booking is booked");
+    expect(booked.isActive(), "new booking is active");
+    expect(booked.checkIn(), "booked booking can check in");
+    expect(booked.status() == smartpark::BookingStatus::CheckedIn,
+           "check-in updates the booking status");
+    expect(!booked.isActive(), "checked-in booking is no longer active");
+    expect(!booked.checkIn(), "checked-in booking cannot check in twice");
+
+    smartpark::Booking noShow("BK002", u8"晋A12345", "A001", created, arrival, deadline, 20.0);
+    expect(noShow.markNoShow(), "booked booking can be marked no-show");
+    expect(noShow.status() == smartpark::BookingStatus::NoShow,
+           "no-show updates the booking status");
+    expect(!noShow.markNoShow(), "no-show booking cannot transition again");
+
+    smartpark::Booking cancelled("BK003", u8"晋A12345", "A001", created, arrival, deadline, 20.0);
+    expect(cancelled.cancel(), "booked booking can be cancelled");
+    expect(cancelled.status() == smartpark::BookingStatus::Cancelled,
+           "cancel updates the booking status");
+
+    expectThrows<std::invalid_argument>(
+        [&] { smartpark::Booking b("", u8"晋A12345", "A001", created, arrival, deadline, 20.0); },
+        "booking rejects an empty id");
+    expectThrows<std::invalid_argument>(
+        [&] { smartpark::Booking b("BK", "", "A001", created, arrival, deadline, 20.0); },
+        "booking rejects an empty plate number");
+    expectThrows<std::invalid_argument>(
+        [&] { smartpark::Booking b("BK", u8"晋A12345", "", created, arrival, deadline, 20.0); },
+        "booking rejects an empty spot id");
+    expectThrows<std::invalid_argument>(
+        [&] { smartpark::Booking b("BK", u8"晋A12345", "A001", created, arrival, deadline, -1.0); },
+        "booking rejects a negative deposit");
+    expectThrows<std::invalid_argument>(
+        [&] { smartpark::Booking b("BK", u8"晋A12345", "A001", created, created - 1h, deadline, 20.0); },
+        "booking rejects an arrival before creation");
+    expectThrows<std::invalid_argument>(
+        [&] { smartpark::Booking b("BK", u8"晋A12345", "A001", created, arrival, arrival - 1min, 20.0); },
+        "booking rejects a deadline before arrival");
+}
+const std::string bookingLayoutDescription =
+    "site 60 30\n"
+    "entrance 0 15\n"
+    "exit 60 15\n"
+    "region A 10 10 1 3 1.2 5.5 6 left\n";
+void testBookingCreateConfirmAndRoutes(){
+    using namespace std::chrono_literals;
+    smartpark::ParkingService service(
+        smartpark::ParkingLayout::fromDescription(bookingLayoutDescription));
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
+    const smartpark::Vehicle vehicle(u8"晋A12345", smartpark::VehicleType::Car);
+    const auto booked = service.createBooking(vehicle, now + 2h, now);
+    expect(booked.has_value(), "booking can be created within the advance window");
+    expect(booked->booking.status() == smartpark::BookingStatus::Booked,
+           "created booking is active");
+    expect(booked->booking.deposit() == service.bookingPolicy().deposit,
+           "created booking charges the configured deposit");
+    expect(booked->allocation.entryRoute.points.size() >= 2
+               && booked->allocation.exitRoute.points.size() >= 2,
+           "booking returns the expected entry and exit routes");
+    expect(booked->allocation.entryRoute.distance > 0.0,
+           "booking entry route has a positive distance");
+    expect(service.reservedSpots() == 1, "booking reserves one spot");
+    expect(service.pendingDeposits() == 20.0, "booking holds the deposit before arrival");
+    expect(service.forfeitedDeposits() == 0.0, "booking does not forfeit before no-show");
+    const auto arrived = service.confirmBooking(u8"晋A12345", now + 2h);
+    expect(arrived.has_value(), "booking can be confirmed at its arrival time");
+    expect(arrived->spotId == booked->booking.spotId(),
+           "confirmation occupies the reserved spot");
+    expect(service.occupiedSpots() == 1, "confirmed booking becomes occupied");
+    expect(service.reservedSpots() == 0, "confirmed booking releases the reservation hold");
+    expect(service.pendingDeposits() == 0.0, "arrival refunds the deposit");
+    expect(service.forfeitedDeposits() == 0.0, "arrival does not forfeit the deposit");
+    expect(!service.activeBooking(u8"晋A12345").has_value(),
+           "confirmed booking is no longer active");
+    expect(service.bookings().size() == 1 && service.bookings().front().status()
+               == smartpark::BookingStatus::CheckedIn,
+           "confirmed booking is recorded as checked-in");
+}
+void testBookingNoShowForfeitsDeposit(){
+    using namespace std::chrono_literals;
+    smartpark::ParkingService service(
+        smartpark::ParkingLayout::fromDescription(bookingLayoutDescription));
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
+    const smartpark::Vehicle vehicle(u8"晋A12345", smartpark::VehicleType::Car);
+    const auto booked = service.createBooking(vehicle, now + 1h, now);
+    expect(booked.has_value(), "no-show test can create a booking");
+    service.expireBookings(now + 1h + 29min);
+    expect(service.reservedSpots() == 1, "booking stays reserved within the grace period");
+    service.expireBookings(now + 1h + 31min);
+    expect(service.reservedSpots() == 0, "expired booking releases its spot");
+    expect(service.forfeitedDeposits() == 20.0, "no-show forfeits the deposit");
+    expect(service.pendingDeposits() == 0.0, "no-show clears the pending deposit");
+    expect(service.bookings().front().status() == smartpark::BookingStatus::NoShow,
+           "expired booking is marked no-show");
+    expect(service.remainingSpots() == 3, "the released spot is available again");
+}
+void testBookingRejectsOutOfWindow(){
+    using namespace std::chrono_literals;
+    smartpark::ParkingService service(
+        smartpark::ParkingLayout::fromDescription(bookingLayoutDescription));
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
+    const smartpark::Vehicle vehicle(u8"晋A12345", smartpark::VehicleType::Car);
+    expect(!service.createBooking(vehicle, now - 1h, now).has_value(),
+           "booking rejects a past arrival time");
+    expect(!service.createBooking(vehicle, now, now).has_value(),
+           "booking rejects an arrival time equal to now");
+    expect(!service.createBooking(vehicle, now + 8 * 24h, now).has_value(),
+           "booking rejects an arrival beyond seven days");
+    const auto booked = service.createBooking(vehicle, now + 2h, now);
+    expect(booked.has_value(), "booking accepts an arrival within the week");
+    expect(!service.createBooking(vehicle, now + 3h, now).has_value(),
+           "booking rejects a duplicate active booking");
+    const smartpark::Vehicle other(u8"晋A88888", smartpark::VehicleType::Electric);
+    expect(service.createBooking(other, now + 2h, now).has_value(),
+           "a different vehicle can book a different spot");
+}
+void testBookingCancelRefunds(){
+    using namespace std::chrono_literals;
+    smartpark::ParkingService service(
+        smartpark::ParkingLayout::fromDescription(bookingLayoutDescription));
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
+    const smartpark::Vehicle vehicle(u8"晋A12345", smartpark::VehicleType::Car);
+    const auto booked = service.createBooking(vehicle, now + 2h, now);
+    expect(booked.has_value(), "cancel test can create a booking");
+    expect(!service.cancelBooking(u8"晋A12345", now + 2h),
+           "booking cannot be cancelled after its arrival time");
+    expect(service.reservedSpots() == 1, "late cancel leaves the booking reserved");
+    expect(service.cancelBooking(u8"晋A12345", now + 1h),
+           "booking can be cancelled before its arrival time");
+    expect(service.reservedSpots() == 0, "cancelled booking releases its spot");
+    expect(service.forfeitedDeposits() == 0.0, "cancellation does not forfeit the deposit");
+    expect(service.bookings().front().status() == smartpark::BookingStatus::Cancelled,
+           "cancelled booking is recorded as cancelled");
+}
+void testBookingPersistenceAcrossRestart(){
+    using namespace std::chrono_literals;
+    const auto layout = smartpark::ParkingLayout::fromDescription(bookingLayoutDescription);
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
+    QTemporaryDir directory;
+    expect(directory.isValid(), "booking persistence test can create a temporary directory");
+    const QString databasePath = directory.filePath("smartpark.db");{
+        smartpark::Persistence persistence(databasePath);
+        smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                          &persistence.repository());
+        const auto kept = service.createBooking(
+            {u8"晋A12345", smartpark::VehicleType::Car}, now + 2h, now);
+        expect(kept.has_value(), "booking persistence test can book the first vehicle");
+        const auto noShow = service.createBooking(
+            {u8"晋A22222", smartpark::VehicleType::Car}, now + 1h, now);
+        expect(noShow.has_value(), "booking persistence test can book the second vehicle");
+        service.expireBookings(now + 1h + 31min);
+        expect(service.forfeitedDeposits() == 20.0,
+               "booking persistence test forfeits the no-show deposit");
+    }
+    smartpark::Persistence restoredPersistence(databasePath);
+    smartpark::ParkingService restored(layout, smartpark::AllocationStrategy::Nearest,
+                                       &restoredPersistence.repository());
+    expect(restored.bookings().size() == 2, "restart restores every booking");
+    expect(restored.reservedSpots() == 1, "restart restores the active booking reservation");
+    const auto active = restored.activeBooking(u8"晋A12345");
+    expect(active.has_value(), "restart restores the active booking");
+    expect(restored.forfeitedDeposits() == 20.0,
+           "restart preserves the forfeited deposit");
+    const auto arrived = restored.confirmBooking(u8"晋A12345", now + 2h);
+    expect(arrived.has_value(), "an active booking can be confirmed after restart");
+    expect(restored.occupiedSpots() == 1, "post-restart confirmation occupies the spot");
+}
 int main(){
     int argc = 0;
     char programName[] = "smartpark_core_tests";
@@ -746,6 +926,12 @@ int main(){
     testDisabledStateAndExpiryInvariants();
     testLayoutSpotSetValidation();
     testTimeValidationAndSafeConversion();
+    testBookingModelLifecycle();
+    testBookingCreateConfirmAndRoutes();
+    testBookingNoShowForfeitsDeposit();
+    testBookingRejectsOutOfWindow();
+    testBookingCancelRefunds();
+    testBookingPersistenceAcrossRestart();
     if (failureCount != 0){
         std::cerr << failureCount << " test assertion(s) failed\n";
         return 1;
