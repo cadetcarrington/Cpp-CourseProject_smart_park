@@ -38,10 +38,11 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 - `BillingRule` 与 `BillingService`：免费时长、计费单元、首单元费用、后续单元费用和单次封顶；`ParkingService` 在离场/释放车位时自动计算费用并写入停车记录。
 - CLI 支持 `--db <路径>` 指定数据库、`--reset` 清空数据库后演示。
 - Qt Admin GUI 支持 `--db <路径>`，应用布局时若与数据库签名不一致会提示并可选重置数据库。
+- `Booking` 模型与预约 API：远程预约、近一周时间窗、预付定金、到场确认、取消、爽约扣定金与预期路线，持久化到 `bookings` 表并跨重启恢复。
 
-CLI 启动时打印默认计费规则，批量演示入场/离场并汇总累计停车费；Qt Admin GUI 显示计费规则，并在释放最近车位后显示本次费用与累计收费。
+CLI 启动时打印默认计费规则，批量演示入场/离场并汇总累计停车费；同时演示预约流程（远程预约返回预期路线、到场确认、爽约没收定金），并汇总待结算与爽约没收定金。
 
-下一步将实现预约系统（远程预约、近一周时间窗、预付定金、爽约扣定金、预期路线），并继续推进 TCP 服务端与出入口终端，把 `BillingRule` 扩展为 GUI 可配置、可持久化。
+下一步将实现 TCP 服务端与出入口终端，并把 `BillingRule` 扩展为 GUI 可配置、可持久化。
 
 尚未接入 TCP 通信、真实 LPR、多线程、用户端或统计图表。调研来源与明确不做的方案见 `docs/research-sources.md`。
 
@@ -95,19 +96,18 @@ Booked ──到场(confirmBooking)──> CheckedIn ──> 停车记录 / 离�
 - 收费服务已接入 `ParkingService`、CLI 与 Admin GUI；离场费用随停车记录持久化。
 - 在 `s1` 上验证：CLI 与 Qt 构建通过，`cli-tests` / `qt-tests` 均为 2/2 通过，GUI offscreen 启动正常。
 - CLI 默认持久化可重复运行，连续运行至 60/60 满场后仍稳定输出 `RESULT: PASS`。
-- 正在实现预约系统（Booking）：远程预约、近一周时间窗、预付定金、爽约扣定金与预期路线，详见上文设计。
+- 预约系统（Booking）已完成：远程预约、近一周时间窗、预付定金、到场退回定金、爽约没收定金与预期路线，持久化到 `bookings` 表并跨重启恢复。
 
-尚未完成：预约系统落地、TCP Server、Gate Terminal、真实 LPR、用户端与统计图表。
+尚未完成：TCP Server、Gate Terminal、真实 LPR、用户端与统计图表。
 
 ## 后续发展路线
 
 按调研结论推进，优先级从高到低：
 
-1. **P0 — 预约系统（Booking）**：新增 `Booking` 模型与 `bookings` 持久化，在 `ParkingService` 上提供预约、到场确认、取消、爽约处理与预期路线能力，并接入定金约束。
-2. **P1 — TCP 协议与服务端**：先写 `docs/tcp-protocol.md`，再用 `QTcpServer` 实现登录、心跳和入场/离场事件。
-3. **P2 — Gate Terminal + Fake LPR + 离线队列**：先以假识别打通出入口，再补齐断线缓存和补报。
-4. **P3 — 双路线真实 LPR**：先接入 HyperLPR3 作为可运行基线，再训练 `YOLO11m + PP-OCRv5` 中国车牌专用模型；使用 CCPD 与 SmartPark 场景数据做统一评测。
-5. **P4 — BillingRule 配置化、支付、图表、用户端**：在前述链路稳定后再扩展外围能力。
+1. **P0 — TCP 协议与服务端**：先写 `docs/tcp-protocol.md`，再用 `QTcpServer` 实现登录、心跳和入场/离场事件。
+2. **P1 — Gate Terminal + Fake LPR + 离线队列**：先以假识别打通出入口，再补齐断线缓存和补报。
+3. **P2 — 双路线真实 LPR**：先接入 HyperLPR3 作为可运行基线，再训练 `YOLO11m + PP-OCRv5` 中国车牌专用模型；使用 CCPD 与 SmartPark 场景数据做统一评测。
+4. **P3 — BillingRule 配置化、支付、图表、用户端**：在前述链路稳定后再扩展外围能力，并把预约系统的定金规则接入用户端与支付。
 
 明确不做：EasyPR、纯云端计费、微信小程序、Go 微服务，以及把 LPR 放进 `ParkingService`。
 
@@ -137,7 +137,7 @@ Booked ──到场(confirmBooking)──> CheckedIn ──> 停车记录 / 离�
 ├── docs/            # 调研来源与路线说明
 ├── src/
 │   ├── core/
-│   │   ├── model/   # Geometry、Vehicle、ParkingSpot、ParkingLayout、ParkingRecord
+│   │   ├── model/   # Geometry、Vehicle、ParkingSpot、ParkingLayout、ParkingRecord、Booking
 │   │   ├── persistence/ # DatabaseManager、ParkingRepository、Persistence
 │   │   └── service/ # GridPlanner、SpotAllocator、ParkingService
 │   ├── database/    # 数据库连接与仓储层
@@ -161,14 +161,21 @@ Booked ──到场(confirmBooking)──> CheckedIn ──> 停车记录 / 离�
 4. ✅ 分配器重构：独立选位算法、拥堵边权、预留 TTL、车位类型和多出入口。
 5. ✅ SQLite 持久化：核心层已完成，CLI/GUI 已接入并支持重启恢复。
 6. ✅ 收费系统：根据停车时长、免费时长、计费单元和单次封顶计算并持久化费用，CLI/GUI 已展示。
-7. 🔄 预约系统：远程预约、近一周时间窗、预付定金、爽约扣定金与预期路线。
+7. ✅ 预约系统：远程预约、近一周时间窗、预付定金、爽约扣定金与预期路线。
 8. ⬜ 服务端：以 TCP 建立管理员端与服务端架构。
 9. ⬜ 出入口终端：手动输入车牌并通过服务端处理业务。
 10. ⬜ 车牌识别：实现 HyperLPR3 基线，并完成 YOLO11m + PP-OCRv5 中国车牌专用模型训练、评测与 C++ 部署。
 
 ## 最近工作记录
 
-最近一轮完成“BillingService 接入 CLI/GUI”：
+最近一轮完成“预约系统（Booking）”：
+
+- 新增 `Booking` 模型与 `BookingPolicy`（定金、最多提前天数、到场宽限期），预约状态机为 `Booked -> CheckedIn / NoShow / Cancelled`。
+- `ParkingRepository` 新增 `bookings` 表与 `saveBooking` / `saveBookingStatus` / `saveBookingCheckIn` / `loadBookings`，预约记录跨重启恢复。
+- `ParkingService` 新增 `createBooking` / `confirmBooking` / `cancelBooking` / `expireBookings`：远程预约、近一周时间窗、预付定金、到场退回定金、爽约没收定金，并复用分配器返回预期路线。
+- CLI 演示预约流程并汇总待结算/爽约没收定金；新增预约生命周期、爽约扣定金与重启恢复单元测试。
+
+上一轮完成“BillingService 接入 CLI/GUI”：
 
 - 新增 `BillingRule` / `BillingService`，离场费用在 `ParkingService` 中统一计算并写入 `ParkingRecord`。
 - `ParkingRepository::saveExit()` 保留费用参数，费用与停车记录在同一 SQLite 事务中持久化。
@@ -649,19 +656,20 @@ CLI 默认把车位与停车记录持久化到 SQLite：未指定 `--db` 时使�
 | `src/core/model/Geometry.h` | 定义坐标、矩形和几何工具。 |
 | `src/core/model/ParkingLayout.h/.cpp` | 解析自定义布局并生成车位矩形、类型和出入口。 |
 | `src/core/model/ParkingRecord.h/.cpp` | 保存一次停车的车牌、车位、时间、时长和费用。 |
+| `src/core/model/Booking.h/.cpp` | 定义预约记录（编号、车牌、车位、时间、定金、状态）与 `BookingPolicy`。 |
 | `src/core/model/Vehicle.h` | 声明车辆类型、车辆数据与只读访问接口。 |
 | `src/core/model/Vehicle.cpp` | 实现车辆构造、非空车牌校验和数据访问。 |
 | `src/core/persistence/DatabaseManager.h/.cpp` | SQLite 连接与生命周期管理。 |
-| `src/core/persistence/ParkingRepository.h/.cpp` | 建表、入场/离场/预约持久化与状态恢复。 |
+| `src/core/persistence/ParkingRepository.h/.cpp` | 建表、入场/离场/预约/预约记录持久化与状态恢复。 |
 | `src/core/persistence/Persistence.h/.cpp` | CLI/GUI 共用的数据库封装，提供默认路径与 RAII 生命周期。 |
 | `src/core/model/ParkingSpot.h` | 声明车位状态、类型、当前车辆、预留和占用接口。 |
 | `src/core/model/ParkingSpot.cpp` | 实现单个车位的状态转换，拒绝重复占用或释放。 |
 | `src/core/service/GridPlanner.h/.cpp` | 实现障碍感知栅格 A*、多目标搜索和拥堵边权。 |
 | `src/core/service/SpotAllocator.h/.cpp` | 独立选位、策略、评分和路径缓存。 |
 | `src/core/service/Billing.h/.cpp` | 定义计费规则并计算离场费用。 |
-| `src/core/service/ParkingService.h/.cpp` | 实现入场、离场、计费、预留 TTL、剩余车位和历史记录查询。 |
+| `src/core/service/ParkingService.h/.cpp` | 实现入场、离场、计费、预留 TTL、预约（创建/确认/取消/爽约）、剩余车位和历史记录查询。 |
 | `tests/CMakeLists.txt` | 构建并注册模型单元测试。 |
-| `tests/core_model_tests.cpp` | 验证模型、预留、计费边界、类型匹配、拥堵绕行和多入口选择。 |
+| `tests/core_model_tests.cpp` | 验证模型、预留、计费边界、类型匹配、拥堵绕行、多入口选择与预约生命周期。 |
 | `apps/admin/CMakeLists.txt` | 构建可选 Qt 管理员端，Qt 自动处理只作用于该目标。 |
 | `apps/admin/main.cpp` | 独立 GUI 入口，解析 `--db` 参数并启动主窗口。 |
 | `apps/admin/MainWindow.h/.cpp` | 实现布局编辑、车位图、自动分配、路线显示与数据库恢复/重置交互。 |

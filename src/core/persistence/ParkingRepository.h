@@ -1,4 +1,5 @@
 #pragma once
+#include "core/model/Booking.h"
 #include "core/model/ParkingLayout.h"
 #include "core/model/ParkingRecord.h"
 #include "core/model/ParkingSpot.h"
@@ -32,6 +33,12 @@ public:
                   const ParkingRecord::TimePoint &exitTime,
                   double fee = 0.0);
     bool saveSpotState(const ParkingSpot &spot);
+    bool saveBooking(const Booking &booking);
+    bool saveBookingStatus(const Booking &booking);
+    bool saveBookingCheckIn(const Booking &booking,
+                            const ParkingRecord &record,
+                            const ParkingSpot &spot);
+    std::vector<Booking> loadBookings();
     std::vector<PersistedSpotState> loadSpotStates();
     std::vector<PersistedRecord> loadRecords();
     const std::string &lastError() const noexcept;
@@ -42,6 +49,7 @@ private:
     bool closeRecordInTransaction(const ParkingRecord &record,
                                   qint64 exitTimeMs,
                                   double fee);
+    bool updateBookingStatusInTransaction(const Booking &booking);
     bool markSpotAvailableInTransaction(const std::string &spotId);
     QSqlDatabase database_;
     std::string lastError_;

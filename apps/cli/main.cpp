@@ -152,6 +152,35 @@ void printClosedRecord(const smartpark::ParkingRecord &record, int sequence){
     printDuration(record.duration());
     std::cout << " | 费用: " << formatMoney(record.fee()) << " 元\n";
 }
+const char *bookingStatusText(smartpark::BookingStatus status){
+    switch (status){
+    case smartpark::BookingStatus::Booked:
+        return "已预约";
+    case smartpark::BookingStatus::CheckedIn:
+        return "已到场";
+    case smartpark::BookingStatus::NoShow:
+        return "爽约";
+    case smartpark::BookingStatus::Cancelled:
+        return "已取消";
+    }
+    return "未知";
+}
+void printBookingRoute(const smartpark::AllocationResult &result){
+    std::cout << "  预期路线: 入口门 in#" << result.entranceIndex
+              << " -> " << result.spotId
+              << " | 入口距离 " << result.entryRoute.distance << "m"
+              << " | 出口门 out#" << result.exitIndex
+              << " | 出口距离 " << result.exitRoute.distance << "m"
+              << " | 转弯次数 " << (result.entryRoute.turnCount + result.exitRoute.turnCount)
+              << " | 得分 " << result.score << '\n';
+    if (!result.entryRoute.points.empty()){
+        const smartpark::Point &first = result.entryRoute.points.front();
+        const smartpark::Point &last = result.entryRoute.points.back();
+        std::cout << "  入口路线: (" << first.x << ", " << first.y << ") -> ("
+                  << last.x << ", " << last.y << ") through "
+                  << result.entryRoute.points.size() << " waypoints\n";
+    }
+}
 } // namespace
 int main(int argc, char **argv){
     QCoreApplication application(argc, argv);
@@ -263,6 +292,55 @@ int main(int argc, char **argv){
                 break;
             }
         }
+        std::cout << "\n===== 预约系统演示 =====\n";
+        printBillingRule(service.billing().rule());
+        std::cout << "  预约策略: 定金 " << formatMoney(service.bookingPolicy().deposit)
+                  << " 元 | 最多提前 " << service.bookingPolicy().advanceDays
+                  << " 天 | 到场宽限 " << service.bookingPolicy().gracePeriod.count()
+                  << " 分钟\n";
+        {
+            const smartpark::Vehicle bookingVehicle(u8"晋Y10001", smartpark::VehicleType::Car);
+            const auto arrivalTime = entryTime + std::chrono::minutes(120);
+            const auto booked = service.createBooking(bookingVehicle, arrivalTime, entryTime);
+            if (booked){
+                std::cout << "  远程预约: " << booked->booking.id()
+                          << " 车牌 " << booked->booking.plateNumber()
+                          << " | 车位 " << booked->booking.spotId()
+                          << " | 定金 " << formatMoney(booked->booking.deposit())
+                          << " 元 | 状态 " << bookingStatusText(booked->booking.status()) << '\n';
+                printBookingRoute(booked->allocation);
+                const auto arrived = service.confirmBooking(bookingVehicle.plateNumber(), arrivalTime);
+                if (arrived){
+                    std::cout << "  到场确认: 车牌 " << bookingVehicle.plateNumber()
+                              << " 转入停车，占用车位 " << arrived->spotId
+                              << "，定金退回\n";
+                } else{
+                    std::cout << "  到场确认失败，预约未转为停车。\n";
+                }
+            } else{
+                std::cout << "  远程预约演示跳过（无可用车位或车牌已占用）。\n";
+            }
+        }
+        {
+            const smartpark::Vehicle noShowVehicle(u8"晋Y10002", smartpark::VehicleType::Electric);
+            const auto arrivalTime = entryTime + std::chrono::minutes(180);
+            const auto booked = service.createBooking(noShowVehicle, arrivalTime, entryTime);
+            if (booked){
+                service.expireBookings(arrivalTime
+                                       + service.bookingPolicy().gracePeriod
+                                       + std::chrono::minutes(1));
+                std::cout << "  爽约示例: 预约 " << booked->booking.id()
+                          << " 车牌 " << booked->booking.plateNumber()
+                          << " 超过宽限期未到场，没收定金 "
+                          << formatMoney(booked->booking.deposit()) << " 元\n";
+            } else{
+                std::cout << "  爽约演示跳过（无可用车位或车牌已占用）。\n";
+            }
+        }
+        std::cout << "  预约记录: " << service.bookings().size()
+                  << " 条 | 待结算定金: " << formatMoney(service.pendingDeposits())
+                  << " 元 | 爽约没收定金: " << formatMoney(service.forfeitedDeposits())
+                  << " 元\n";
         std::cout << "\n===== 结算汇总 =====\n"
                   << "  本次新入场: " << enteredCount << " 辆\n"
                   << "  本次离场: " << exitedCount << " 辆\n"
