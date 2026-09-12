@@ -7,10 +7,12 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <ctime>
 #include <exception>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <locale>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -18,15 +20,41 @@
 #include <vector>
 namespace{
 const char *usageText =
-    "usage: smartpark_cli [layout.txt] [--db <path>] [--reset]\n"
+    "usage: smartpark_cli [layout.txt] [--db <path>] [--reset] [预约命令]\n"
     "  layout.txt   自定义停车场布局文本文件，缺省使用内置 60 车位布局\n"
     "  --db <path>  SQLite 数据库文件路径，缺省使用用户数据目录 smartpark/smartpark.db\n"
     "  --reset      启动前删除数据库文件，保证从空库开始\n"
+    "预约命令（指定任一命令时只执行预约流程，不运行自动演示）：\n"
+    "  --book <plate>           预约车位，到场时间默认 60 分钟后\n"
+    "  --checkin <plate>        预约到场确认，转入停车并退回定金\n"
+    "  --cancel <plate>         取消预约（须在到场时间之前），退定金并释放车位\n"
+    "  --bookings               列出全部预约记录与定金统计\n"
+    "  --expire-bookings        结算爽约预约（超过宽限期未到场的没收定金）\n"
+    "  --at \"YYYY-MM-DD HH:MM\"  绝对基准时间（默认当前时间）\n"
+    "  --in <minutes>           相对基准时间的分钟偏移（默认 0）\n"
+    "  --type <name>            车辆类型 car|motorcycle|truck|electric（默认 car）\n"
+    "示例：\n"
+    "  smartpark_cli --db p.db --book 晋A12345 --in 90\n"
+    "  smartpark_cli --db p.db --checkin 晋A12345 --in 90\n"
+    "  smartpark_cli --db p.db --cancel 晋A12345\n"
+    "  smartpark_cli --db p.db --bookings\n"
     "  --help       显示本帮助\n";
 struct Options{
     std::string layoutPath;
     std::string databasePath;
     bool resetDatabase{false};
+    std::string bookPlate;
+    std::string checkinPlate;
+    std::string cancelPlate;
+    std::string atText;
+    int inMinutes{-1};
+    std::string vehicleTypeText;
+    bool listBookings{false};
+    bool expireNow{false};
+    bool hasBookingCommand() const{
+        return !bookPlate.empty() || !checkinPlate.empty() || !cancelPlate.empty()
+            || listBookings || expireNow;
+    }
 };
 Options parseOptions(int argc, char **argv){
     Options options;
@@ -39,6 +67,46 @@ Options parseOptions(int argc, char **argv){
             options.databasePath = argv[++index];
         } else if (argument == "--reset"){
             options.resetDatabase = true;
+        } else if (argument == "--book" || argument == "--checkin"
+                   || argument == "--cancel"){
+            if (index + 1 >= argc){
+                throw std::runtime_error(argument + " requires a plate number");
+            }
+            const std::string plate = argv[++index];
+            if (argument == "--book"){
+                options.bookPlate = plate;
+            } else if (argument == "--checkin"){
+                options.checkinPlate = plate;
+            } else{
+                options.cancelPlate = plate;
+            }
+        } else if (argument == "--at"){
+            if (index + 1 >= argc){
+                throw std::runtime_error("--at requires a time like \"YYYY-MM-DD HH:MM\"");
+            }
+            options.atText = argv[++index];
+        } else if (argument == "--in"){
+            if (index + 1 >= argc){
+                throw std::runtime_error("--in requires minutes");
+            }
+            const std::string minutes = argv[++index];
+            try{
+                options.inMinutes = std::stoi(minutes);
+            } catch (const std::exception &){
+                throw std::runtime_error("--in requires an integer: " + minutes);
+            }
+            if (options.inMinutes < 0){
+                throw std::runtime_error("--in must be >= 0: " + minutes);
+            }
+        } else if (argument == "--type"){
+            if (index + 1 >= argc){
+                throw std::runtime_error("--type requires a name");
+            }
+            options.vehicleTypeText = argv[++index];
+        } else if (argument == "--bookings"){
+            options.listBookings = true;
+        } else if (argument == "--expire-bookings"){
+            options.expireNow = true;
         } else if (!argument.empty() && argument[0] == '-'){
             throw std::runtime_error("unknown option: " + argument);
         } else if (options.layoutPath.empty()){
@@ -181,6 +249,115 @@ void printBookingRoute(const smartpark::AllocationResult &result){
                   << result.entryRoute.points.size() << " waypoints\n";
     }
 }
+std::optional<smartpark::VehicleType> parseVehicleTypeText(const std::string &text){
+    if (text.empty() || text == "car"){
+        return smartpark::VehicleType::Car;
+    }
+    if (text == "motorcycle"){
+        return smartpark::VehicleType::Motorcycle;
+    }
+    if (text == "truck"){
+        return smartpark::VehicleType::Truck;
+    }
+    if (text == "electric"){
+        return smartpark::VehicleType::Electric;
+    }
+    return std::nullopt;
+}
+std::optional<smartpark::ParkingRecord::TimePoint> parseArrivalTime(
+    const std::string &text){
+    std::tm parts{};
+    std::istringstream input(text);
+    input.imbue(std::locale::classic());
+    input >> std::get_time(&parts, "%Y-%m-%d %H:%M");
+    if (input.fail()){
+        return std::nullopt;
+    }
+    return std::chrono::system_clock::from_time_t(timegm(&parts));
+}
+std::string formatBookingTime(smartpark::Booking::TimePoint time){
+    const std::time_t epoch = smartpark::Booking::Clock::to_time_t(time);
+    std::tm parts{};
+    gmtime_r(&epoch, &parts);
+    char buffer[32];
+    if (std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M", &parts) == 0){
+        return "invalid-time";
+    }
+    return buffer;
+}
+bool bookCommand(smartpark::ParkingService &service, const Options &options,
+                 const smartpark::ParkingRecord::TimePoint &effectiveTime,
+                 bool arrivalSpecified){
+    const auto type = parseVehicleTypeText(options.vehicleTypeText);
+    if (!type){
+        std::cerr << "预约失败: 未知车辆类型 \"" << options.vehicleTypeText
+                  << "\"（可用: car | motorcycle | truck | electric）\n";
+        return false;
+    }
+    const smartpark::ParkingRecord::TimePoint arrival =
+        arrivalSpecified
+            ? effectiveTime
+            : smartpark::ParkingRecord::Clock::now() + std::chrono::minutes(60);
+    const smartpark::Vehicle vehicle(options.bookPlate, *type);
+    const auto booked = service.createBooking(
+        vehicle, arrival, smartpark::ParkingRecord::Clock::now());
+    if (!booked){
+        std::cerr << "预约失败: 车牌 " << options.bookPlate
+                  << " 无法预约（车牌已在场或已有生效预约、到场时间需在当前时间之后且不超过 "
+                  << service.bookingPolicy().advanceDays << " 天、或无可用车位）\n";
+        return false;
+    }
+    std::cout << "预约成功: " << booked->booking.id()
+              << " 车牌 " << booked->booking.plateNumber()
+              << " | 车位 " << booked->booking.spotId()
+              << " | 到场时间 " << formatBookingTime(booked->booking.arrivalTime())
+              << " | 宽限截止 " << formatBookingTime(booked->booking.arrivalDeadline())
+              << " | 定金 " << formatMoney(booked->booking.deposit())
+              << " 元 | 状态 " << bookingStatusText(booked->booking.status()) << '\n';
+    printBookingRoute(booked->allocation);
+    return true;
+}
+bool checkinCommand(smartpark::ParkingService &service, const Options &options,
+                    const smartpark::ParkingRecord::TimePoint &effectiveTime){
+    const auto arrived = service.confirmBooking(options.checkinPlate, effectiveTime);
+    if (!arrived){
+        std::cerr << "到场确认失败: 车牌 " << options.checkinPlate
+                  << " 没有可确认的预约（未预约、已取消、未到到场时间或已超过宽限期）\n";
+        return false;
+    }
+    std::cout << "到场确认成功: 车牌 " << options.checkinPlate
+              << " 转入停车，占用车位 " << arrived->spotId
+              << "，定金退回（离场时按计费规则结算）\n";
+    return true;
+}
+bool cancelCommand(smartpark::ParkingService &service, const Options &options,
+                   const smartpark::ParkingRecord::TimePoint &effectiveTime){
+    if (!service.cancelBooking(options.cancelPlate, effectiveTime)){
+        std::cerr << "取消失败: 车牌 " << options.cancelPlate
+                  << " 没有可取消的预约（取消须在预约到场时间之前）。\n";
+        return false;
+    }
+    std::cout << "取消成功: 车牌 " << options.cancelPlate
+              << " 预约已取消，定金退回，车位已释放。\n";
+    return true;
+}
+void listBookingsCommand(const smartpark::ParkingService &service){
+    const auto &bookings = service.bookings();
+    std::cout << "预约记录: " << bookings.size() << " 条\n";
+    for (const smartpark::Booking &booking : bookings){
+        std::cout << "  " << booking.id()
+                  << " | 车牌 " << booking.plateNumber()
+                  << " | 车位 " << booking.spotId()
+                  << " | 创建 " << formatBookingTime(booking.createdAt())
+                  << " | 到场 " << formatBookingTime(booking.arrivalTime())
+                  << " | 截止 " << formatBookingTime(booking.arrivalDeadline())
+                  << " | 定金 " << formatMoney(booking.deposit())
+                  << " | 状态 " << bookingStatusText(booking.status()) << '\n';
+    }
+    std::cout << "待结算定金: " << formatMoney(service.pendingDeposits())
+              << " 元 | 爽约没收定金: " << formatMoney(service.forfeitedDeposits())
+              << " 元\n";
+}
 } // namespace
 int main(int argc, char **argv){
     QCoreApplication application(argc, argv);
@@ -226,6 +403,43 @@ int main(int argc, char **argv){
             std::cout << "数据库: 禁用 (内存演示)\n";
         }
         std::cout << "\n";
+        if (options.hasBookingCommand()){
+            std::optional<smartpark::ParkingRecord::TimePoint> base;
+            if (!options.atText.empty()){
+                base = parseArrivalTime(options.atText);
+                if (!base){
+                    std::cerr << "RESULT: FAIL - --at 时间格式应为 \"YYYY-MM-DD HH:MM\"，收到 \""
+                              << options.atText << "\"\n";
+                    return 1;
+                }
+            }
+            const std::chrono::minutes offset(options.inMinutes < 0 ? 0 : options.inMinutes);
+            const smartpark::ParkingRecord::TimePoint effectiveTime =
+                (base.has_value() ? *base : smartpark::ParkingRecord::Clock::now())
+                + offset;
+            const bool arrivalSpecified = base.has_value() || options.inMinutes >= 0;
+            bool ok = true;
+            if (options.expireNow){
+                service.expireBookings(effectiveTime);
+                std::cout << "已结算爽约预约: 预约记录 " << service.bookings().size()
+                          << " 条 | 爽约没收定金 "
+                          << formatMoney(service.forfeitedDeposits()) << " 元\n";
+            }
+            if (!options.bookPlate.empty()){
+                ok = bookCommand(service, options, effectiveTime, arrivalSpecified) && ok;
+            }
+            if (!options.checkinPlate.empty()){
+                ok = checkinCommand(service, options, effectiveTime) && ok;
+            }
+            if (!options.cancelPlate.empty()){
+                ok = cancelCommand(service, options, effectiveTime) && ok;
+            }
+            if (options.listBookings){
+                listBookingsCommand(service);
+            }
+            std::cout << "\nRESULT: " << (ok ? "PASS" : "FAIL") << "\n";
+            return ok ? 0 : 1;
+        }
         // 每次运行生成唯一车牌，配合持久化可重复执行；停车场满时给出有效输出。
         const smartpark::ParkingRecord::TimePoint entryTime =
             smartpark::ParkingRecord::Clock::now();

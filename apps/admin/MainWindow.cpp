@@ -1,6 +1,10 @@
 #include "MainWindow.h"
+#include <QAbstractItemView>
 #include <QComboBox>
 #include <QColor>
+#include <QDateTime>
+#include <QDateTimeEdit>
+#include <QHeaderView>
 #include <QFile>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsRectItem>
@@ -16,9 +20,13 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSplitter>
+#include <QTableWidget>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <chrono>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
 #include <utility>
 namespace{
 smartpark::VehicleType vehicleTypeFromIndex(int index){
@@ -55,6 +63,25 @@ QColor statusColor(smartpark::SpotStatus status){
         return QColor(88, 182, 124);
     }
 }
+QString bookingStatusText(smartpark::BookingStatus status){
+    switch (status){
+    case smartpark::BookingStatus::CheckedIn:
+        return QStringLiteral("已到场");
+    case smartpark::BookingStatus::NoShow:
+        return QStringLiteral("爽约");
+    case smartpark::BookingStatus::Cancelled:
+        return QStringLiteral("已取消");
+    case smartpark::BookingStatus::Booked:
+    default:
+        return QStringLiteral("已预约");
+    }
+}
+QString formatBookingTime(smartpark::Booking::TimePoint time){
+    const std::time_t epoch = smartpark::Booking::Clock::to_time_t(time);
+    std::ostringstream stream;
+    stream << std::put_time(std::localtime(&epoch), "%Y-%m-%d %H:%M");
+    return QString::fromStdString(stream.str());
+}
 QPolygonF routePolygon(const smartpark::Route &route){
     QPolygonF polygon;
     for (const smartpark::Point &point : route.points){
@@ -78,6 +105,7 @@ MainWindow::MainWindow(QString databasePath, QWidget *parent)
     }
     buildUi();
     refreshScene();
+    refreshBookings();
     if (!persistenceActive){
         statusLabel_->setText(
             databaseFailed_
@@ -137,6 +165,49 @@ void MainWindow::buildUi(){
     controlLayout->addWidget(strategyInput_);
     controlLayout->addWidget(allocateButton_);
     controlLayout->addWidget(releaseButton_);
+    auto *bookingGroup = new QGroupBox("车位预约", centralWidget);
+    auto *bookingLayout = new QVBoxLayout(bookingGroup);
+    auto *bookingBar = new QWidget(bookingGroup);
+    auto *bookingBarLayout = new QHBoxLayout(bookingBar);
+    arrivalInput_ = new QDateTimeEdit(bookingBar);
+    arrivalInput_->setDateTime(QDateTime::currentDateTime().addSecs(60 * 60));
+    arrivalInput_->setDisplayFormat(QStringLiteral("yyyy-MM-dd HH:mm"));
+    arrivalInput_->setCalendarPopup(true);
+    arrivalInput_->setMinimumDateTime(QDateTime::currentDateTime());
+    arrivalInput_->setToolTip(QStringLiteral("预约到场时间：当前时间之后、最多提前 7 天"));
+    bookButton_ = new QPushButton("预约车位", bookingBar);
+    checkInButton_ = new QPushButton("到场确认", bookingBar);
+    cancelBookingButton_ = new QPushButton("取消预约", bookingBar);
+    bookingBarLayout->addWidget(new QLabel("到场时间：", bookingBar));
+    bookingBarLayout->addWidget(arrivalInput_);
+    bookingBarLayout->addWidget(bookButton_);
+    bookingBarLayout->addWidget(checkInButton_);
+    bookingBarLayout->addWidget(cancelBookingButton_);
+    bookingBarLayout->addStretch(1);
+    const smartpark::BookingPolicy bookingPolicy = service_->bookingPolicy();
+    auto *bookingPolicyLabel = new QLabel(
+        QString("预约规则：定金 %1 元 | 最多提前 %2 天 | 到场宽限期 %3 分钟 | "
+                "车牌与车辆类型沿用上方输入框")
+            .arg(bookingPolicy.deposit, 0, 'f', 2)
+            .arg(bookingPolicy.advanceDays)
+            .arg(bookingPolicy.gracePeriod.count()),
+        bookingGroup);
+    bookingPolicyLabel->setWordWrap(true);
+    bookingsTable_ = new QTableWidget(bookingGroup);
+    bookingsTable_->setColumnCount(8);
+    bookingsTable_->setHorizontalHeaderLabels(
+        {"编号", "车牌", "车位", "创建时间", "到场时间", "宽限截止", "定金(元)", "状态"});
+    bookingsTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    bookingsTable_->verticalHeader()->setVisible(false);
+    bookingsTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    bookingsTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    bookingsTable_->setMinimumHeight(160);
+    depositLabel_ = new QLabel(bookingGroup);
+    depositLabel_->setWordWrap(true);
+    bookingLayout->addWidget(bookingBar);
+    bookingLayout->addWidget(bookingPolicyLabel);
+    bookingLayout->addWidget(bookingsTable_);
+    bookingLayout->addWidget(depositLabel_);
     billingLabel_ = new QLabel(centralWidget);
     billingLabel_->setWordWrap(true);
     const smartpark::BillingRule rule = service_->billing().rule();
@@ -152,11 +223,15 @@ void MainWindow::buildUi(){
     statusLabel_->setWordWrap(true);
     rootLayout->addWidget(splitter, 1);
     rootLayout->addWidget(controlBar);
+    rootLayout->addWidget(bookingGroup);
     rootLayout->addWidget(billingLabel_);
     rootLayout->addWidget(statusLabel_);
     setCentralWidget(centralWidget);
     connect(allocateButton_, &QPushButton::clicked, this, &MainWindow::allocateVehicle);
     connect(releaseButton_, &QPushButton::clicked, this, &MainWindow::releaseLastVehicle);
+    connect(bookButton_, &QPushButton::clicked, this, &MainWindow::bookVehicle);
+    connect(checkInButton_, &QPushButton::clicked, this, &MainWindow::checkInBooking);
+    connect(cancelBookingButton_, &QPushButton::clicked, this, &MainWindow::cancelActiveBooking);
     connect(strategyInput_, qOverload<int>(&QComboBox::currentIndexChanged),
             this, &MainWindow::updateStrategy);
 }
@@ -283,6 +358,7 @@ void MainWindow::applyLayout(){
     if (service_){
         lastAllocation_.reset();
         refreshScene();
+        refreshBookings();
     }
     if (databaseFailed_){
         statusLabel_->setText(
@@ -347,4 +423,108 @@ void MainWindow::releaseLastVehicle(){
                              "无法关闭该车辆的停车记录，分配结果已保留。");
     }
     refreshScene();
+}
+void MainWindow::refreshBookings(){
+    const auto &bookings = service_->bookings();
+    bookingsTable_->setRowCount(static_cast<int>(bookings.size()));
+    int row = 0;
+    for (const smartpark::Booking &booking : bookings){
+        const QString cells[] = {
+            QString::fromStdString(booking.id()),
+            QString::fromStdString(booking.plateNumber()),
+            QString::fromStdString(booking.spotId()),
+            formatBookingTime(booking.createdAt()),
+            formatBookingTime(booking.arrivalTime()),
+            formatBookingTime(booking.arrivalDeadline()),
+            QString::number(booking.deposit(), 'f', 2),
+            bookingStatusText(booking.status()),
+        };
+        for (int column = 0; column < 8; ++column){
+            auto *item = new QTableWidgetItem(cells[column]);
+            item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+            bookingsTable_->setItem(row, column, item);
+        }
+        ++row;
+    }
+    depositLabel_->setText(
+        QString("预约记录：%1 条 | 待结算定金：%2 元 | 爽约没收定金：%3 元")
+            .arg(static_cast<int>(bookings.size()))
+            .arg(service_->pendingDeposits(), 0, 'f', 2)
+            .arg(service_->forfeitedDeposits(), 0, 'f', 2));
+}
+void MainWindow::bookVehicle(){
+    const QString plate = plateInput_->text().trimmed();
+    if (plate.isEmpty()){
+        QMessageBox::information(this, "请输入车牌", "预约前请在上方输入车辆车牌。");
+        return;
+    }
+    const QDateTime arrival = arrivalInput_->dateTime();
+    if (arrival <= QDateTime::currentDateTime()){
+        QMessageBox::information(this, "到场时间无效", "预约到场时间必须在当前时间之后。");
+        return;
+    }
+    const auto arrivalTime = smartpark::Booking::Clock::time_point(
+        std::chrono::seconds(arrival.toSecsSinceEpoch()));
+    const smartpark::Vehicle vehicle(
+        plate.toStdString(), vehicleTypeFromIndex(vehicleTypeInput_->currentIndex()));
+    const auto booked = service_->createBooking(vehicle, arrivalTime);
+    if (!booked){
+        QMessageBox::warning(
+            this, "预约失败",
+            QString("车牌 %1 无法预约：车牌已在场或已有生效预约、到场时间超出可预约范围"
+                    "（最多提前 %2 天）或无可用车位。")
+                .arg(plate)
+                .arg(service_->bookingPolicy().advanceDays));
+        return;
+    }
+    lastAllocation_ = booked->allocation;
+    refreshScene();
+    refreshBookings();
+    statusLabel_->setText(
+        QString("预约成功：%1 | 车位 %2 | 到场 %3 | 宽限截止 %4 | 定金 %5 元已收取（待结算 %6 元）")
+            .arg(QString::fromStdString(booked->booking.id()))
+            .arg(QString::fromStdString(booked->booking.spotId()))
+            .arg(formatBookingTime(booked->booking.arrivalTime()))
+            .arg(formatBookingTime(booked->booking.arrivalDeadline()))
+            .arg(booked->booking.deposit(), 0, 'f', 2)
+            .arg(service_->pendingDeposits(), 0, 'f', 2));
+}
+void MainWindow::checkInBooking(){
+    const QString plate = plateInput_->text().trimmed();
+    if (plate.isEmpty()){
+        QMessageBox::information(this, "请输入车牌", "到场确认前请输入预约时使用的车牌。");
+        return;
+    }
+    const auto arrived = service_->confirmBooking(plate.toStdString());
+    if (!arrived){
+        QMessageBox::warning(
+            this, "到场确认失败",
+            QString("车牌 %1 没有可确认的预约：未预约、已取消、未到到场时间或已超过宽限期。")
+                .arg(plate));
+        return;
+    }
+    lastAllocation_ = arrived;
+    refreshScene();
+    refreshBookings();
+    statusLabel_->setText(
+        QString("到场确认成功：%1 转入停车，占用车位 %2，定金退回（离场时按计费规则结算）。")
+            .arg(plate)
+            .arg(QString::fromStdString(arrived->spotId)));
+}
+void MainWindow::cancelActiveBooking(){
+    const QString plate = plateInput_->text().trimmed();
+    if (plate.isEmpty()){
+        QMessageBox::information(this, "请输入车牌", "取消预约前请输入预约时使用的车牌。");
+        return;
+    }
+    if (!service_->cancelBooking(plate.toStdString())){
+        QMessageBox::warning(
+            this, "取消失败",
+            QString("车牌 %1 没有可取消的预约：取消必须在预约到场时间之前。").arg(plate));
+        return;
+    }
+    refreshScene();
+    refreshBookings();
+    statusLabel_->setText(
+        QString("取消成功：%1 预约已取消，定金退回，车位已释放。").arg(plate));
 }
