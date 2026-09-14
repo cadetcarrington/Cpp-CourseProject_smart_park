@@ -1,0 +1,45 @@
+name: Admin GUI cross-platform
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-admin:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+          - os: windows-2022
+          - os: macos-14
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.*'
+          cache: true
+
+      - name: Configure Admin
+        shell: bash
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSMARTPARK_BUILD_ADMIN=ON -DBUILD_TESTING=OFF
+
+      - name: Build Admin
+        shell: bash
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Smoke test Admin GUI
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            BIN="build/apps/admin/Release/smartpark_admin.exe"
+          else
+            BIN="build/apps/admin/smartpark_admin"
+          fi
+          "$BIN" --smoke-test
