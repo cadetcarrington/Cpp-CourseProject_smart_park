@@ -28,7 +28,8 @@ double octileDistance(Point from, Point to){
 }
 } // namespace
 GridPlanner::GridPlanner(double siteWidth, double siteHeight,
-                         const std::vector<ParkingSpot> &spots, double cellSize)
+                         const std::vector<ParkingSpot> &spots,
+                         const std::vector<Rectangle> &obstacles, double cellSize)
     : siteWidth_(siteWidth)
     , siteHeight_(siteHeight)
     , cellSize_(cellSize){
@@ -44,7 +45,10 @@ GridPlanner::GridPlanner(double siteWidth, double siteHeight,
             const bool spotBlocked = std::any_of(
                 spots.begin(), spots.end(),
                 [&center](const ParkingSpot &spot) { return spot.bounds().contains(center); });
-            if (spotBlocked){
+            const bool obstacleBlocked = std::any_of(
+                obstacles.begin(), obstacles.end(),
+                [&center](const Rectangle &obstacle) { return obstacle.contains(center); });
+            if (spotBlocked || obstacleBlocked){
                 blocked_[cellIndex(column, row)] = true;
             }
         }

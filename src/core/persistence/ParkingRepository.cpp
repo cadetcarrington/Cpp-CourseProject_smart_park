@@ -114,6 +114,11 @@ std::string ParkingRepository::layoutSignature(const ParkingLayout &layout) cons
         stream << "|R" << region.origin.x << ',' << region.origin.y << ','
                << region.width << ',' << region.height;
     }
+    for (const LayoutObstacle &obstacle : layout.obstacles()){
+        stream << "|O" << obstacle.name << ',' << obstacle.bounds.origin.x << ','
+               << obstacle.bounds.origin.y << ',' << obstacle.bounds.width << ','
+               << obstacle.bounds.height;
+    }
     for (const ParkingSpot &spot : layout.spots()){
         stream << "|S" << spot.identifier() << ',' << spot.zone() << ','
                << static_cast<int>(spot.type()) << ',' << spot.row() << ','

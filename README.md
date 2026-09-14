@@ -25,8 +25,9 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 - C++17、CMake 与 Qt 6 Widgets 的基础工程配置。
 - `Vehicle`、`ParkingSpot`、`ParkingLayout`、`ParkingRecord` 核心模型。
 - 独立的 `SpotAllocator`：`ParkingService` 只负责状态机，选位、评分和路径规划从业务层拆出。
-- 默认 60 车位、3 个矩形分区的自动分配服务。
-- 用户自定义多矩形停车场布局，支持不同车位长宽、通道位置、车位类型和多个出入口。
+- 默认 60 车位、3 个矩形分区的自动分配服务（CLI 内置布局）。
+- Admin GUI 默认使用 6 层车库建筑图布局：58m×42.4m、75 个车位、南北/东西向混合停放、双入口单出口；电气室/设备用房/蓄电池室/水箱间已改为停车位，仅两侧楼梯间不可通行。
+- 用户自定义多矩形停车场布局，支持不同车位长宽、通道位置（left/right/up/down）、车位类型、障碍物和多个出入口。
 - 基于 0.5 米栅格的 A* / 一次搜索到多目标 Dijkstra，自动避开车位障碍并生成入口/出口路线。
 - 拥堵写入 A* 边权，同时保留附近占用数作为车位评分项。
 - `WeightedCost` 默认策略和 `Nearest` 对照策略。
@@ -148,7 +149,7 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
 
 截至 2026-09-12，项目处于 **SmartPark 0.7**：预约系统第一版（`Booking`）已实现并在 CLI 与 Admin GUI 可操作化，完整的远程时间段预约（`Reservation`）已完成需求设计、尚未编码：
 
-- 已完成核心模型、60 车位自动分配、自定义多矩形布局、栅格 A* / Dijkstra 路线、拥堵边权、预留 TTL、CLI 与 Qt GUI。
+- 已完成核心模型、60 车位自动分配、自定义多矩形布局（含南北向车位与机房障碍）、栅格 A* / Dijkstra 路线、拥堵边权、预留 TTL、CLI 与 Qt GUI。
 - SQLite 持久化已接入 CLI 与 Admin GUI，支持跨重启恢复车位状态、预约和停车记录。
 - 收费服务已接入 `ParkingService`、CLI 与 Admin GUI；离场费用随停车记录持久化。
 - 最近一次在 `s1` 上验证：CLI 与 Qt 构建通过，`cli-tests` / `qt-tests` 均为 2/2 通过，GUI offscreen 启动正常。
@@ -227,6 +228,21 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
 11. ⬜ 车牌识别：实现 HyperLPR3 基线，并完成 YOLO11m + PP-OCRv5 中国车牌专用模型训练、评测与 C++ 部署。
 
 ## 最近工作记录
+
+2026-09-14 把 6-1 电气室/设备用房/蓄电池室和 6-7/6-8 水箱间改成停车位：
+
+- 图纸仍是 58.0m×42.4m、北墙双入口单出口；只保留东西两座楼梯间作为障碍。
+- 新增 J/J2（原电气室，4 充电 + 2 无障碍）、把 H 扩成两列 6 个 VIP、L（原蓄电池室，4 无障碍）、M（原水箱间，3 充电）。
+- 当前共 75 个车位：8 无障碍、15 充电、10 VIP、42 普通。三处文本保持同步：`ParkingLayout::garageDescription()`、`data/garage-6f.txt`、`my-layout.txt`。
+- CLI 默认仍是 60 车位，不要改；验证图纸用 `./build/qt/apps/cli/smartpark_cli data/garage-6f.txt`。
+- 接手说明见仓库根目录 `handoff.md`。
+
+2026-09-14 Admin GUI 按 6 层车库建筑图落地车位规划：
+
+- 布局引擎新增 `up` / `down`（`top` / `bottom`）通道方向：南北向车位沿 Y 停放，入口点在车位上/下方；原有 `left` / `right` 东西向车位保持不变。
+- 新增 `obstacle x y 宽 高 [名称]`：机房、楼梯间等不可通行，路径规划与 GUI 同步避开。
+- 按图纸尺寸编码 `ParkingLayout::garageLayout()` / `data/garage-6f.txt`：场地 58.0m×42.4m，北墙两入口一出口，中央岛式车位带 + 南侧 MQ2940 车位带 + 西侧零散车位。
+- Admin GUI 默认加载该图纸，并按建筑图绘制轴线（6-1～6-8 / 6-E～6-A）、外墙出入口开口、机房斜线填充、按车位类型着色（普通/无障碍/充电/VIP）。自定义布局对话框支持 `up|down` 与 `obstacle`。CLI 仍默认 60 车位，可用 `./build/qt/apps/cli/smartpark_cli data/garage-6f.txt` 验证图纸布局。
 
 2026-09-12 预约系统 CLI / GUI 可操作化：
 
@@ -683,16 +699,19 @@ entrance 0 30
 exit 100 30
 region A 5 8 10 2 1.2 5.5 6 left normal
 region B 38 24 10 2 1.4 6.0 6 right charging
-region C 71 40 10 2 1.2 5.5 6 left accessible
+region C 50 8 1 6 2.5 5.5 3.0 up accessible
+obstacle 80 5 12 20 设备用房
 ```
 
 字段含义：
 
 - `site 宽 高`：场地边界，单位米。
 - `entrance x y` 和 `exit x y`：入口与出口坐标，可重复多条。
-- `region 名称 x y 行数 列数 车位宽 车位长 通道宽 left|right [类型]`：一个矩形分区；每一列都是“一条通道 + 一排车位”的独立车 bay，每个分区可以使用不同车位尺寸。
+- `region 名称 x y 行数 列数 车位宽 车位长 通道宽 left|right|up|down [类型]`：一个矩形分区；`left` / `right` 为东西向停车（车位长沿 X），`up` / `down` 为南北向停车（车位长沿 Y），也可用 `top` / `bottom`。
+- `obstacle x y 宽 高 [名称]`：机房、楼梯等不可停车、不可通行区域。
 - 类型可选 `normal`、`charging`、`accessible`、`vip`，也支持 `type=charging` 写法；省略时默认为 `normal`。
 - `#` 开头的行是注释。
+- 图纸布局示例：`data/garage-6f.txt`（6 层车库平面图，75 车位；电气室/设备用房/蓄电池室/水箱间已改为停车位）。
 
 ## 终端验证（无需 Qt、Conda 或图形桌面）
 
@@ -704,6 +723,7 @@ region C 71 40 10 2 1.2 5.5 6 left accessible
 /usr/bin/ctest --preset cli-tests
 ./build/cli/apps/cli/smartpark_cli
 ./build/cli/apps/cli/smartpark_cli my-layout.txt
+./build/cli/apps/cli/smartpark_cli data/garage-6f.txt
 ./build/cli/apps/cli/smartpark_cli --db /tmp/smartpark.db --reset
 ```
 

@@ -205,6 +205,92 @@ void testCustomLayoutAndAutomaticAllocation(){
     expect(service.remainingSpots() == 31, "exit restores the parking spot");
     expect(!service.activeRecord(u8"晋A12345").has_value(), "exit closes the active record");
 }
+void testVerticalAislesAndObstacles(){
+    const std::string description =
+        "site 40 30\n"
+        "entrance 8 0\n"
+        "exit 32 0\n"
+        "region A 10 4 1 4 2.5 5.5 3.0 up charging\n"
+        "region B 10 16 2 1 2.4 5.5 3.0 left\n"
+        "obstacle 0.5 8 8 10 设备房\n";
+    const smartpark::ParkingLayout layout = smartpark::ParkingLayout::fromDescription(description);
+    expect(layout.spots().size() == 6, "vertical layout generates stall and side-bay spots");
+    expect(layout.obstacles().size() == 1, "layout stores named obstacles");
+    expect(layout.obstacles().front().name == "设备房", "obstacle keeps its display name");
+    const auto &north = layout.spots().front();
+    expect(north.bounds().width > 2.49 && north.bounds().width < 2.51
+               && north.bounds().height > 5.49 && north.bounds().height < 5.51,
+           "up aisle orients stall length along Y");
+    expect(north.accessPoint().y < north.bounds().origin.y,
+           "up aisle places the access point on the north side");
+    expect(north.type() == smartpark::SpotType::Charging,
+           "vertical region still applies spot types");
+    const auto &side = layout.spots().back();
+    expect(side.bounds().width > 5.49 && side.bounds().width < 5.51
+               && side.bounds().height > 2.39 && side.bounds().height < 2.41,
+           "left aisle keeps stall length along X");
+    expectThrows<std::invalid_argument>(
+        []{
+            smartpark::ParkingLayout::fromDescription(
+                "site 40 30\nentrance 5 0\nexit 35 0\n"
+                "region A 10 4 1 3 2.5 5.5 3.0 sideways\n");
+        },
+        "layout rejects an unknown aisle side");
+    expectThrows<std::invalid_argument>(
+        []{
+            smartpark::ParkingLayout::fromDescription(
+                "site 40 30\nentrance 5 0\nexit 35 0\n"
+                "region A 10 4 1 3 2.5 5.5 3.0 up\n"
+                "obstacle 10 4 4 4 机房\n");
+        },
+        "layout rejects an obstacle that overlaps a region");
+    smartpark::ParkingService service(layout);
+    expect(service.spots().size() == 6, "vertical spots are reachable from the north gates");
+    const auto parked = service.enter({u8"晋A12345", smartpark::VehicleType::Electric});
+    expect(parked.has_value(), "allocator can park into a vertical stall");
+}
+void testGarageFloorplanLayout(){
+    const smartpark::ParkingLayout layout = smartpark::ParkingLayout::garageLayout();
+    expect(layout.siteWidth() > 57.9 && layout.siteWidth() < 58.1
+               && layout.siteHeight() > 42.3 && layout.siteHeight() < 42.5,
+           "garage layout uses the 6F drawing site size");
+    expect(layout.entrances().size() == 2 && layout.exits().size() == 1,
+           "garage layout has two north entrances and one exit");
+    expect(layout.spots().size() == 75, "garage layout converts service rooms into stalls");
+    expect(layout.obstacles().size() == 2, "garage layout only keeps the two stair cores");
+    expect(layout.obstacles().front().name == u8"楼梯间"
+               && layout.obstacles().back().name == u8"楼梯间",
+           "remaining obstacles are the west and east stair cores");
+    int accessible = 0;
+    int charging = 0;
+    int vip = 0;
+    for (const smartpark::ParkingSpot &spot : layout.spots()){
+        if (spot.type() == smartpark::SpotType::Accessible){
+            ++accessible;
+        } else if (spot.type() == smartpark::SpotType::Charging){
+            ++charging;
+        } else if (spot.type() == smartpark::SpotType::Vip){
+            ++vip;
+        }
+    }
+    expect(accessible == 8 && charging == 15 && vip == 10,
+           "garage layout adds accessible, charging and VIP stalls");
+    bool hasVertical = false;
+    bool hasHorizontal = false;
+    for (const smartpark::ParkingSpot &spot : layout.spots()){
+        if (spot.bounds().height > spot.bounds().width){
+            hasVertical = true;
+        }
+        if (spot.bounds().width > spot.bounds().height){
+            hasHorizontal = true;
+        }
+    }
+    expect(hasVertical && hasHorizontal, "garage layout mixes north-south and east-west stalls");
+    smartpark::ParkingService service(layout);
+    const auto parked = service.enter({u8"晋A12345", smartpark::VehicleType::Car});
+    expect(parked.has_value() && parked->entryRoute.points.size() >= 2,
+           "garage layout can allocate a stall and a route");
+}
 void testLayoutTypesAndMultipleGates(){
     const std::string description =
         "site 90 50\n"
@@ -913,6 +999,8 @@ int main(){
     testBillingService();
     testDefaultLayout();
     testCustomLayoutAndAutomaticAllocation();
+    testVerticalAislesAndObstacles();
+    testGarageFloorplanLayout();
     testLayoutTypesAndMultipleGates();
     testReservationTtlAndConflict();
     testTypeMatching();

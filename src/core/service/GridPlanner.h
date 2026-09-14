@@ -15,7 +15,9 @@ struct OccupancyField{
 class GridPlanner{
 public:
     GridPlanner(double siteWidth, double siteHeight,
-                const std::vector<ParkingSpot> &spots, double cellSize = 0.5);
+                const std::vector<ParkingSpot> &spots,
+                const std::vector<Rectangle> &obstacles = {},
+                double cellSize = 0.5);
     OccupancyField buildOccupancy(const std::vector<ParkingSpot> &spots,
                                   double radius = 12.0,
                                   double weight = 0.35) const;
