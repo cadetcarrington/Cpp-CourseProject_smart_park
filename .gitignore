@@ -29,3 +29,6 @@ Thumbs.db
 /runs/
 /weights/
 scripts/__pycache__/
+
+# Vendored training frameworks
+/third_party/
