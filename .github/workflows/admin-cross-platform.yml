@@ -42,4 +42,6 @@ jobs:
           else
             BIN="build/apps/admin/smartpark_admin"
           fi
-          "$BIN" --smoke-test
+          DB="build/smartpark-admin-smoke.db"
+          rm -f "$DB"
+          "$BIN" --db "$DB" --smoke-test

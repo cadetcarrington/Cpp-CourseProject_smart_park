@@ -33,6 +33,34 @@ if [[ -n "$QT_PREFIX" ]]; then
     echo "Using Qt prefix: $QT_PREFIX"
 fi
 
+# macOS 15 已移除 AGL.framework 的实际二进制，但部分 Qt 6 官方包
+# 仍会通过 CMake 注入 `-framework AGL`。这里仅在缺失时生成本地兼容 stub。
+prepare_macos_agl_stub() {
+    [[ "$(uname -s)" == "Darwin" ]] || return 0
+    [[ -f /System/Library/Frameworks/AGL.framework/Versions/A/AGL ]] && return 0
+
+    local stub_root="$BUILD_DIR/macos-agl-stub"
+    local framework="$stub_root/AGL.framework"
+    local version_dir="$framework/Versions/A"
+    mkdir -p "$version_dir/Headers" "$version_dir/Resources"
+
+    if [[ ! -f "$version_dir/AGL" ]]; then
+        local source_file="$stub_root/agl_stub.c"
+        printf '%s\n' 'void __smartpark_agl_stub(void) {}' > "$source_file"
+        cc -dynamiclib \
+            -Wl,-install_name,@rpath/AGL.framework/Versions/A/AGL \
+            -o "$version_dir/AGL" "$source_file"
+        ln -sfn A "$framework/Versions/Current"
+        ln -sfn Versions/Current/AGL "$framework/AGL"
+        ln -sfn Versions/Current/Headers "$framework/Headers"
+        ln -sfn Versions/Current/Resources "$framework/Resources"
+    fi
+
+    ARGS+=("-DWrapOpenGL_AGL=$framework")
+    echo "Created AGL compatibility stub: $framework"
+}
+prepare_macos_agl_stub
+
 "$CMAKE_BIN" "${ARGS[@]}"
 "$CMAKE_BIN" --build "$BUILD_DIR" --parallel
 
