@@ -14,6 +14,14 @@ namespace smartpark{
     bool hasSamePlate(const std::optional<Vehicle> &vehicle, const std::string &plateNumber){
         return vehicle && vehicle->plateNumber() == plateNumber;
     }
+    std::vector<Rectangle> layoutObstacleBounds(const ParkingLayout &layout){
+        std::vector<Rectangle> bounds;
+        bounds.reserve(layout.obstacles().size());
+        for (const LayoutObstacle &item : layout.obstacles()){
+            bounds.push_back(item.bounds);
+        }
+        return bounds;
+    }
     } // namespace
 
     ParkingService::ParkingService(ParkingLayout layout, AllocationStrategy strategy,
@@ -21,7 +29,8 @@ namespace smartpark{
                                    BookingPolicy bookingPolicy)
         : layout_(std::move(layout))
         , spots_(layout_.spots())
-        , planner_(layout_.siteWidth(), layout_.siteHeight(), spots_)
+        , planner_(layout_.siteWidth(), layout_.siteHeight(), spots_,
+                   layoutObstacleBounds(layout_))
         , allocator_(layout_, planner_)
         , billing_(billingRule)
         , bookingPolicy_(bookingPolicy){
