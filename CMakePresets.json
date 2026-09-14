@@ -18,8 +18,7 @@
       "binaryDir": "${sourceDir}/build/qt",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "SMARTPARK_BUILD_ADMIN": "ON",
-        "CMAKE_PREFIX_PATH": "$env{CONDA_PREFIX}"
+        "SMARTPARK_BUILD_ADMIN": "ON"
       }
     }
   ],

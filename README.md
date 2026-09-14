@@ -748,14 +748,32 @@ CLI 默认把车位与停车记录持久化到 SQLite：未指定 `--db` 时使�
 
 运行流程：系统启动 `smartpark_cli` → 解析布局 → 构建障碍栅格 → `SpotAllocator` 按策略为候选车位计算路线和评分 → 选择最优车位并占用或预留 → 输出路线和状态 → 检查结果并返回退出码。
 
-## Linux 构建与运行
+## Admin GUI 跨平台构建与运行
 
-当前 Linux 开发环境使用位于 `/opt/mamba` 的 mamba 环境 `smartpark`（`export MAMBA_ROOT_PREFIX=/opt/mamba`），其中包含 Qt 6、CMake、Ninja 和 C++ 编译器。
+`smartpark_admin` 现在支持 Windows、macOS 与 Linux。跨平台差异被封装在 CMake 和构建脚本中：
+
+- Windows 使用 Qt 6 MSVC Kit，并把目标设置为 `WIN32` GUI 程序。
+- macOS 使用 Homebrew 或官方 Qt，输出 `smartpark_admin.app`。
+- Linux 使用 conda/mamba 环境或系统 Qt，输出可执行文件。
+- `apps/admin/main.cpp` 提供 `--smoke-test`：窗口启动约 1.5 秒后自动退出，适合 CI 或无人工交互时做启动检查。
+- `.github/workflows/admin-cross-platform.yml` 会在 Ubuntu、Windows 与 macOS 三个 GitHub Actions 运行器上构建并执行 Admin GUI 冒烟测试。
+
+### Linux
+
+当前 Linux 开发环境使用 conda/mamba 环境。如果 `CONDA_PREFIX` 已指向含 Qt 6 的环境，可直接运行：
+
+```bash
+scripts/build-admin.sh
+scripts/run-admin.sh
+```
+
+手动构建时：
 
 ```bash
 export MAMBA_ROOT_PREFIX=/opt/mamba
 export PATH=/opt/mamba/envs/smartpark/bin:$PATH
 export CONDA_PREFIX=/opt/mamba/envs/smartpark
+export CMAKE_PREFIX_PATH=/opt/mamba/envs/smartpark
 
 cmake --preset qt-debug
 cmake --build --preset qt-debug --parallel
@@ -774,4 +792,50 @@ ctest --preset qt-tests
 QT_QPA_PLATFORM=offscreen ./build/qt/apps/admin/smartpark_admin
 ```
 
-该 Conda 环境用于构建 Linux x86_64 版本。Windows 和 Android 版本后续需要分别使用对应平台的 Qt Kit。
+无图形桌面时的启动自检：
+
+```bash
+QT_QPA_PLATFORM=offscreen ./build/qt/apps/admin/smartpark_admin --smoke-test
+```
+
+### macOS
+
+需要 Xcode Command Line Tools、CMake、Ninja 与 Qt 6：
+
+```bash
+brew install cmake ninja qt
+scripts/build-admin.sh
+scripts/run-admin.sh
+```
+
+脚本会自动通过 `brew --prefix qt` 找到 Homebrew Qt；也可以显式指定：
+
+```bash
+QT_PREFIX="$(brew --prefix qt)" scripts/build-admin.sh
+```
+
+构建结果位于 `build/qt/apps/admin/smartpark_admin.app`。如需从命令行直接运行 GUI：
+
+```bash
+scripts/run-admin.sh
+```
+
+### Windows
+
+推荐安装 Qt Online Installer 的 Qt 6.8+ MSVC 2022 64-bit Kit，以及 Visual Studio 2022（含 C++ 桌面开发工具）。安装后先执行：
+
+```bat
+scripts\build-admin.bat
+scripts\run-admin.bat
+```
+
+如果 `qmake` 已加入 `PATH`，脚本会自动推导 Qt 前缀；也可以手动指定：
+
+```bat
+set QT_PREFIX=C:\Qt\6.8.3\msvc2022_64
+scripts\build-admin.bat
+```
+
+脚本优先使用 Ninja；未找到 Ninja 时回退到 Visual Studio 2022 生成器。构建后的 `smartpark_admin.exe` 位于 `build\qt\apps\admin\smartpark_admin.exe` 或 `build\qt\apps\admin\Debug\smartpark_admin.exe`。
+
+如果需要在 CI 中验证，可直接运行 GitHub Actions 的 `Admin GUI cross-platform` workflow，它会在三平台构建并执行 `--smoke-test`。

@@ -19,6 +19,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(SMARTPARK_BUILD_ADMIN "Build the Qt administrator application" ON)
 
+# 源码使用 UTF-8（包含中文界面字符串）。MSVC 需要显式指定，
+# GCC / Clang 默认按 UTF-8 处理，避免 Windows 构建出现 C4819 或乱码。
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 add_subdirectory(src/core)
 add_subdirectory(apps/cli)
 
