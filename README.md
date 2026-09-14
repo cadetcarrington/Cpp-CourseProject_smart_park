@@ -814,6 +814,14 @@ scripts/run-admin.sh
 QT_PREFIX="$(brew --prefix qt)" scripts/build-admin.sh
 ```
 
+如果使用官方 Qt 安装包或 `aqtinstall` 安装到自定义目录，可直接把前缀传给脚本：
+
+```bash
+QT_PREFIX="$HOME/Qt/6.8.3/macos" scripts/build-admin.sh
+```
+
+macOS 15 已移除 `AGL.framework` 的实际二进制，脚本会自动在 `build/qt/macos-agl-stub` 生成一个兼容 stub，无需手工处理。
+
 构建结果位于 `build/qt/apps/admin/smartpark_admin.app`。如需从命令行直接运行 GUI：
 
 ```bash
