@@ -37,11 +37,17 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            BIN="build/apps/admin/Release/smartpark_admin.exe"
-          else
-            BIN="build/apps/admin/smartpark_admin"
-          fi
+          case "$RUNNER_OS" in
+            Windows)
+              BIN="build/apps/admin/Release/smartpark_admin.exe"
+              ;;
+            macOS)
+              BIN="build/apps/admin/smartpark_admin.app/Contents/MacOS/smartpark_admin"
+              ;;
+            *)
+              BIN="build/apps/admin/smartpark_admin"
+              ;;
+          esac
           DB="build/smartpark-admin-smoke.db"
           rm -f "$DB"
           "$BIN" --db "$DB" --smoke-test
