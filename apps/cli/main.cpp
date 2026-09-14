@@ -273,12 +273,26 @@ std::optional<smartpark::ParkingRecord::TimePoint> parseArrivalTime(
     if (input.fail()){
         return std::nullopt;
     }
-    return std::chrono::system_clock::from_time_t(timegm(&parts));
+#ifdef _WIN32
+    const std::time_t epoch = _mkgmtime(&parts);
+#else
+    const std::time_t epoch = timegm(&parts);
+#endif
+    if (epoch == static_cast<std::time_t>(-1)){
+        return std::nullopt;
+    }
+    return std::chrono::system_clock::from_time_t(epoch);
 }
 std::string formatBookingTime(smartpark::Booking::TimePoint time){
     const std::time_t epoch = smartpark::Booking::Clock::to_time_t(time);
     std::tm parts{};
+#ifdef _WIN32
+    if (gmtime_s(&parts, &epoch) != 0){
+        return "invalid-time";
+    }
+#else
     gmtime_r(&epoch, &parts);
+#endif
     char buffer[32];
     if (std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M", &parts) == 0){
         return "invalid-time";
