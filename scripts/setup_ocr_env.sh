@@ -19,8 +19,9 @@ fi
 "$PY" -m pip install \
   shapely scikit-image pyclipper lmdb tqdm numpy rapidfuzz cython \
   Pillow pyyaml requests albumentations albucore packaging \
-  opencv-python-headless
+  "opencv-python-headless>=4.8,<5"
 "$PY" -m pip uninstall -y opencv-python opencv-contrib-python || true
+"$PY" -m pip install "opencv-python-headless>=4.8,<5"
 
 "$PY" - <<'PY'
 import importlib
