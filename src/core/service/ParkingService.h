@@ -55,8 +55,13 @@ public:
         const std::string &plateNumber,
         ParkingRecord::TimePoint exitTime = ParkingRecord::Clock::now());
     std::optional<AllocationResult> allocate(const Vehicle &vehicle);
+    // 只读分配预览：不修改车位/记录/预约、不切换当前策略、不写库、不占用车位。
+    std::optional<AllocationResult> previewAllocation(
+        const Vehicle &vehicle,
+        AllocationStrategy strategy) const;
     bool cancelReservation(const std::string &plateNumber);
     bool release(const std::string &spotId);
+    bool updateVehicleType(const std::string &plateNumber, VehicleType vehicleType);
     std::optional<BookingResult> createBooking(
         const Vehicle &vehicle,
         ParkingRecord::TimePoint arrivalTime,
