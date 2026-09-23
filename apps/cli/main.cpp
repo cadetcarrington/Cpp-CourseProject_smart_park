@@ -159,6 +159,7 @@ void printAllocation(const smartpark::ParkingService &service,
     std::cout << "  详细信息: 入口路径成本=" << result.breakdown.entryPathCost
               << " 出口路径成本=" << result.breakdown.exitPathCost
               << " 车道拥堵成本=" << result.breakdown.laneCongestionCost
+              << " 分区压力成本=" << result.breakdown.zonePressureCost
               << " 转弯次数成本=" << result.breakdown.turnCountCost
               << " 类型惩罚=" << result.breakdown.typePenalty
               << " | 入口门: in#" << result.entranceIndex

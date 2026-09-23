@@ -18,6 +18,7 @@ struct AllocationWeights{
     double typePenalty{1.0};
     double occupancyRadius{12.0};
     double occupancyK{0.35};
+    double zonePressure{6.0};
 };
 struct ScoreBreakdown{
     double entryPathCost{0.0};
@@ -25,6 +26,7 @@ struct ScoreBreakdown{
     double laneCongestionCost{0.0};
     double turnCountCost{0.0};
     double typePenalty{0.0};
+    double zonePressureCost{0.0};
     double total{0.0};
 };
 struct AllocationProposal{
@@ -52,7 +54,7 @@ public:
 private:
     ScoreBreakdown makeScore(const Vehicle &vehicle, const ParkingSpot &spot,
                              const Route &entryRoute, const Route &exitRoute,
-                             int nearbyOccupied) const;
+                             int nearbyOccupied, double zonePressure) const;
     double typePenaltyFor(const Vehicle &vehicle, SpotType type) const;
     int nearbyOccupiedSpots(const ParkingSpot &candidate,
                             const std::vector<ParkingSpot> &spots) const;

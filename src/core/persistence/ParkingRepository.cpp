@@ -23,6 +23,9 @@ bool validStatus(SpotStatus status) noexcept{
     }
     return false;
 }
+bool validVehicleType(VehicleType type) noexcept{
+    return type >= VehicleType::Car && type <= VehicleType::Electric;
+}
 bool prepare(QSqlQuery &query, const QString &statement, std::string &error){
     if (!query.prepare(statement)){
         error = query.lastError().text().toStdString();
@@ -486,6 +489,10 @@ bool ParkingRepository::saveSpotStateInTransaction(const ParkingSpot &spot){
     if ((spot.status() == SpotStatus::Occupied || spot.status() == SpotStatus::Reserved)
         && !hasVehicle){
         lastError_ = "active parking spot requires a vehicle";
+        return false;
+    }
+    if (hasVehicle && !validVehicleType(spot.parkedVehicle()->type())){
+        lastError_ = "invalid vehicle type";
         return false;
     }
     if (spot.status() == SpotStatus::Reserved && !spot.reservationExpiresAt()){

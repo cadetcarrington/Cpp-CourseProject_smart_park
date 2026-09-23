@@ -7,6 +7,7 @@
 #include "core/util/TimeUtil.h"
 #include "core/model/Vehicle.h"
 #include "core/service/ParkingService.h"
+#include "core/service/ParkingInsightEngine.h"
 #include "core/service/Billing.h"
 #include <QCoreApplication>
 #include <QTemporaryDir>
@@ -407,6 +408,42 @@ void testCongestionAvoidanceAndStrategies(){
            "weighted cost avoids a congested nearby cluster");
     expect(diverted->nearbyOccupiedSpots == 0, "the chosen cluster is not locally congested");
 }
+void testZonePressureBalancing(){
+    const std::string description =
+        "site 100 60\n"
+        "entrance 50 0\n"
+        "exit 50 60\n"
+        "region A 20 20 1 4 2.0 5.0 3.0 up normal\n"
+        "region B 76 20 1 4 2.0 5.0 3.0 up normal\n";
+    smartpark::ParkingService service(
+        smartpark::ParkingLayout::fromDescription(description),
+        smartpark::AllocationStrategy::WeightedCost);
+    smartpark::AllocationWeights weights;
+    weights.entryPath = 1.0;
+    weights.exitPath = 0.0;
+    weights.laneCongestion = 0.0;
+    weights.turnCount = 0.0;
+    weights.typePenalty = 0.0;
+    weights.zonePressure = 0.0;
+    service.setWeights(weights);
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
+    for (int index = 0; index < 2; ++index){
+        const auto result = service.enter(
+            {std::string(u8"晋Z000") + std::to_string(index), smartpark::VehicleType::Car}, now);
+        expect(result.has_value(), "zone-balancing setup car can enter");
+        const auto *spot = result ? findSpot(service, result->spotId) : nullptr;
+        expect(spot != nullptr && spot->zone() == "A",
+               "with zone balancing disabled, the closer symmetric cluster fills first");
+    }
+    weights.zonePressure = 10.0;
+    service.setWeights(weights);
+    const auto diverted = service.enter({u8"晋Z99999", smartpark::VehicleType::Car}, now);
+    const auto *divertedSpot = diverted ? findSpot(service, diverted->spotId) : nullptr;
+    expect(divertedSpot != nullptr && divertedSpot->zone() == "B",
+           "zone pressure sends the next car to the under-occupied zone");
+    expect(diverted && diverted->breakdown.zonePressureCost < 1e-9,
+           "the under-occupied winning zone has no zone pressure penalty");
+}
 void testMultiEntranceSelection(){
     const std::string description =
         "site 90 60\n"
@@ -496,6 +533,71 @@ void testSqlitePersistenceAndRecovery(){
            "loader rejects an invalid persisted spot status");
     expect(!invalidRepository.lastError().empty(),
            "loader reports an invalid persisted spot status");
+}
+void testVehicleTypeUpdate(){
+    using namespace std::chrono_literals;
+    const std::string description =
+        "site 60 30\n"
+        "entrance 0 15\n"
+        "exit 60 15\n"
+        "region A 10 10 1 3 1.2 5.5 6 left\n";
+    const auto layout = smartpark::ParkingLayout::fromDescription(description);
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
+
+    smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest);
+    const auto occupied = service.enter({u8"晋A66666", smartpark::VehicleType::Car}, now);
+    expect(occupied.has_value(), "vehicle type test accepts an occupied vehicle");
+    const auto occupiedSpotId = occupied ? occupied->spotId : std::string{};
+    expect(service.updateVehicleType(u8"晋A66666", smartpark::VehicleType::Truck),
+           "occupied vehicle type can be updated");
+    const auto *occupiedSpot = findSpot(service, occupiedSpotId);
+    expect(occupiedSpot != nullptr && occupiedSpot->parkedVehicle()
+               && occupiedSpot->parkedVehicle()->type() == smartpark::VehicleType::Truck,
+           "occupied vehicle type update changes the in-memory vehicle");
+    expect(service.updateVehicleType(u8"晋A66666", smartpark::VehicleType::Truck),
+           "updating to the same vehicle type is idempotent");
+    expect(!service.updateVehicleType(u8"晋A99999", smartpark::VehicleType::Electric),
+           "vehicle type update rejects a vehicle that is not in the parking lot");
+
+    const auto reserved = service.reserve(
+        {u8"晋A77777", smartpark::VehicleType::Motorcycle}, now, 30min);
+    expect(reserved.has_value(), "vehicle type test accepts a reserved vehicle");
+    const auto reservedSpotId = reserved ? reserved->spotId : std::string{};
+    expect(service.updateVehicleType(u8"晋A77777", smartpark::VehicleType::Electric),
+           "reserved vehicle type can be updated");
+    const auto *reservedSpot = findSpot(service, reservedSpotId);
+    expect(reservedSpot != nullptr && reservedSpot->status() == smartpark::SpotStatus::Reserved
+               && reservedSpot->parkedVehicle()
+               && reservedSpot->parkedVehicle()->type() == smartpark::VehicleType::Electric,
+           "reserved vehicle type update preserves reservation state");
+    expect(reservedSpot != nullptr && reservedSpot->reservationExpiresAt()
+               && *reservedSpot->reservationExpiresAt() == now + 30min,
+           "reserved vehicle type update preserves reservation expiry");
+
+    QTemporaryDir directory;
+    expect(directory.isValid(), "vehicle type persistence test can create a temporary directory");
+    const QString databasePath = directory.filePath("vehicle-type.db");
+    std::string persistedSpotId;
+    {
+        smartpark::Persistence persistence(databasePath);
+        smartpark::ParkingService persisted(layout, smartpark::AllocationStrategy::Nearest,
+                                            &persistence.repository());
+        const auto allocation = persisted.enter(
+            {u8"晋A88888", smartpark::VehicleType::Car}, now);
+        expect(allocation.has_value(), "persistent vehicle type test accepts an entry");
+        persistedSpotId = allocation ? allocation->spotId : std::string{};
+        expect(persisted.updateVehicleType(u8"晋A88888", smartpark::VehicleType::Truck),
+               "persistent occupied vehicle type can be updated");
+    }
+    {
+        smartpark::Persistence persistence(databasePath);
+        smartpark::ParkingService restored(layout, smartpark::AllocationStrategy::Nearest,
+                                           &persistence.repository());
+        const auto *restoredSpot = findSpot(restored, persistedSpotId);
+        expect(restoredSpot != nullptr && restoredSpot->parkedVehicle()
+                   && restoredSpot->parkedVehicle()->type() == smartpark::VehicleType::Truck,
+               "restart restores the updated occupied vehicle type");
+    }
 }
 void testPersistenceHelperRestoresAcrossRestart(){
     using namespace std::chrono_literals;
@@ -987,6 +1089,100 @@ void testBookingPersistenceAcrossRestart(){
     expect(arrived.has_value(), "an active booking can be confirmed after restart");
     expect(restored.occupiedSpots() == 1, "post-restart confirmation occupies the spot");
 }
+void testPreviewAllocationReadOnly(){
+    const std::string description =
+        "site 80 40\n"
+        "entrance 0 20\n"
+        "exit 80 20\n"
+        "region A 12 14 2 1 1.2 5.5 6 left normal\n"
+        "region B 28 14 2 1 1.2 5.5 6 left charging\n";
+    smartpark::ParkingService service(
+        smartpark::ParkingLayout::fromDescription(description),
+        smartpark::AllocationStrategy::WeightedCost);
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
+    const auto first = service.enter({u8"晋A12345", smartpark::VehicleType::Car}, now);
+    expect(first.has_value(), "preview setup accepts the first vehicle");
+    const int occupiedBefore = service.occupiedSpots();
+    const int recordsBefore = static_cast<int>(service.records().size());
+    const int bookingsBefore = static_cast<int>(service.bookings().size());
+    const auto strategyBefore = service.strategy();
+
+    const smartpark::Vehicle candidate(u8"晋B99999", smartpark::VehicleType::Electric);
+    const auto weighted =
+        service.previewAllocation(candidate, smartpark::AllocationStrategy::WeightedCost);
+    const auto nearest =
+        service.previewAllocation(candidate, smartpark::AllocationStrategy::Nearest);
+    expect(weighted.has_value(), "read-only weighted preview succeeds");
+    expect(nearest.has_value(), "read-only nearest preview succeeds");
+
+    expect(service.occupiedSpots() == occupiedBefore, "preview does not occupy a spot");
+    expect(static_cast<int>(service.records().size()) == recordsBefore,
+           "preview does not append a record");
+    expect(static_cast<int>(service.bookings().size()) == bookingsBefore,
+           "preview does not append a booking");
+    expect(service.strategy() == strategyBefore, "preview restores the active strategy");
+    expect(!service.activeRecord(candidate.plateNumber()).has_value(),
+           "preview does not create an active record");
+    expect(findSpot(service, weighted->spotId) != nullptr,
+           "weighted preview returns a real spot identifier");
+    expect(findSpot(service, nearest->spotId) != nullptr,
+           "nearest preview returns a real spot identifier");
+}
+
+void testParkingInsightEngine(){
+    const std::string description =
+        "site 80 40\n"
+        "entrance 0 20\n"
+        "exit 80 20\n"
+        "region A 12 14 2 1 1.2 5.5 6 left normal\n"
+        "region B 28 14 2 1 1.2 5.5 6 left charging\n";
+    smartpark::ParkingService service(smartpark::ParkingLayout::fromDescription(description));
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
+    service.enter({u8"晋A12345", smartpark::VehicleType::Car}, now - std::chrono::minutes(30));
+    service.enter({u8"晋A22222", smartpark::VehicleType::Electric}, now - std::chrono::minutes(10));
+    service.leave(u8"晋A12345", now - std::chrono::minutes(5));
+
+    const auto insights = smartpark::ParkingInsightEngine::analyze(
+        service.spots(), service.records(), service.bookings(), now);
+
+    expect(insights.effectiveCapacity == static_cast<int>(service.spots().size()),
+           "insight effective capacity equals total spots when nothing is disabled");
+    expect(insights.currentOccupied == 1, "insight counts the occupied spot");
+    expect(insights.currentDisabled == 0, "insight counts no disabled spot");
+
+    int zoneTotal = 0;
+    for (const auto &zone : insights.zones){
+        zoneTotal += zone.total;
+        expect(zone.pressure >= 0.0 && zone.pressure <= 1.0,
+               "zone pressure stays within [0,1]");
+    }
+    expect(zoneTotal == static_cast<int>(service.spots().size()),
+           "zones partition every spot");
+
+    expect(insights.forecasts.size() == 3, "three forecast horizons are produced");
+    bool has30 = false;
+    bool has60 = false;
+    bool has120 = false;
+    for (const auto &forecast : insights.forecasts){
+        has30 = has30 || forecast.minutes == 30;
+        has60 = has60 || forecast.minutes == 60;
+        has120 = has120 || forecast.minutes == 120;
+        expect(forecast.predictedOccupied >= 0.0
+                   && forecast.predictedOccupied <= insights.effectiveCapacity,
+               "forecast stays inside capacity bounds");
+        expect(forecast.predictedRate >= 0.0 && forecast.predictedRate <= 100.0,
+               "forecast rate is a percentage");
+    }
+    expect(has30 && has60 && has120, "forecasts cover 30/60/120 minutes");
+
+    expect(insights.arrivals180 >= insights.arrivals60,
+           "180-minute arrivals include 60-minute arrivals");
+    expect(insights.departures180 >= insights.departures60,
+           "180-minute departures include 60-minute departures");
+
+    expect(!insights.alerts.empty(), "insight always produces at least one alert");
+}
+
 int main(){
     int argc = 0;
     char programName[] = "smartpark_core_tests";
@@ -1005,9 +1201,11 @@ int main(){
     testReservationTtlAndConflict();
     testTypeMatching();
     testCongestionAvoidanceAndStrategies();
+    testZonePressureBalancing();
     testMultiEntranceSelection();
     testSqlitePersistenceAndRecovery();
     testPersistenceHelperRestoresAcrossRestart();
+    testVehicleTypeUpdate();
     testLayoutMismatchRejected();
     testExpiredReservationPersisted();
     testDirtyActiveRecordsRejected();
@@ -1020,6 +1218,8 @@ int main(){
     testBookingRejectsOutOfWindow();
     testBookingCancelRefunds();
     testBookingPersistenceAcrossRestart();
+    testPreviewAllocationReadOnly();
+    testParkingInsightEngine();
     if (failureCount != 0){
         std::cerr << failureCount << " test assertion(s) failed\n";
         return 1;

@@ -1,6 +1,7 @@
 #include "core/service/SpotAllocator.h"
 #include <algorithm>
 #include <limits>
+#include <map>
 #include <utility>
 namespace smartpark{
 namespace{
@@ -16,6 +17,34 @@ bool isBetterRoute(const Route &candidate, const Route &current, AllocationStrat
         return candidate.distance < current.distance;
     }
     return candidate.cost < current.cost;
+}
+std::map<std::string, double> zonePressureMap(const std::vector<ParkingSpot> &spots){
+    std::map<std::string, int> totals;
+    std::map<std::string, double> loads;
+    for (const ParkingSpot &spot : spots){
+        totals[spot.zone()] += 1;
+        switch (spot.status()){
+        case SpotStatus::Occupied:
+            loads[spot.zone()] += 1.0;
+            break;
+        case SpotStatus::Reserved:
+            loads[spot.zone()] += 0.7;
+            break;
+        case SpotStatus::Disabled:
+            loads[spot.zone()] += 0.5;
+            break;
+        case SpotStatus::Available:
+        default:
+            break;
+        }
+    }
+    std::map<std::string, double> pressures;
+    for (const auto &entry : totals){
+        pressures[entry.first] = entry.second > 0
+            ? loads[entry.first] / static_cast<double>(entry.second)
+            : 0.0;
+    }
+    return pressures;
 }
 } // namespace
 SpotAllocator::SpotAllocator(const ParkingLayout &layout, const GridPlanner &planner)
@@ -60,6 +89,7 @@ std::optional<AllocationProposal> SpotAllocator::propose(
     if (candidates.empty()){
         return std::nullopt;
     }
+    const std::map<std::string, double> zonePressures = zonePressureMap(spots);
     OccupancyField occupancy;
     const OccupancyField *occupancyPtr = nullptr;
     if (strategy_ == AllocationStrategy::WeightedCost){
@@ -120,8 +150,10 @@ std::optional<AllocationProposal> SpotAllocator::propose(
         proposal.entranceIndex = bestEntryGates[index];
         proposal.exitIndex = bestExitGates[index];
         proposal.strategy = strategy_;
+        const auto pressureIt = zonePressures.find(spot.zone());
+        const double zonePressure = pressureIt != zonePressures.end() ? pressureIt->second : 0.0;
         proposal.score = makeScore(vehicle, spot, proposal.entryRoute, proposal.exitRoute,
-                                   proposal.nearbyOccupiedSpots);
+                                   proposal.nearbyOccupiedSpots, zonePressure);
         if (proposal.score.total < bestScore){
             bestScore = proposal.score.total;
             bestProposal = std::move(proposal);
@@ -131,7 +163,7 @@ std::optional<AllocationProposal> SpotAllocator::propose(
 }
 ScoreBreakdown SpotAllocator::makeScore(const Vehicle &vehicle, const ParkingSpot &spot,
                                         const Route &entryRoute, const Route &exitRoute,
-                                        int nearbyOccupied) const{
+                                        int nearbyOccupied, double zonePressure) const{
     ScoreBreakdown breakdown;
     if (strategy_ == AllocationStrategy::Nearest){
         breakdown.entryPathCost = entryRoute.distance;
@@ -144,8 +176,10 @@ ScoreBreakdown SpotAllocator::makeScore(const Vehicle &vehicle, const ParkingSpo
     breakdown.turnCountCost =
         weights_.turnCount * static_cast<double>(entryRoute.turnCount + exitRoute.turnCount);
     breakdown.typePenalty = weights_.typePenalty * typePenaltyFor(vehicle, spot.type());
+    breakdown.zonePressureCost = weights_.zonePressure * zonePressure;
     breakdown.total = breakdown.entryPathCost + breakdown.exitPathCost
-        + breakdown.laneCongestionCost + breakdown.turnCountCost + breakdown.typePenalty;
+        + breakdown.laneCongestionCost + breakdown.turnCountCost + breakdown.typePenalty
+        + breakdown.zonePressureCost;
     return breakdown;
 }
 double SpotAllocator::typePenaltyFor(const Vehicle &vehicle, SpotType type) const{

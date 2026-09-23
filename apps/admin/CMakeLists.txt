@@ -3,25 +3,35 @@ if(WIN32)
         main.cpp
         MainWindow.h
         MainWindow.cpp
+        LoginDialog.h
+        LoginDialog.cpp
     )
 elseif(APPLE)
     qt_add_executable(smartpark_admin MACOSX_BUNDLE
         main.cpp
         MainWindow.h
         MainWindow.cpp
+        LoginDialog.h
+        LoginDialog.cpp
     )
 else()
     qt_add_executable(smartpark_admin
         main.cpp
         MainWindow.h
         MainWindow.cpp
+        LoginDialog.h
+        LoginDialog.cpp
     )
 endif()
 
 set_target_properties(smartpark_admin PROPERTIES
     AUTOMOC ON
-    AUTOUIC ON
-    AUTORCC ON
+    # Admin UI is built entirely in C++; there are no .ui files to process.
+    # Disabling AUTOUIC avoids invoking Qt's uic helper on macOS packages
+    # whose bundled helper may require an unavailable CPU feature.
+    AUTOUIC OFF
+    # The target has no Qt resource collection either.
+    AUTORCC OFF
 )
 
 target_link_libraries(smartpark_admin

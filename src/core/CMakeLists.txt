@@ -17,6 +17,8 @@ add_library(smartpark_core STATIC
     service/GridPlanner.h
     service/ParkingService.cpp
     service/ParkingService.h
+    service/ParkingInsightEngine.cpp
+    service/ParkingInsightEngine.h
     service/SpotAllocator.cpp
     service/SpotAllocator.h
     persistence/DatabaseManager.cpp

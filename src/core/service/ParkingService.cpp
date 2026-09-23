@@ -14,6 +14,9 @@ namespace smartpark{
     bool hasSamePlate(const std::optional<Vehicle> &vehicle, const std::string &plateNumber){
         return vehicle && vehicle->plateNumber() == plateNumber;
     }
+    bool validVehicleType(VehicleType type) noexcept{
+        return type >= VehicleType::Car && type <= VehicleType::Electric;
+    }
     std::vector<Rectangle> layoutObstacleBounds(const ParkingLayout &layout){
         std::vector<Rectangle> bounds;
         bounds.reserve(layout.obstacles().size());
@@ -110,6 +113,23 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
         return enter(vehicle);
     }
 
+    std::optional<AllocationResult> ParkingService::previewAllocation(
+        const Vehicle &vehicle, AllocationStrategy strategy) const{
+        // 只读预览：复制分配器后临时切换策略，只做 propose，不落任何副作用。
+        SpotAllocator previewAllocator = allocator_;
+        previewAllocator.setStrategy(strategy);
+        std::string requiredSpotId;
+        if (const ParkingSpot *reserved = findReservedSpot(vehicle.plateNumber())){
+            requiredSpotId = reserved->identifier();
+        }
+        const std::optional<AllocationProposal> proposal =
+            previewAllocator.propose(vehicle, spots_, requiredSpotId);
+        if (!proposal){
+            return std::nullopt;
+        }
+        return toResult(*proposal);
+    }
+
     std::optional<AllocationResult> ParkingService::reserve(
         const Vehicle &vehicle, ParkingRecord::TimePoint now, std::chrono::seconds ttl){
         expireReservations(now);
@@ -197,6 +217,63 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
 
         record->close(exitTime, fee);
         return *record;
+    }
+
+    bool ParkingService::updateVehicleType(
+        const std::string &plateNumber, VehicleType vehicleType){
+        if (plateNumber.empty() || !validVehicleType(vehicleType)){
+            return false;
+        }
+        const ParkingRecord::TimePoint now = ParkingRecord::Clock::now();
+        expireBookings(now);
+        expireReservations(now);
+        ParkingSpot *spot = nullptr;
+        for (ParkingSpot &item : spots_){
+            if (item.parkedVehicle()
+                && item.parkedVehicle()->plateNumber() == plateNumber
+                && (item.status() == SpotStatus::Occupied
+                    || item.status() == SpotStatus::Reserved)){
+                spot = &item;
+                break;
+            }
+        }
+        if (spot == nullptr){
+            return false;
+        }
+
+        const Vehicle previousVehicle = *spot->parkedVehicle();
+        if (previousVehicle.type() == vehicleType){
+            return true;
+        }
+        const Vehicle updatedVehicle(plateNumber, vehicleType);
+        const auto previousExpiry = spot->reservationExpiresAt();
+
+        if (!spot->release()){
+            return false;
+        }
+        bool updated = previousExpiry
+            ? spot->reserve(updatedVehicle, *previousExpiry)
+            : spot->occupy(updatedVehicle);
+        if (!updated){
+            if (previousExpiry){
+                spot->reserve(previousVehicle, *previousExpiry);
+            } else{
+                spot->occupy(previousVehicle);
+            }
+            return false;
+        }
+
+        if (repository_ != nullptr && !repository_->saveSpotState(*spot)){
+            spot->release();
+            if (previousExpiry){
+                spot->reserve(previousVehicle, *previousExpiry);
+            } else{
+                spot->occupy(previousVehicle);
+            }
+            repository_->saveSpotState(*spot);
+            return false;
+        }
+        return true;
     }
 
     bool ParkingService::cancelReservation(const std::string &plateNumber){
