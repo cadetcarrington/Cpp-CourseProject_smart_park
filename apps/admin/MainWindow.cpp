@@ -1,8 +1,17 @@
 #include "MainWindow.h"
+#include "Theme.h"
+
+#include "core/service/AnalyticsEngine.h"
+#include "core/service/AuditLogService.h"
+#include "core/service/RemoteAnalystClient.h"
+#include "MacSystemBridge.h"
 
 #include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
+#include <QStandardPaths>
+#include <QTextEdit>
+#include <QTimer>
 #include <QBrush>
 #include <QComboBox>
 #include <QCoreApplication>
@@ -46,7 +55,11 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <memory>
+#include <optional>
+#include <thread>
 #include <cmath>
 #include <ctime>
 #include <iomanip>
@@ -314,92 +327,31 @@ MainWindow::MainWindow(QString databasePath, QString currentUser, QWidget *paren
     }
 }
 
+MainWindow::~MainWindow() = default;
+
+void MainWindow::paintEvent(QPaintEvent *){
+    // 毛玻璃模式的整窗背景：低饱和蓝灰色光斑经高斯模糊后铺满窗口，
+    // 侧边栏/顶栏/卡片以半透明材质覆盖其上。按尺寸缓存，仅在尺寸变化时重绘。
+    if (!glassMode_){
+        return;
+    }
+    if (glassBackdrop_.isNull() || glassBackdrop_.size() != size()){
+        glassBackdrop_ = theme::auroraBackdrop(size());
+    }
+    QPainter painter(this);
+    painter.drawPixmap(0, 0, glassBackdrop_);
+}
+
 void MainWindow::buildUi(){
     setWindowTitle(tr("智能停车系统管理员平台"));
     resize(1440, 930);
     setMinimumSize(1080, 720);
 
-    setStyleSheet(QStringLiteral(R"(
-        QMainWindow { background: #F4F6F8; color: #102A43; }
-        QWidget#adminShell, QWidget#contentArea { background: #F0F4F8; }
-        QFrame#sideBar {
-            background: #1D4E89; border: 0; min-width: 206px; max-width: 260px;
-        }
-        QLabel#brandMark {
-            color: #1D4E89; background: #FFFFFF; border-radius: 9px;
-            font-size: 13pt; font-weight: 700;
-        }
-        QLabel#brandName { color: #FFFFFF; font-size: 16pt; font-weight: 700; }
-        QLabel#brandCaption, QLabel#sideBarCaption { color: #D9E2EC; font-size: 9pt; }
-        QLabel#sideSection { color: #9FB3C8; font-size: 8pt; font-weight: 700; }
-        QListWidget#sideNavigation {
-            background: transparent; border: 0; outline: none; color: #D9E2EC;
-            padding: 4px 8px;
-        }
-        QListWidget#sideNavigation::item {
-            border-radius: 6px; min-height: 34px; padding: 5px 11px; margin: 2px 0;
-        }
-        QListWidget#sideNavigation::item:hover { background: #163E6D; color: #FFFFFF; }
-        QListWidget#sideNavigation::item:selected { background: #FFFFFF; color: #1D4E89; font-weight: 700; }
-        QFrame#topHeader { background: #FFFFFF; border-bottom: 1px solid #D9E2EC; }
-        QLabel#pageTitle { color: #102A43; font-size: 18pt; font-weight: 700; }
-        QLabel#pageSubtitle, QLabel#mutedText { color: #52606D; font-size: 10pt; }
-        QLabel#connectionBadge {
-            background: #E3F9E5; color: #0F5132; border: 1px solid #B7E4C7;
-            border-radius: 11px; padding: 4px 9px; font-size: 9pt; font-weight: 600;
-        }
-        QLabel#userBadge { color: #334E68; font-size: 10pt; font-weight: 600; }
-        QFrame#contentCard {
-            background: #FFFFFF; border: 1px solid #D9E2EC; border-radius: 10px;
-        }
-        QFrame#metricCard {
-            background: #FFFFFF; border: 1px solid #D9E2EC; border-radius: 10px;
-            min-height: 112px;
-        }
-        QLabel#metricTitle { color: #52606D; font-size: 10pt; font-weight: 600; }
-        QLabel#metricValue { color: #102A43; font-size: 25pt; font-weight: 700; }
-        QLabel#metricHint { color: #627D98; font-size: 9pt; }
-        QLabel#cardTitle { color: #102A43; font-size: 13pt; font-weight: 700; }
-        QLabel#mapLegend { color: #52606D; font-size: 9pt; }
-        QLabel#mapSummary { color: #334E68; font-size: 10pt; font-weight: 600; }
-        QLabel#sectionHint { color: #52606D; font-size: 10pt; }
-        QLabel#statusInfo { color: #334E68; font-size: 10pt; }
-        QLineEdit, QComboBox, QDateTimeEdit {
-            background: #FFFFFF; border: 1px solid #BCCCDC; border-radius: 6px;
-            min-height: 30px; padding: 0 8px; color: #102A43;
-        }
-        QLineEdit:focus, QComboBox:focus, QDateTimeEdit:focus {
-            border: 2px solid #1D4E89; padding: 0 7px;
-        }
-        QPushButton {
-            color: #1D4E89; background: #FFFFFF; border: 1px solid #9FB3C8;
-            border-radius: 6px; min-height: 32px; padding: 0 12px; font-weight: 600;
-        }
-        QPushButton:hover { background: #EAF2FB; border-color: #1D4E89; }
-        QPushButton:focus { border: 2px solid #1D4E89; padding: 0 11px; }
-        QPushButton[variant="primary"] { color: #FFFFFF; background: #1D4E89; border-color: #1D4E89; }
-        QPushButton[variant="primary"]:hover { background: #163E6D; border-color: #163E6D; }
-        QPushButton[variant="danger"] { color: #B42318; border-color: #D92D20; }
-        QPushButton[variant="danger"]:hover { color: #FFFFFF; background: #B42318; border-color: #B42318; }
-        QPushButton[variant="quiet"] { color: #D9E2EC; background: transparent; border-color: transparent; }
-        QPushButton[variant="quiet"]:hover { background: #243B53; border-color: #243B53; color: #FFFFFF; }
-        QTableWidget {
-            background: #FFFFFF; alternate-background-color: #F8FAFC;
-            selection-background-color: #D9EAF7; selection-color: #102A43;
-            border: 1px solid #D9E2EC; border-radius: 7px; gridline-color: #E6EDF5;
-        }
-        QHeaderView::section {
-            background: #F0F4F8; color: #334E68; border: 0; border-bottom: 1px solid #D9E2EC;
-            padding: 8px; font-weight: 700;
-        }
-        QTableWidget::item { padding: 6px; }
-        QGraphicsView { background: #F8FAFC; border: 1px solid #D9E2EC; border-radius: 7px; }
-        QStatusBar { background: #FFFFFF; color: #52606D; border-top: 1px solid #D9E2EC; }
-        QStatusBar::item { border: 0; }
-        QToolBar { background: #FFFFFF; border-bottom: 1px solid #D9E2EC; spacing: 5px; padding: 4px 10px; }
-        QToolButton { color: #334E68; border-radius: 5px; padding: 5px 9px; }
-        QToolButton:hover { background: #EAF2FB; color: #1D4E89; }
-    )"));
+    // 主题样式集中在 Theme.h。默认毛玻璃模式：整窗高斯模糊光斑 +
+    // 半透明玻璃面板；SMARTPARK_NO_GLASS=1 回退纯色主题。
+    glassMode_ = !qEnvironmentVariableIsSet("SMARTPARK_NO_GLASS");
+    setStyleSheet(glassMode_ ? theme::glassMainWindowStyleSheet()
+                             : theme::solidMainWindowStyleSheet());
 
     auto *fileMenu = menuBar()->addMenu(tr("文件"));
     auto *logoutAction = fileMenu->addAction(tr("退出登录"));
@@ -458,7 +410,7 @@ void MainWindow::buildUi(){
     navigation_->setSpacing(1);
     navigation_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     const std::vector<std::pair<QString, QString>> pages = {
-        {tr("总览"), tr("实时运营概况与快速入口")},
+        {tr("总览"), tr("实时运营概况")},
         {tr("实时车位"), tr("车库建筑图、车位与路线")},
         {tr("车辆作业"), tr("入库、出库与车型更正")},
         {tr("当前车位"), tr("全量车位与现场状态")},
@@ -541,7 +493,17 @@ void MainWindow::buildUi(){
 
     // 0: 总览
     auto *dashboardPage = new QWidget(pages_);
-    auto *dashboardLayout = new QVBoxLayout(dashboardPage);
+    auto *dashboardPageLayout = new QVBoxLayout(dashboardPage);
+    dashboardPageLayout->setContentsMargins(0, 0, 0, 0);
+    auto *dashboardScroll = new QScrollArea(dashboardPage);
+    dashboardScroll->setWidgetResizable(true);
+    dashboardScroll->setFrameShape(QFrame::NoFrame);
+    dashboardScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto *dashboardBody = new QWidget;
+    dashboardBody->setObjectName("dashboardBody");
+    dashboardScroll->setWidget(dashboardBody);
+    dashboardPageLayout->addWidget(dashboardScroll);
+    auto *dashboardLayout = new QVBoxLayout(dashboardBody);
     dashboardLayout->setContentsMargins(24, 22, 24, 24);
     dashboardLayout->setSpacing(16);
     auto *metricsLayout = new QGridLayout;
@@ -642,21 +604,23 @@ void MainWindow::buildUi(){
     auto *quickCard = createCard(dashboardPage);
     auto *quickLayout = new QVBoxLayout(quickCard);
     quickLayout->setContentsMargins(20, 18, 20, 18);
-    auto *quickTitle = new QLabel(tr("快速作业"), quickCard);
+    auto *quickTitle = new QLabel(tr("快捷操作"), quickCard);
     quickTitle->setObjectName("cardTitle");
-    auto *quickHint = new QLabel(tr("从统一作业页处理车辆，避免在地图或表格中遗漏关键步骤。"), quickCard);
+    auto *quickHint = new QLabel(tr("常用车辆操作入口。"), quickCard);
     quickHint->setObjectName("sectionHint");
     quickHint->setWordWrap(true);
     auto *goOperationsButton = new QPushButton(tr("办理车辆入库 / 出库"), quickCard);
     goOperationsButton->setProperty("variant", "primary");
     auto *goMapButton = new QPushButton(tr("查看实时车位图"), quickCard);
     auto *goBookingsButton = new QPushButton(tr("管理车辆预约"), quickCard);
+    auto *analysisReportButton = new QPushButton(tr("数据分析报告"), quickCard);
     quickLayout->addWidget(quickTitle);
     quickLayout->addWidget(quickHint);
     quickLayout->addSpacing(8);
     quickLayout->addWidget(goOperationsButton);
     quickLayout->addWidget(goMapButton);
     quickLayout->addWidget(goBookingsButton);
+    quickLayout->addWidget(analysisReportButton);
     quickLayout->addStretch(1);
 
     auto *activityCard = createCard(dashboardPage);
@@ -671,7 +635,7 @@ void MainWindow::buildUi(){
     dashboardInsightLabel_->setObjectName("statusInfo");
     dashboardInsightLabel_->setWordWrap(true);
     auto *activityTip = new QLabel(
-        tr("提示：车位图中的状态同时提供文字与颜色标识；可在“当前车位”中选择车辆后直接出库。"),
+        tr("提示：可在“当前车位”中选择车辆后直接出库。"),
         activityCard);
     activityTip->setObjectName("sectionHint");
     activityTip->setWordWrap(true);
@@ -779,12 +743,22 @@ void MainWindow::buildUi(){
     releaseButton_->setObjectName("releaseButton");
     releaseButton_->setProperty("variant", "danger");
     releaseButton_->setToolTip(tr("输入在场车牌，或在当前车位表中选中占用车辆后出库。"));
+    emergencyButton_ = new QPushButton(tr("应急生命通道入场"), operationCard);
+    emergencyButton_->setObjectName("emergencyButton");
+    emergencyButton_->setProperty("variant", "danger");
+    emergencyButton_->setToolTip(tr("救护车/消防车优先入场：优先出口最近车位，满场时最近车辆自动结算让位。"));
+    emergencyBanner_ = new QLabel(operationCard);
+    emergencyBanner_->setObjectName("emergencyBanner");
+    emergencyBanner_->setWordWrap(true);
+    emergencyBanner_->setVisible(false);
     auto *operationButtons = new QGridLayout;
     operationButtons->setHorizontalSpacing(10);
     operationButtons->setVerticalSpacing(10);
     operationButtons->addWidget(allocateButton_, 0, 0, 1, 2);
     operationButtons->addWidget(updateVehicleTypeButton_, 1, 0);
     operationButtons->addWidget(releaseButton_, 1, 1);
+    operationButtons->addWidget(emergencyButton_, 2, 0, 1, 2);
+    operationCardLayout->addWidget(emergencyBanner_);
     operationCardLayout->addWidget(operationTitle);
     operationCardLayout->addWidget(operationHint);
     operationCardLayout->addSpacing(6);
@@ -1070,6 +1044,123 @@ void MainWindow::buildUi(){
     connect(goOperationsButton, &QPushButton::clicked, this, [this]{ navigation_->setCurrentRow(2); });
     connect(goMapButton, &QPushButton::clicked, this, [this]{ navigation_->setCurrentRow(1); });
     connect(goBookingsButton, &QPushButton::clicked, this, [this]{ navigation_->setCurrentRow(4); });
+    connect(analysisReportButton, &QPushButton::clicked, this, [this]{
+        if (!service_){
+            return;
+        }
+        smartpark::AnalyticsEngine engine(*service_);
+        const auto report = engine.analyze();
+        QString text = QString::fromStdString(report.summary) + QStringLiteral("\n\n发现：\n");
+        for (const smartpark::AnalysisFinding &finding : report.findings){
+            text += QStringLiteral("  · [%1] %2：%3\n")
+                        .arg(QString::fromLatin1(smartpark::AnalysisReport::categoryText(finding.category)),
+                             QString::fromStdString(finding.title),
+                             QString::fromStdString(finding.detail));
+        }
+        text += QStringLiteral("\n建议：\n");
+        int index = 1;
+        for (const std::string &recommendation : report.recommendations){
+            text += QStringLiteral("  %1. %2\n").arg(index++).arg(
+                QString::fromStdString(recommendation));
+        }
+        text += QStringLiteral("\n占用率预测：");
+        for (const auto &point : report.forecast){
+            text += QStringLiteral("+%1h %2%  ").arg(point.first).arg(
+                QString::number(point.second, 'f', 0));
+        }
+        QDialog dialog(this);
+        dialog.setWindowTitle(tr("数据分析报告（%1）").arg(
+            QString::fromStdString(report.model)));
+        dialog.resize(560, 520);
+        auto *dialogLayout = new QVBoxLayout(&dialog);
+        auto *textView = new QTextEdit(&dialog);
+        textView->setPlainText(text);
+        textView->setReadOnly(true);
+        dialogLayout->addWidget(textView);
+
+        // 远程模型分析（预留接口 + macOS NSURLSession 传输）：
+        // 设置 SMARTPARK_ANALYST_ENDPOINT 后可请求 LLM 生成自然语言结论。
+        const QByteArray endpoint =
+            qgetenv("SMARTPARK_ANALYST_ENDPOINT");
+        if (!endpoint.isEmpty()){
+            auto *remoteButton = new QPushButton(tr("请求远程模型分析"), &dialog);
+            remoteButton->setProperty("variant", "primary");
+            dialogLayout->addWidget(remoteButton);
+            connect(remoteButton, &QPushButton::clicked, &dialog,
+                    [this, &textView, &dialog, remoteButton, endpoint]{
+                remoteButton->setEnabled(false);
+                textView->append(QStringLiteral("\n远程模型分析中（最长 20 秒）…"));
+                smartpark::AnalyticsEngine engine(*service_);
+                const auto snapshot = engine.snapshot(
+                    smartpark::ParkingRecord::Clock::now());
+                auto *state = new std::shared_ptr<std::optional<
+                    smartpark::AnalysisReport>>(
+                    std::make_shared<std::optional<smartpark::AnalysisReport>>());
+                auto *done = new std::shared_ptr<std::atomic_bool>(
+                    std::make_shared<std::atomic_bool>(false));
+                std::thread([state, done, endpoint, snapshot]() mutable{
+                    smartpark::RemoteAnalystConfig config;
+                    config.endpoint = QString::fromUtf8(endpoint).toStdString();
+                    smartpark::RemoteAnalystClient client(config);
+                    client.setTransport(
+                        [](const std::string &url, const std::string &apiKey,
+                           const std::string &requestJson)
+                            -> std::optional<std::string> {
+                            return macbridge::httpPostJson(url, apiKey,
+                                                           requestJson, 20);
+                        });
+                    **state = client.analyze(snapshot);
+                    **done = true;
+                }).detach();
+                auto *poller = new QTimer(&dialog);
+                connect(poller, &QTimer::timeout, &dialog,
+                        [this, textView, remoteButton, state, done, poller]{
+                    if (!done->get()->load()){
+                        return;
+                    }
+                    poller->stop();
+                    remoteButton->setEnabled(true);
+                    if ((*state)->has_value()){
+                        textView->append(
+                            QStringLiteral("\n远程结论（%1）：\n%2").arg(
+                                QString::fromStdString((*(**state)).model),
+                                QString::fromStdString((*(**state)).summary)));
+                    } else{
+                        textView->append(QStringLiteral(
+                            "\n远程分析失败：请检查端点/密钥与网络（详情见日志）。"));
+                    }
+                });
+                poller->start(200);
+            });
+        }
+
+        auto *dialogButtons = new QHBoxLayout;
+        auto *exportPdfButton = new QPushButton(tr("导出 PDF"), &dialog);
+        dialogButtons->addWidget(exportPdfButton);
+        dialogButtons->addStretch(1);
+        auto *closeButton = new QPushButton(tr("关闭"), &dialog);
+        closeButton->setProperty("variant", "primary");
+        dialogButtons->addWidget(closeButton);
+        dialogLayout->addLayout(dialogButtons);
+        connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+        connect(exportPdfButton, &QPushButton::clicked, this,
+                [&dialog, text, title = dialog.windowTitle()]{
+            const QString pdfPath = QStringLiteral("%1/SmartPark数据分析报告-%2.pdf")
+                .arg(QStandardPaths::writableLocation(
+                         QStandardPaths::DesktopLocation),
+                     QDateTime::currentDateTime().toString(
+                         QStringLiteral("yyyyMMdd-HHmmss")));
+            if (macbridge::exportTextToPdf(title, text, pdfPath)){
+                macbridge::revealInFinder(pdfPath);
+                QMessageBox::information(&dialog, QStringLiteral("导出成功"),
+                                         QStringLiteral("报告已保存：\n%1").arg(pdfPath));
+            } else{
+                QMessageBox::warning(&dialog, QStringLiteral("导出失败"),
+                                     QStringLiteral("当前平台不支持 PDF 导出。"));
+            }
+        });
+        dialog.exec();
+    });
     connect(logoutAction, &QAction::triggered, this, &MainWindow::requestLogout);
     connect(quitAction, &QAction::triggered, qApp, &QCoreApplication::quit);
     connect(logoutButton, &QPushButton::clicked, this, &MainWindow::requestLogout);
@@ -1085,6 +1176,35 @@ void MainWindow::buildUi(){
     connect(resetFilterButton, &QPushButton::clicked, this, &MainWindow::resetRecordFilter);
     connect(strategyInput_, qOverload<int>(&QComboBox::currentIndexChanged),
             this, &MainWindow::updateStrategy);
+    connect(emergencyButton_, &QPushButton::clicked, this, [this]{
+        const QString plate = plateInput_->text().trimmed();
+        if (plate.isEmpty()){
+            QMessageBox::information(this, QStringLiteral("请输入车牌"),
+                                     QStringLiteral("应急入场前请输入应急车辆车牌。"));
+            return;
+        }
+        const smartpark::Vehicle vehicle(
+            plate.toStdString(),
+            vehicleTypeFromIndex(vehicleTypeInput_->currentIndex()));
+        const auto result = service_->emergencyEnter(vehicle, true);
+        emergencyBanner_->setVisible(true);
+        if (result){
+            const QString banner = QStringLiteral(
+                "应急生命通道已开启：%1 占用 %2（出口 %3m），让位车辆已自动结算出场。")
+                .arg(plate, QString::fromStdString(result->spotId))
+                .arg(QString::number(result->exitRoute.distance, 'f', 1));
+            emergencyBanner_->setText(QStringLiteral("🚨 ") + banner);
+            macbridge::postNotification(QStringLiteral("应急生命通道"),
+                                        banner);
+            macbridge::speakChinese(banner);
+            refreshScene();
+            refreshOccupancy();
+            refreshDashboard();
+        } else{
+            emergencyBanner_->setText(
+                QStringLiteral("应急入场失败：车辆已在场内且无可让位车位，请人工处置。"));
+        }
+    });
 }
 
 void MainWindow::showEvent(QShowEvent *event){
@@ -1168,6 +1288,11 @@ bool MainWindow::applyService(const smartpark::ParkingLayout &layout,
         }
         service_ = std::make_unique<smartpark::ParkingService>(
             layout, strategy, &persistence_->repository());
+        if (!auditService_){
+            auditService_ = std::make_unique<smartpark::AuditLogService>(
+                persistence_->databaseManager().database());
+        }
+        service_->setAuditLog(auditService_.get());
         return true;
     } catch (const std::exception &error){
         const QString message = QString::fromUtf8(error.what());
@@ -1229,6 +1354,10 @@ void MainWindow::refreshDashboard(){
     const int available = service_->remainingSpots();
     const int occupied = service_->occupiedSpots();
     const int reserved = service_->reservedSpots();
+    if (!qEnvironmentVariableIsSet("SMARTPARK_NO_MENU_BAR")){
+        macbridge::setMenuBarStatus(
+            QStringLiteral("SmartPark 余位 %1").arg(available));
+    }
     if (kpiTotalLabel_ != nullptr){
         kpiTotalLabel_->setText(QString::number(total));
         kpiAvailableLabel_->setText(QString::number(available));
@@ -1314,7 +1443,7 @@ void MainWindow::refreshInsights(){
             ? QString::number(static_cast<int>(forecast60->confidence * 100.0))
             : QStringLiteral("0");
         QStringList lines;
-        lines << tr("智能决策 · 60 分钟预测占用率 %1（置信度 %2%）")
+        lines << tr("预测：60 分钟后占用率 %1（置信度 %2%）")
                      .arg(forecast60Text).arg(confidenceText);
         lines << tr("最高压力分区 %1 · 风险告警 %2 条（严重 %3 条）")
                      .arg(highestZone)
@@ -1323,8 +1452,7 @@ void MainWindow::refreshInsights(){
         if (!riskTitles.isEmpty()){
             lines << tr("重点：%1").arg(riskTitles.join(QStringLiteral("；")));
         }
-        lines << tr("趋势推演基于最近 3 小时入场 %1 辆、离场 %2 辆；"
-                    "本结果来自本地规则，不代表大模型预测，车牌识别接口将在后续版本接入。")
+        lines << tr("趋势推演基于最近 3 小时入场 %1 辆、离场 %2 辆。")
                      .arg(insights.arrivals180)
                      .arg(insights.departures180);
         dashboardInsightLabel_->setText(lines.join(QStringLiteral("\n")));
@@ -1424,7 +1552,7 @@ void MainWindow::refreshInsights(){
     if (forecastChart_ != nullptr){
         LineSeries series;
         series.name = tr("预测占用率");
-        series.color = QColor(29, 78, 137);
+        series.color = theme::chartPrimary();
         series.points.push_back({tr("当前"), insights.currentRate});
         if (forecast30){
             series.points.push_back({tr("30分"), forecast30->predictedRate});
@@ -1510,10 +1638,10 @@ void MainWindow::refreshInsights(){
             slice.valueText = QString::number(value) + QStringLiteral(" 辆");
             return slice;
         };
-        bars.push_back(trafficBar(tr("60 分钟入场"), insights.arrivals60, QColor(15, 118, 110)));
+        bars.push_back(trafficBar(tr("1 小时入场"), insights.arrivals60, QColor(15, 118, 110)));
         bars.push_back(trafficBar(tr("60 分钟离场"), insights.departures60, QColor(180, 35, 24)));
-        bars.push_back(trafficBar(tr("180 分钟入场"), insights.arrivals180, QColor(2, 106, 162)));
-        bars.push_back(trafficBar(tr("180 分钟离场"), insights.departures180, QColor(124, 58, 237)));
+        bars.push_back(trafficBar(tr("3 小时入场"), insights.arrivals180, QColor(2, 106, 162)));
+        bars.push_back(trafficBar(tr("3 小时离场"), insights.departures180, QColor(124, 58, 237)));
         flowChart_->setBars(bars);
     }
 

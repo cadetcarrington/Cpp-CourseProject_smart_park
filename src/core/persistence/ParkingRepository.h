@@ -3,6 +3,7 @@
 #include "core/model/ParkingLayout.h"
 #include "core/model/ParkingRecord.h"
 #include "core/model/ParkingSpot.h"
+#include "core/model/Reservation.h"
 #include "core/model/Vehicle.h"
 #include <QSqlDatabase>
 #include <cstdint>
@@ -39,6 +40,23 @@ public:
                             const ParkingRecord &record,
                             const ParkingSpot &spot);
     std::vector<Booking> loadBookings();
+    // 远程时间段预约（Reservation）：订单、状态与定金流水持久化。
+    // chargePayment 可为空（无障碍关怀订单免定金）。
+    bool saveReservationOrder(const Reservation &reservation,
+                              const DepositPayment *chargePayment);
+    bool saveReservationStatus(const Reservation &reservation);
+    bool saveReservationPayment(const Reservation &reservation,
+                                const DepositPayment &payment);
+    bool saveReservationCheckIn(const Reservation &reservation,
+                                const ParkingRecord &record,
+                                const ParkingSpot &spot);
+    bool saveExitWithReservation(const ParkingRecord &record,
+                                 const ParkingRecord::TimePoint &exitTime,
+                                 double fee,
+                                 const Reservation &reservation,
+                                 const DepositPayment &applyPayment);
+    std::vector<Reservation> loadReservations();
+    std::vector<DepositPayment> loadDepositPayments();
     std::vector<PersistedSpotState> loadSpotStates();
     std::vector<PersistedRecord> loadRecords();
     const std::string &lastError() const noexcept;
@@ -50,6 +68,8 @@ private:
                                   qint64 exitTimeMs,
                                   double fee);
     bool updateBookingStatusInTransaction(const Booking &booking);
+    bool updateReservationInTransaction(const Reservation &reservation);
+    bool insertDepositPaymentInTransaction(const DepositPayment &payment);
     bool markSpotAvailableInTransaction(const std::string &spotId);
     QSqlDatabase database_;
     std::string lastError_;

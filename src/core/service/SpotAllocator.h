@@ -18,7 +18,9 @@ struct AllocationWeights{
     double typePenalty{1.0};
     double occupancyRadius{12.0};
     double occupancyK{0.35};
-    double zonePressure{6.0};
+    // 分区压力权重：乘以场地对角线得到“满区等效步行米数”。
+    // 0.8 表示压满一个分区约等于多走 0.8 倍对角线的距离。
+    double zonePressure{0.8};
 };
 struct ScoreBreakdown{
     double entryPathCost{0.0};
@@ -54,7 +56,7 @@ public:
 private:
     ScoreBreakdown makeScore(const Vehicle &vehicle, const ParkingSpot &spot,
                              const Route &entryRoute, const Route &exitRoute,
-                             int nearbyOccupied, double zonePressure) const;
+                             int nearbyOccupied, double zoneLoadAfter) const;
     double typePenaltyFor(const Vehicle &vehicle, SpotType type) const;
     int nearbyOccupiedSpots(const ParkingSpot &candidate,
                             const std::vector<ParkingSpot> &spots) const;
@@ -62,5 +64,6 @@ private:
     const GridPlanner *planner_;
     AllocationStrategy strategy_{AllocationStrategy::WeightedCost};
     AllocationWeights weights_;
+    double siteDiagonal_{0.0};
 };
 } // namespace smartpark

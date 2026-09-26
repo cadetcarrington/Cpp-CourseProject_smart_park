@@ -17,7 +17,7 @@
 struct BarSlice{
     QString label;
     double value{0.0};
-    QColor color{QColor(29, 78, 137)};
+    QColor color{QColor(184, 146, 74)};
     QString valueText;
 };
 
@@ -53,7 +53,7 @@ protected:
             return;
         }
         if (bars_.isEmpty()){
-            painter.setPen(QColor(82, 96, 109));
+            painter.setPen(QColor(110, 106, 97));
             painter.drawText(area, Qt::AlignCenter, tr("暂无数据"));
             return;
         }
@@ -103,7 +103,7 @@ protected:
 
             const QRect labelRect(area.left(), centerY - labelMetrics.height() / 2,
                                   labelColumn - 8, labelMetrics.height());
-            painter.setPen(QColor(51, 65, 85));
+            painter.setPen(QColor(61, 58, 51));
             painter.drawText(labelRect, Qt::AlignLeft | Qt::AlignVCenter,
                              labelMetrics.elidedText(slice.label, Qt::ElideRight,
                                                     labelRect.width()));
@@ -117,7 +117,7 @@ protected:
             const int fillWidth = std::max(2, static_cast<int>(std::round(ratio * barWidth)));
 
             painter.setPen(Qt::NoPen);
-            painter.setBrush(QColor(226, 232, 240));
+            painter.setBrush(QColor(234, 231, 224));
             painter.drawRoundedRect(QRect(barLeft, barTop, barWidth, barHeight),
                                     barHeight / 2.0, barHeight / 2.0);
 
@@ -154,7 +154,7 @@ private:
 struct DonutSlice{
     QString label;
     double value{0.0};
-    QColor color{QColor(29, 78, 137)};
+    QColor color{QColor(184, 146, 74)};
 };
 
 class DonutChartWidget : public QWidget{
@@ -213,7 +213,7 @@ protected:
         const int ring = std::max(12, side / 5);
 
         if (total <= 0.0 || slices_.isEmpty()){
-            painter.setPen(QPen(QColor(219, 226, 236), ring, Qt::SolidLine, Qt::FlatCap));
+            painter.setPen(QPen(QColor(231, 227, 219), ring, Qt::SolidLine, Qt::FlatCap));
             painter.setBrush(Qt::NoBrush);
             painter.drawEllipse(donutRect);
         } else{
@@ -237,11 +237,11 @@ protected:
         centerValueFont.setPointSize(16);
         centerValueFont.setBold(true);
         painter.setFont(centerTitleFont);
-        painter.setPen(QColor(82, 96, 109));
+        painter.setPen(QColor(110, 106, 97));
         painter.drawText(donutRect.adjusted(ring, ring, -ring, -ring).adjusted(0, -8, 0, -8),
                          Qt::AlignHCenter | Qt::AlignBottom, centerTitle_);
         painter.setFont(centerValueFont);
-        painter.setPen(QColor(16, 42, 67));
+        painter.setPen(QColor(28, 30, 33));
         painter.drawText(donutRect.adjusted(ring, ring, -ring, -ring).adjusted(0, 10, 0, 10),
                          Qt::AlignHCenter | Qt::AlignTop, centerValue_);
 
@@ -264,7 +264,7 @@ protected:
             const QString text = QStringLiteral("%1 %2")
                 .arg(slice.label)
                 .arg(QString::number(std::max(0.0, slice.value), 'f', 0));
-            painter.setPen(QColor(51, 65, 85));
+            painter.setPen(QColor(61, 58, 51));
             painter.drawText(QRect(x + 18, y, columnWidth - 22, rowHeight),
                              Qt::AlignLeft | Qt::AlignVCenter,
                              metrics.elidedText(text, Qt::ElideRight,
@@ -285,7 +285,7 @@ struct LinePoint{
 
 struct LineSeries{
     QString name;
-    QColor color{QColor(29, 78, 137)};
+    QColor color{QColor(184, 146, 74)};
     QVector<LinePoint> points;
 };
 
@@ -333,7 +333,7 @@ protected:
             return;
         }
         if (series_.isEmpty()){
-            painter.setPen(QColor(82, 96, 109));
+            painter.setPen(QColor(110, 106, 97));
             painter.drawText(area, Qt::AlignCenter, tr("暂无数据"));
             return;
         }
@@ -397,18 +397,21 @@ protected:
         }
 
         painter.setFont(tickFont);
-        painter.setPen(QPen(QColor(226, 232, 240), 1.0));
+        painter.setPen(QPen(QColor(234, 231, 224), 1.0));
         for (int i = 0; i <= 4; ++i){
             const double ratio = static_cast<double>(i) / 4.0;
             const int y = plot.bottom() - static_cast<int>(std::round(ratio * plot.height()));
             painter.drawLine(plot.left(), y, plot.right(), y);
             const double value = low + (high - low) * ratio;
-            const QString text = QString::number(value, 'f', 0) + unit_;
-            painter.setPen(QColor(82, 96, 109));
+            // 小数值区间保留 1-2 位小数，避免刻度全部取整后重复。
+            const double span = high - low;
+            const int decimals = span < 2.0 ? 2 : (span < 10.0 ? 1 : 0);
+            const QString text = QString::number(value, 'f', decimals) + unit_;
+            painter.setPen(QColor(110, 106, 97));
             painter.drawText(QRect(area.left(), y - tickMetrics.height() / 2,
                                    yLabelWidth - 6, tickMetrics.height()),
                              Qt::AlignRight | Qt::AlignVCenter, text);
-            painter.setPen(QPen(QColor(226, 232, 240), 1.0));
+            painter.setPen(QPen(QColor(234, 231, 224), 1.0));
         }
 
         const auto mapX = [&](int index){
@@ -434,7 +437,7 @@ protected:
                 label = labelSeries.points.at(i).label;
             }
             const QRect labelRect(x - 32, plot.bottom() + 4, 64, xLabelHeight - 2);
-            painter.setPen(QColor(82, 96, 109));
+            painter.setPen(QColor(110, 106, 97));
             painter.drawText(labelRect, Qt::AlignHCenter | Qt::AlignTop,
                              labelMetrics.elidedText(label, Qt::ElideRight, 62));
         }
@@ -468,7 +471,7 @@ protected:
 
             if (series_.size() == 1 && maxPoints <= 8){
                 painter.setFont(tickFont);
-                painter.setPen(QColor(51, 65, 85));
+                painter.setPen(QColor(61, 58, 51));
                 for (int i = 0; i < series.points.size(); ++i){
                     const QString text = QString::number(series.points.at(i).value, 'f', 0)
                                          + unit_;
@@ -489,7 +492,7 @@ protected:
                 painter.setPen(Qt::NoPen);
                 painter.setBrush(series.color);
                 painter.drawRoundedRect(QRect(cursorX, rowY + 3, swatch, swatch), 3, 3);
-                painter.setPen(QColor(51, 65, 85));
+                painter.setPen(QColor(61, 58, 51));
                 painter.drawText(QRect(cursorX + swatch + 4, rowY, textWidth, legendHeight - 4),
                                  Qt::AlignLeft | Qt::AlignVCenter, series.name);
                 cursorX += swatch + 6 + textWidth;
