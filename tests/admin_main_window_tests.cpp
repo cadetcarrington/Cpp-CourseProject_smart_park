@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "PlateReviewDialog.h"
 #include "LoginDialog.h"
 #include "UserStore.h"
 
@@ -33,6 +34,10 @@ private slots:
     void seedsDemoAccountAndVerifiesLogin();
     void registersUsersWithValidation();
     void loginDialogValidatesAndAuthenticates();
+    void exposesOptionalImageRecognition();
+    void reviewNeedsExplicitAcceptance();
+    void reviewRejectsMalformedInference();
+    void reviewAppliesOnlyAcceptedResult();
 };
 
 void AdminMainWindowTests::updatesAndPersistsOccupiedVehicleType(){
@@ -246,4 +251,78 @@ void AdminMainWindowTests::loginDialogValidatesAndAuthenticates(){
 
 
 QTEST_MAIN(AdminMainWindowTests)
+void AdminMainWindowTests::exposesOptionalImageRecognition(){
+    QTemporaryDir databaseDir;
+    QVERIFY(databaseDir.isValid());
+    MainWindow window(databaseDir.filePath("admin-image-recognition.db"));
+    auto *plateInput = window.findChild<QLineEdit *>("plateInput");
+    auto *recognizeButton = window.findChild<QPushButton *>("recognizePlateButton");
+    QVERIFY(plateInput && recognizeButton);
+    QVERIFY(recognizeButton->isEnabled());
+    QVERIFY(plateInput->text().isEmpty());
+}
+
+void AdminMainWindowTests::reviewNeedsExplicitAcceptance(){
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString imagePath = directory.filePath("plate.png");
+    QImage image(120, 60, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    QVERIFY(image.save(imagePath));
+    PlateReviewDialog dialog(imagePath);
+    auto *candidate = dialog.findChild<QLineEdit *>("recognizedPlate");
+    auto *use = dialog.findChild<QPushButton *>("useRecognizedPlate");
+    auto *preview = dialog.findChild<QLabel *>("platePreview");
+    QVERIFY(candidate && use && preview);
+    QVERIFY(!preview->pixmap().isNull());
+    QVERIFY(!use->isEnabled());
+    candidate->setText(QStringLiteral("京A12345"));
+    QVERIFY(!use->isEnabled());
+    dialog.reject();
+    QCOMPARE(dialog.result(), int(QDialog::Rejected));
+}
+
+void AdminMainWindowTests::reviewRejectsMalformedInference(){
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString imagePath = directory.filePath("plate.png");
+    QImage image(120, 60, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    QVERIFY(image.save(imagePath));
+    PlateReviewDialog dialog(imagePath);
+    auto *use = dialog.findChild<QPushButton *>("useRecognizedPlate");
+    auto *status = dialog.findChild<QLabel *>("recognitionStatus");
+    QVERIFY(use && status);
+    QVERIFY(QMetaObject::invokeMethod(&dialog, "showResult", Qt::DirectConnection,
+                                      Q_ARG(QByteArray, QByteArray("{\"plate\":\"京A12345\"}"))));
+    QVERIFY(!use->isEnabled());
+    QVERIFY(status->text().contains(QStringLiteral("无效")));
+}
+
+void AdminMainWindowTests::reviewAppliesOnlyAcceptedResult(){
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString imagePath = directory.filePath("plate.png");
+    QImage image(120, 60, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    QVERIFY(image.save(imagePath));
+    PlateReviewDialog dialog(imagePath);
+    auto *use = dialog.findChild<QPushButton *>("useRecognizedPlate");
+    auto *candidate = dialog.findChild<QLineEdit *>("recognizedPlate");
+    auto *crop = dialog.findChild<QLabel *>("plateCrop");
+    QVERIFY(use && candidate && crop);
+    QVERIFY(QMetaObject::invokeMethod(&dialog, "showResult", Qt::DirectConnection,
+        Q_ARG(QByteArray, QByteArray(
+            "{\"plate\":\"京A12345\",\"detection_confidence\":0.9,"
+            "\"recognition_confidence\":0.95,\"valid\":true,"
+            "\"bounding_box\":[10,10,90,40]}"))));
+    QCOMPARE(candidate->text(), QStringLiteral("京A12345"));
+    QVERIFY(!crop->pixmap().isNull());
+    QVERIFY(use->isEnabled());
+    QCOMPARE(dialog.result(), 0);
+    use->click();
+    QCOMPARE(dialog.result(), int(QDialog::Accepted));
+    QCOMPARE(dialog.plate(), QStringLiteral("京A12345"));
+}
+
 #include "admin_main_window_tests.moc"

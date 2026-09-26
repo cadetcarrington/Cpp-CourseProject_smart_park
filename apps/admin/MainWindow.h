@@ -50,6 +50,7 @@ private slots:
     void editLayout();
     bool applyLayout();
     void allocateVehicle();
+    void recognizePlateImage();
     void updateVehicleType();
     void releaseVehicle();
     void updateStrategy();
@@ -106,6 +107,7 @@ private:
     QLabel *kpiOccupiedLabel_{nullptr};
     QLabel *kpiReservedLabel_{nullptr};
     QLineEdit *plateInput_{nullptr};
+    QPushButton *recognizePlateButton_{nullptr};
     QComboBox *vehicleTypeInput_{nullptr};
     QComboBox *strategyInput_{nullptr};
     QPushButton *allocateButton_{nullptr};

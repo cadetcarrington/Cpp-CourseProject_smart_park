@@ -179,7 +179,18 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
   - macOS 原生：菜单栏余位图标、通知中心、中文语音播报、PDF 报告导出、NSURLSession 远程分析传输（`MacSystemBridge`）。
   - 算法：分区均衡升级为负载水位填充（跨分区低负载无条件优先，同档内按距离/拥堵/类型），车库布局 38 辆实测 13 分区负载 25%~62% 均衡。
 
-尚未完成：TCP Server 与协议文档、Gate Terminal、用户端、真实 LPR；`ReservationRule`/计费规则配置化与真实支付在后续阶段接入。
+尚未完成：TCP Server 与协议文档、Gate Terminal、用户端、Gate 侧真实 LPR 部署；`ReservationRule`/计费规则配置化与真实支付在后续阶段接入。
+
+管理端提供本地选图识别审阅：`scripts/recognize_plate.py` 通过 PyTorch 与 Paddle 环境串联 YOLO11m 和 PP-OCRv5 最佳权重。在“车辆作业”点击“识别图片”，审阅原图、定位框、车牌裁剪图与置信度，可更换图片或重试；只有点击“使用车牌”才填入操作输入框，入场/出场始终另行人工操作。四张整图样例及来源/授权说明见 [`examples/plates/`](examples/plates/)。此路径不是 Gate/Server 集成。两份最佳权重通过 Git LFS 跟踪；克隆时需要 Git LFS，运行时还需安装依赖并提供 PaddleOCR 源码及两个 Python 环境。
+
+```bash
+export SMARTPARK_LPR_PY=/path/to/smartpark-lpr/bin/python
+export SMARTPARK_OCR_PY=/path/to/smartpark-ocr/bin/python
+# 可选：SMARTPARK_LPR_SCRIPT=/path/to/recognize_plate.py
+$SMARTPARK_LPR_PY scripts/recognize_plate.py /path/to/vehicle.jpg --ocr-python "$SMARTPARK_OCR_PY"
+```
+
+命令行输出一行 JSON（车牌、检测/识别置信度、边界框及基本格式检查）。默认在 CPU 上运行，首次载入两份权重可能较慢；识别器使用 `scripts/rec/ppocrv5_dict.txt`，它与训练时完整的 `ppocrv5_dict.txt` 保持一致，不能换成 `plate_dict.txt`。默认权重在 `model/weights/`，随 LFS 下载；配置文件 `smartpark_plate_ppocrv5_config.yml` 同时纳入版本控制，脚本会覆盖训练机的权重、字典与样例路径。PaddleOCR 源码与 Python 依赖仍需单独准备（`--paddleocr` 可指定位置）。当前 OCR 训练样本按标注四角透视矫正，而运行时使用检测框裁剪，正式部署前仍须评测困难场景与低置信度处理。Paddle 原生推理导出已在本机验证；YOLO ONNX 导出尚需 `onnx` 依赖，Paddle→ONNX 和 C++ 运行时尚未完成。
 
 ## 后续发展路线
 
