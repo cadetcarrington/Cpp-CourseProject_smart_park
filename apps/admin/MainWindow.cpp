@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "PlateReviewDialog.h"
 #include "Theme.h"
 
 #include "core/service/AnalyticsEngine.h"
@@ -24,6 +25,12 @@
 #include <QFrame>
 #include <QGridLayout>
 #include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QFont>
 #include <QGraphicsTextItem>
 #include <QGraphicsScene>
@@ -724,13 +731,21 @@ void MainWindow::buildUi(){
     plateInput_->setPlaceholderText(tr("例如：晋A12345"));
     plateInput_->setObjectName("plateInput");
     plateInput_->setClearButtonEnabled(true);
+    recognizePlateButton_ = new QPushButton(tr("识别图片"), operationCard);
+    recognizePlateButton_->setObjectName("recognizePlateButton");
+    recognizePlateButton_->setToolTip(tr("从图片提取候选车牌，确认无误后再执行入场或出场。"));
+    auto *plateRow = new QWidget(operationCard);
+    auto *plateRowLayout = new QHBoxLayout(plateRow);
+    plateRowLayout->setContentsMargins(0, 0, 0, 0);
+    plateRowLayout->addWidget(plateInput_, 1);
+    plateRowLayout->addWidget(recognizePlateButton_);
     vehicleTypeInput_ = new QComboBox(operationCard);
     vehicleTypeInput_->addItems({tr("轿车"), tr("摩托车"), tr("卡车"), tr("电动车")});
     vehicleTypeInput_->setObjectName("vehicleTypeInput");
     strategyInput_ = new QComboBox(operationCard);
     strategyInput_->addItems({tr("加权代价（推荐）"), tr("最近车位")});
     strategyInput_->setObjectName("strategyInput");
-    operationForm->addRow(tr("车牌"), plateInput_);
+    operationForm->addRow(tr("车牌"), plateRow);
     operationForm->addRow(tr("车辆类型"), vehicleTypeInput_);
     operationForm->addRow(tr("分配策略"), strategyInput_);
     allocateButton_ = new QPushButton(tr("自动分配车位"), operationCard);
@@ -1165,6 +1180,7 @@ void MainWindow::buildUi(){
     connect(quitAction, &QAction::triggered, qApp, &QCoreApplication::quit);
     connect(logoutButton, &QPushButton::clicked, this, &MainWindow::requestLogout);
     connect(allocateButton_, &QPushButton::clicked, this, &MainWindow::allocateVehicle);
+    connect(recognizePlateButton_, &QPushButton::clicked, this, &MainWindow::recognizePlateImage);
     connect(updateVehicleTypeButton_, &QPushButton::clicked,
             this, &MainWindow::updateVehicleType);
     connect(releaseButton_, &QPushButton::clicked, this, &MainWindow::releaseVehicle);
@@ -1869,6 +1885,20 @@ void MainWindow::updateStrategy(){
     }
     if (strategyInput_ != nullptr){
         QSettings().setValue(QStringLiteral("Operations/strategy"), strategyInput_->currentIndex());
+    }
+}
+
+void MainWindow::recognizePlateImage(){
+    const QString image = QFileDialog::getOpenFileName(
+        this, tr("选择车辆图片"), QString{}, tr("图片 (*.jpg *.jpeg *.png *.bmp)"));
+    if (image.isEmpty()){
+        return;
+    }
+    PlateReviewDialog review(image, this);
+    if (review.exec() == QDialog::Accepted){
+        plateInput_->setText(review.plate());
+        statusLabel_->setText(tr("已采用候选车牌 %1，请核对后再操作入场或出场。")
+                              .arg(review.plate()));
     }
 }
 

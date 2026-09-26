@@ -2,6 +2,8 @@ set(ADMIN_SOURCES
     main.cpp
     MainWindow.h
     MainWindow.cpp
+    PlateReviewDialog.h
+    PlateReviewDialog.cpp
     LoginDialog.h
     LoginDialog.cpp
     RegisterDialog.h
@@ -44,6 +46,8 @@ target_link_libraries(smartpark_admin
 )
 
 target_compile_features(smartpark_admin PRIVATE cxx_std_17)
+target_compile_definitions(smartpark_admin PRIVATE
+    SMARTPARK_LPR_SCRIPT_PATH="${CMAKE_SOURCE_DIR}/scripts/recognize_plate.py")
 
 if(APPLE)
     find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
