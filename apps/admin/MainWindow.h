@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/persistence/Persistence.h"
+#include "core/service/AuditLogService.h"
 #include "core/service/ParkingService.h"
 #include "core/service/ParkingInsightEngine.h"
 #include "ChartWidgets.h"
@@ -32,7 +33,10 @@ class MainWindow : public QMainWindow{
 public:
     explicit MainWindow(QString databasePath, QWidget *parent = nullptr);
     MainWindow(QString databasePath, QString currentUser, QWidget *parent = nullptr);
-    ~MainWindow() override = default;
+    ~MainWindow();
+
+protected:
+    void paintEvent(QPaintEvent *event) override;
 
 signals:
     void logoutRequested();
@@ -78,6 +82,11 @@ private:
     bool databaseFailed_{false};
     bool recordsFilterActive_{false};
     std::unique_ptr<smartpark::Persistence> persistence_;
+    std::unique_ptr<smartpark::AuditLogService> auditService_;
+    QPixmap glassBackdrop_;
+    bool glassMode_{false};
+    QPushButton *emergencyButton_{nullptr};
+    QLabel *emergencyBanner_{nullptr};
     std::unique_ptr<smartpark::ParkingService> service_;
     std::optional<smartpark::AllocationResult> lastAllocation_;
 

@@ -94,7 +94,38 @@ void ParkingRepository::createSchema(){
         QStringLiteral("CREATE UNIQUE INDEX IF NOT EXISTS idx_active_parking_record"
                        " ON parking_records(plate_number) WHERE exit_time_ms IS NULL"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_bookings_plate"
-                       " ON bookings(plate_number)")
+                       " ON bookings(plate_number)"),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS reservations ("
+                       "id TEXT PRIMARY KEY,"
+                       "plate_number TEXT NOT NULL,"
+                       "vehicle_type INTEGER NOT NULL,"
+                       "spot_id TEXT NOT NULL,"
+                       "created_at_ms INTEGER NOT NULL,"
+                       "start_time_ms INTEGER NOT NULL,"
+                       "end_time_ms INTEGER NOT NULL,"
+                       "grace_deadline_ms INTEGER NOT NULL,"
+                       "deposit REAL NOT NULL,"
+                       "status INTEGER NOT NULL,"
+                       "deposit_state INTEGER NOT NULL,"
+                       "charge_tx_id TEXT NOT NULL,"
+                       "route TEXT NOT NULL DEFAULT '',"
+                       "accessible INTEGER NOT NULL DEFAULT 0)"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_reservations_plate"
+                       " ON reservations(plate_number)"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_reservations_spot_status"
+                       " ON reservations(spot_id, status)"),
+        // 同一车牌同时只允许一个未结束订单（PendingPayment/Confirmed/CheckedIn）。
+        QStringLiteral("CREATE UNIQUE INDEX IF NOT EXISTS idx_reservations_open_plate"
+                       " ON reservations(plate_number)"
+                       " WHERE status IN (0, 1, 2)"),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS deposit_payments ("
+                       "id TEXT PRIMARY KEY,"
+                       "reservation_id TEXT NOT NULL,"
+                       "plate_number TEXT NOT NULL,"
+                       "kind INTEGER NOT NULL,"
+                       "amount REAL NOT NULL,"
+                       "status INTEGER NOT NULL,"
+                       "created_at_ms INTEGER NOT NULL)")
     };
     for (const QString &statement : statements){
         QSqlQuery query(database_);
@@ -449,10 +480,349 @@ std::vector<Booking> ParkingRepository::loadBookings(){
     }
     return bookings;
 }
+bool ParkingRepository::updateReservationInTransaction(const Reservation &reservation){
+    QSqlQuery query(database_);
+    if (!prepare(query,
+                 QStringLiteral("UPDATE reservations SET status=:status,"
+                                "deposit_state=:depositState WHERE id=:id"),
+                 lastError_)){
+        return false;
+    }
+    query.bindValue(QStringLiteral(":status"),
+                    static_cast<int>(reservationStatusToInt(reservation.status())));
+    query.bindValue(QStringLiteral(":depositState"),
+                    static_cast<int>(depositStateToInt(reservation.depositState())));
+    query.bindValue(QStringLiteral(":id"), QString::fromStdString(reservation.id()));
+    if (!exec(query, lastError_)){
+        return false;
+    }
+    if (query.numRowsAffected() != 1){
+        lastError_ = "reservation is not persisted: " + reservation.id();
+        return false;
+    }
+    return true;
+}
+bool ParkingRepository::insertDepositPaymentInTransaction(const DepositPayment &payment){
+    qint64 createdMillis = 0;
+    if (payment.transactionId.empty() || payment.reservationId.empty()
+        || payment.plateNumber.empty() || !std::isfinite(payment.amount)
+        || payment.amount < 0.0
+        || !timeutil::toMilliseconds(payment.createdAt, createdMillis)){
+        lastError_ = "invalid deposit payment";
+        return false;
+    }
+    QSqlQuery query(database_);
+    if (!prepare(query,
+                 QStringLiteral("INSERT INTO deposit_payments("
+                                "id,reservation_id,plate_number,kind,amount,status,"
+                                "created_at_ms)"
+                                " VALUES(:id,:reservation,:plate,:kind,:amount,:status,:created)"),
+                 lastError_)){
+        return false;
+    }
+    query.bindValue(QStringLiteral(":id"),
+                    QString::fromStdString(payment.transactionId));
+    query.bindValue(QStringLiteral(":reservation"),
+                    QString::fromStdString(payment.reservationId));
+    query.bindValue(QStringLiteral(":plate"),
+                    QString::fromStdString(payment.plateNumber));
+    query.bindValue(QStringLiteral(":kind"),
+                    static_cast<int>(depositPaymentKindToInt(payment.kind)));
+    query.bindValue(QStringLiteral(":amount"), payment.amount);
+    query.bindValue(QStringLiteral(":status"), static_cast<int>(payment.status));
+    query.bindValue(QStringLiteral(":created"), createdMillis);
+    if (!exec(query, lastError_)){
+        return false;
+    }
+    return true;
+}
+bool ParkingRepository::saveReservationOrder(const Reservation &reservation,
+                                             const DepositPayment *chargePayment){
+    qint64 createdMillis = 0;
+    qint64 startMillis = 0;
+    qint64 endMillis = 0;
+    qint64 deadlineMillis = 0;
+    if (reservation.id().empty() || reservation.plateNumber().empty()
+        || reservation.spotId().empty() || !std::isfinite(reservation.deposit())
+        || reservation.deposit() < 0.0
+        || (reservation.deposit() > 0.0 && reservation.chargeTransactionId().empty())
+        || !timeutil::toMilliseconds(reservation.createdAt(), createdMillis)
+        || !timeutil::toMilliseconds(reservation.startTime(), startMillis)
+        || !timeutil::toMilliseconds(reservation.endTime(), endMillis)
+        || !timeutil::toMilliseconds(reservation.graceDeadline(), deadlineMillis)){
+        lastError_ = "invalid reservation state";
+        return false;
+    }
+    if (!database_.transaction()){
+        lastError_ = database_.lastError().text().toStdString();
+        return false;
+    }
+    QSqlQuery query(database_);
+    if (!prepare(query,
+                 QStringLiteral("INSERT INTO reservations("
+                                "id,plate_number,vehicle_type,spot_id,created_at_ms,"
+                                "start_time_ms,end_time_ms,grace_deadline_ms,deposit,"
+                                "status,deposit_state,charge_tx_id,route,accessible)"
+                                " VALUES(:id,:plate,:vehicleType,:spot,:created,"
+                                ":start,:end,:deadline,:deposit,:status,:depositState,"
+                                ":chargeTx,:route,:accessible)"),
+                 lastError_)){
+        database_.rollback();
+        return false;
+    }
+    query.bindValue(QStringLiteral(":id"), QString::fromStdString(reservation.id()));
+    query.bindValue(QStringLiteral(":plate"),
+                    QString::fromStdString(reservation.plateNumber()));
+    query.bindValue(QStringLiteral(":vehicleType"),
+                    static_cast<int>(reservation.vehicleType()));
+    query.bindValue(QStringLiteral(":spot"),
+                    QString::fromStdString(reservation.spotId()));
+    query.bindValue(QStringLiteral(":created"), createdMillis);
+    query.bindValue(QStringLiteral(":start"), startMillis);
+    query.bindValue(QStringLiteral(":end"), endMillis);
+    query.bindValue(QStringLiteral(":deadline"), deadlineMillis);
+    query.bindValue(QStringLiteral(":deposit"), reservation.deposit());
+    query.bindValue(QStringLiteral(":status"),
+                    static_cast<int>(reservationStatusToInt(reservation.status())));
+    query.bindValue(QStringLiteral(":depositState"),
+                    static_cast<int>(depositStateToInt(reservation.depositState())));
+    query.bindValue(QStringLiteral(":chargeTx"),
+                    QString::fromStdString(reservation.chargeTransactionId()));
+    query.bindValue(QStringLiteral(":route"),
+                    QString::fromStdString(reservation.expectedRoute().encode()));
+    query.bindValue(QStringLiteral(":accessible"), reservation.isAccessible() ? 1 : 0);
+    if (!exec(query, lastError_)){
+        database_.rollback();
+        return false;
+    }
+    if (chargePayment != nullptr
+        && !insertDepositPaymentInTransaction(*chargePayment)){
+        database_.rollback();
+        return false;
+    }
+    if (!database_.commit()){
+        lastError_ = database_.lastError().text().toStdString();
+        database_.rollback();
+        return false;
+    }
+    return true;
+}
+bool ParkingRepository::saveReservationStatus(const Reservation &reservation){
+    if (!database_.transaction()){
+        lastError_ = database_.lastError().text().toStdString();
+        return false;
+    }
+    if (!updateReservationInTransaction(reservation)){
+        database_.rollback();
+        return false;
+    }
+    if (!database_.commit()){
+        lastError_ = database_.lastError().text().toStdString();
+        database_.rollback();
+        return false;
+    }
+    return true;
+}
+bool ParkingRepository::saveReservationPayment(const Reservation &reservation,
+                                               const DepositPayment &payment){
+    if (!database_.transaction()){
+        lastError_ = database_.lastError().text().toStdString();
+        return false;
+    }
+    if (!updateReservationInTransaction(reservation)
+        || !insertDepositPaymentInTransaction(payment)){
+        database_.rollback();
+        return false;
+    }
+    if (!database_.commit()){
+        lastError_ = database_.lastError().text().toStdString();
+        database_.rollback();
+        return false;
+    }
+    return true;
+}
+bool ParkingRepository::saveReservationCheckIn(const Reservation &reservation,
+                                               const ParkingRecord &record,
+                                               const ParkingSpot &spot){
+    qint64 entryMillis = 0;
+    if (reservation.status() != ReservationStatus::CheckedIn || reservation.id().empty()
+        || record.isClosed() || spot.status() != SpotStatus::Occupied
+        || !spot.parkedVehicle() || record.spotId() != spot.identifier()
+        || record.plateNumber() != reservation.plateNumber()
+        || record.spotId() != reservation.spotId()
+        || record.plateNumber() != spot.parkedVehicle()->plateNumber()
+        || !timeutil::toMilliseconds(record.entryTime(), entryMillis)){
+        lastError_ = "invalid reservation check-in state";
+        return false;
+    }
+    if (!database_.transaction()){
+        lastError_ = database_.lastError().text().toStdString();
+        return false;
+    }
+    if (!saveSpotStateInTransaction(spot)
+        || !updateReservationInTransaction(reservation)){
+        database_.rollback();
+        return false;
+    }
+    QSqlQuery query(database_);
+    if (!prepare(query,
+                 QStringLiteral("INSERT INTO parking_records("
+                                "plate_number,spot_id,entry_time_ms,exit_time_ms,fee)"
+                                " VALUES(:plate,:spot,:entry,NULL,0)"),
+                 lastError_)){
+        database_.rollback();
+        return false;
+    }
+    query.bindValue(QStringLiteral(":plate"),
+                    QString::fromStdString(record.plateNumber()));
+    query.bindValue(QStringLiteral(":spot"), QString::fromStdString(record.spotId()));
+    query.bindValue(QStringLiteral(":entry"), entryMillis);
+    if (!exec(query, lastError_)){
+        database_.rollback();
+        return false;
+    }
+    if (!database_.commit()){
+        lastError_ = database_.lastError().text().toStdString();
+        database_.rollback();
+        return false;
+    }
+    return true;
+}
+bool ParkingRepository::saveExitWithReservation(const ParkingRecord &record,
+                                                const ParkingRecord::TimePoint &exitTime,
+                                                double fee,
+                                                const Reservation &reservation,
+                                                const DepositPayment &applyPayment){
+    qint64 exitMillis = 0;
+    if (record.isClosed() || exitTime < record.entryTime()
+        || !timeutil::toMilliseconds(exitTime, exitMillis)
+        || !std::isfinite(fee) || fee < 0.0){
+        lastError_ = "invalid parking exit state";
+        return false;
+    }
+    if (!database_.transaction()){
+        lastError_ = database_.lastError().text().toStdString();
+        return false;
+    }
+    if (!closeRecordInTransaction(record, exitMillis, fee)
+        || !markSpotAvailableInTransaction(record.spotId())
+        || !updateReservationInTransaction(reservation)
+        || !insertDepositPaymentInTransaction(applyPayment)){
+        database_.rollback();
+        return false;
+    }
+    if (!database_.commit()){
+        lastError_ = database_.lastError().text().toStdString();
+        database_.rollback();
+        return false;
+    }
+    return true;
+}
+std::vector<Reservation> ParkingRepository::loadReservations(){
+    std::vector<Reservation> reservations;
+    QSqlQuery query(database_);
+    if (!prepare(query,
+                 QStringLiteral("SELECT id,plate_number,vehicle_type,spot_id,"
+                                "created_at_ms,start_time_ms,end_time_ms,"
+                                "grace_deadline_ms,deposit,status,deposit_state,"
+                                "charge_tx_id,route,accessible"
+                                " FROM reservations ORDER BY created_at_ms, id"),
+                 lastError_)){
+        return reservations;
+    }
+    if (!exec(query, lastError_)){
+        return reservations;
+    }
+    while (query.next()){
+        const std::string id = query.value(0).toString().toStdString();
+        const std::string plateNumber = query.value(1).toString().toStdString();
+        const int vehicleType = query.value(2).toInt();
+        const std::string spotId = query.value(3).toString().toStdString();
+        const double deposit = query.value(8).toDouble();
+        const std::string chargeTransactionId = query.value(11).toString().toStdString();
+        const std::string routeText = query.value(12).toString().toStdString();
+        const bool accessible = query.value(13).toInt() != 0;
+        Reservation::TimePoint createdAt;
+        Reservation::TimePoint startTime;
+        Reservation::TimePoint endTime;
+        Reservation::TimePoint graceDeadline;
+        if (!timeutil::fromMilliseconds(query.value(4).toLongLong(), createdAt)
+            || !timeutil::fromMilliseconds(query.value(5).toLongLong(), startTime)
+            || !timeutil::fromMilliseconds(query.value(6).toLongLong(), endTime)
+            || !timeutil::fromMilliseconds(query.value(7).toLongLong(), graceDeadline)){
+            lastError_ = "persisted reservation time is out of the supported range";
+            return {};
+        }
+        const std::optional<ReservationStatus> status =
+            reservationStatusFromInt(query.value(9).toInt());
+        const std::optional<DepositState> depositState =
+            depositStateFromInt(query.value(10).toInt());
+        const std::optional<ExpectedRoute> route = ExpectedRoute::decode(routeText);
+        if (id.empty() || plateNumber.empty() || spotId.empty()
+            || vehicleType < static_cast<int>(VehicleType::Car)
+            || vehicleType > static_cast<int>(VehicleType::Electric)
+            || !std::isfinite(deposit) || deposit < 0.0 || !status || !depositState
+            || *status == ReservationStatus::PendingPayment
+            || (deposit > 0.0 && chargeTransactionId.empty()) || !route){
+            lastError_ = "invalid persisted reservation";
+            return {};
+        }
+        try{
+            reservations.emplace_back(id, plateNumber,
+                                      static_cast<VehicleType>(vehicleType), spotId,
+                                      createdAt, startTime, endTime, graceDeadline,
+                                      deposit, chargeTransactionId, *status,
+                                      *depositState, *route, accessible);
+        } catch (const std::exception &){
+            lastError_ = "invalid persisted reservation: " + id;
+            return {};
+        }
+    }
+    return reservations;
+}
+std::vector<DepositPayment> ParkingRepository::loadDepositPayments(){
+    std::vector<DepositPayment> payments;
+    QSqlQuery query(database_);
+    if (!prepare(query,
+                 QStringLiteral("SELECT id,reservation_id,plate_number,kind,amount,"
+                                "status,created_at_ms"
+                                " FROM deposit_payments ORDER BY created_at_ms, id"),
+                 lastError_)){
+        return payments;
+    }
+    if (!exec(query, lastError_)){
+        return payments;
+    }
+    while (query.next()){
+        DepositPayment payment;
+        payment.transactionId = query.value(0).toString().toStdString();
+        payment.reservationId = query.value(1).toString().toStdString();
+        payment.plateNumber = query.value(2).toString().toStdString();
+        const std::optional<DepositPayment::Kind> kind =
+            depositPaymentKindFromInt(query.value(3).toInt());
+        payment.amount = query.value(4).toDouble();
+        const int status = query.value(5).toInt();
+        if (!timeutil::fromMilliseconds(query.value(6).toLongLong(),
+                                        payment.createdAt)){
+            lastError_ = "persisted deposit payment time is out of the supported range";
+            return {};
+        }
+        if (payment.transactionId.empty() || payment.reservationId.empty()
+            || payment.plateNumber.empty() || !kind || !std::isfinite(payment.amount)
+            || payment.amount < 0.0 || status < 0 || status > 1){
+            lastError_ = "invalid persisted deposit payment";
+            return {};
+        }
+        payment.kind = *kind;
+        payment.status = status == 0 ? DepositPayment::Status::Succeeded
+                                     : DepositPayment::Status::Failed;
+        payments.push_back(std::move(payment));
+    }
+    return payments;
+}
 bool ParkingRepository::saveExit(const ParkingRecord &record,
                                  const ParkingRecord::TimePoint &exitTime,
-                                 double fee){
-    qint64 exitMillis = 0;
+                                 double fee){    qint64 exitMillis = 0;
     if (record.isClosed() || exitTime < record.entryTime()
         || !timeutil::toMilliseconds(exitTime, exitMillis)
         || !std::isfinite(fee) || fee < 0.0){

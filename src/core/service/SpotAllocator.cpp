@@ -18,38 +18,35 @@ bool isBetterRoute(const Route &candidate, const Route &current, AllocationStrat
     }
     return candidate.cost < current.cost;
 }
-std::map<std::string, double> zonePressureMap(const std::vector<ParkingSpot> &spots){
-    std::map<std::string, int> totals;
-    std::map<std::string, double> loads;
+// 分区负载：占用 +0.7 预留 +0.5 停用。压力在评分时按放置后负载占比的平方计算。
+std::map<std::string, std::pair<int, double>> zoneLoadMap(
+    const std::vector<ParkingSpot> &spots){
+    std::map<std::string, std::pair<int, double>> loads;
     for (const ParkingSpot &spot : spots){
-        totals[spot.zone()] += 1;
+        auto &entry = loads[spot.zone()];
+        entry.first += 1;
         switch (spot.status()){
         case SpotStatus::Occupied:
-            loads[spot.zone()] += 1.0;
+            entry.second += 1.0;
             break;
         case SpotStatus::Reserved:
-            loads[spot.zone()] += 0.7;
+            entry.second += 0.7;
             break;
         case SpotStatus::Disabled:
-            loads[spot.zone()] += 0.5;
+            entry.second += 0.5;
             break;
         case SpotStatus::Available:
         default:
             break;
         }
     }
-    std::map<std::string, double> pressures;
-    for (const auto &entry : totals){
-        pressures[entry.first] = entry.second > 0
-            ? loads[entry.first] / static_cast<double>(entry.second)
-            : 0.0;
-    }
-    return pressures;
+    return loads;
 }
 } // namespace
 SpotAllocator::SpotAllocator(const ParkingLayout &layout, const GridPlanner &planner)
     : layout_(&layout)
-    , planner_(&planner){
+    , planner_(&planner)
+    , siteDiagonal_(std::hypot(layout.siteWidth(), layout.siteHeight())){
 }
 void SpotAllocator::setStrategy(AllocationStrategy strategy) noexcept{
     strategy_ = strategy;
@@ -89,7 +86,7 @@ std::optional<AllocationProposal> SpotAllocator::propose(
     if (candidates.empty()){
         return std::nullopt;
     }
-    const std::map<std::string, double> zonePressures = zonePressureMap(spots);
+    const std::map<std::string, std::pair<int, double>> zoneLoads = zoneLoadMap(spots);
     OccupancyField occupancy;
     const OccupancyField *occupancyPtr = nullptr;
     if (strategy_ == AllocationStrategy::WeightedCost){
@@ -134,8 +131,15 @@ std::optional<AllocationProposal> SpotAllocator::propose(
             }
         }
     }
+    // 分区均衡（水位填充，仅 WeightedCost 且 zonePressure 权重 > 0 时启用）：
+    // 跨分区时“计入本车后负载占比”更低的分区无条件优先，
+    // 同水位档内再由加权分（距离/拥堵/类型）决定。
+    // 低占用时车辆也会分散到不同分区，而不是堆满最近的分区。
+    const bool zoneBalance = strategy_ == AllocationStrategy::WeightedCost
+        && weights_.zonePressure > 0.0;
     std::optional<AllocationProposal> bestProposal;
     double bestScore = std::numeric_limits<double>::infinity();
+    double bestLoadAfter = std::numeric_limits<double>::infinity();
     for (std::size_t index = 0; index < candidates.size(); ++index){
         if (bestEntries[index].points.empty() || bestExits[index].points.empty()){
             continue;
@@ -150,11 +154,22 @@ std::optional<AllocationProposal> SpotAllocator::propose(
         proposal.entranceIndex = bestEntryGates[index];
         proposal.exitIndex = bestExitGates[index];
         proposal.strategy = strategy_;
-        const auto pressureIt = zonePressures.find(spot.zone());
-        const double zonePressure = pressureIt != zonePressures.end() ? pressureIt->second : 0.0;
+        double zoneLoadAfter = 1.0;
+        const auto loadIt = zoneLoads.find(spot.zone());
+        if (loadIt != zoneLoads.end() && loadIt->second.first > 0){
+            zoneLoadAfter = std::clamp(
+                (loadIt->second.second + 1.0) / loadIt->second.first, 0.0, 1.0);
+        }
         proposal.score = makeScore(vehicle, spot, proposal.entryRoute, proposal.exitRoute,
-                                   proposal.nearbyOccupiedSpots, zonePressure);
-        if (proposal.score.total < bestScore){
+                                   proposal.nearbyOccupiedSpots, zoneLoadAfter);
+        constexpr double kLoadEpsilon = 1e-9;
+        const bool lowerLoad = zoneBalance
+            && zoneLoadAfter < bestLoadAfter - kLoadEpsilon;
+        const bool sameTier = !zoneBalance
+            || zoneLoadAfter <= bestLoadAfter + kLoadEpsilon;
+        if (!bestProposal.has_value()
+            || (lowerLoad || (sameTier && proposal.score.total < bestScore))){
+            bestLoadAfter = zoneLoadAfter;
             bestScore = proposal.score.total;
             bestProposal = std::move(proposal);
         }
@@ -163,7 +178,7 @@ std::optional<AllocationProposal> SpotAllocator::propose(
 }
 ScoreBreakdown SpotAllocator::makeScore(const Vehicle &vehicle, const ParkingSpot &spot,
                                         const Route &entryRoute, const Route &exitRoute,
-                                        int nearbyOccupied, double zonePressure) const{
+                                        int nearbyOccupied, double zoneLoadAfter) const{
     ScoreBreakdown breakdown;
     if (strategy_ == AllocationStrategy::Nearest){
         breakdown.entryPathCost = entryRoute.distance;
@@ -176,7 +191,10 @@ ScoreBreakdown SpotAllocator::makeScore(const Vehicle &vehicle, const ParkingSpo
     breakdown.turnCountCost =
         weights_.turnCount * static_cast<double>(entryRoute.turnCount + exitRoute.turnCount);
     breakdown.typePenalty = weights_.typePenalty * typePenaltyFor(vehicle, spot.type());
-    breakdown.zonePressureCost = weights_.zonePressure * zonePressure;
+    // 分区压力：计入本车后的负载占比取平方，再乘权重和场地对角线，
+    // 换算成等效步行米数，与路径项同一量纲直接比较。
+    breakdown.zonePressureCost =
+        weights_.zonePressure * siteDiagonal_ * zoneLoadAfter * zoneLoadAfter;
     breakdown.total = breakdown.entryPathCost + breakdown.exitPathCost
         + breakdown.laneCongestionCost + breakdown.turnCountCost + breakdown.typePenalty
         + breakdown.zonePressureCost;

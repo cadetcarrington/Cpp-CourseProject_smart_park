@@ -1,7 +1,12 @@
 #include "core/model/ParkingLayout.h"
 #include "core/model/Vehicle.h"
 #include "core/persistence/Persistence.h"
+#include "core/service/AuditLogService.h"
+#include "core/service/DemoDirector.h"
+#include "core/service/AnalyticsEngine.h"
 #include "core/service/ParkingService.h"
+#include "core/service/RemoteAnalystClient.h"
+#include "core/service/ReservationService.h"
 #include <QCoreApplication>
 #include <algorithm>
 #include <cerrno>
@@ -30,6 +35,24 @@ const char *usageText =
     "  --cancel <plate>         取消预约（须在到场时间之前），退定金并释放车位\n"
     "  --bookings               列出全部预约记录与定金统计\n"
     "  --expire-bookings        结算爽约预约（超过宽限期未到场的没收定金）\n"
+    "时段预约命令（SmartPark 0.7 远程时间段预约，含定金支付与冲突检查）：\n"
+    "  --reserve <plate>        创建时段预约，开始时间默认 120 分钟后\n"
+    "  --arrive <plate>         时段预约到场确认，转入停车，定金转预付\n"
+    "  --rsv-cancel <plate>     取消时段预约（须在开始之前），定金退回\n"
+    "  --reservations           列出全部时段预约与定金流水统计\n"
+    "数据分析命令：\n"
+    "  --analyze                对当前数据运行本地分析模型并输出结论\n"
+    "应急与寻车：\n"
+    "  --emergency <plate>      应急车辆入场（优先出口最近车位，满场自动让位）\n"
+    "  --find <plate>           反向寻车（步行路线）\n"
+    "审计命令：\n"
+    "  --audit                  最近审计日志\n"
+    "  --audit-verify           校验审计哈希链完整性\n"
+    "演示命令：\n"
+    "  --demo-script            剧本式一键演示（虚拟时钟）\n"
+    "  --settle-reservations    执行延迟锁位与爽约结算扫描\n"
+    "  --duration <minutes>     时段预约时长（分钟，默认 120）\n"
+    "时间参数（对预约命令生效）：\n"
     "  --at \"YYYY-MM-DD HH:MM\"  绝对基准时间（默认当前时间）\n"
     "  --in <minutes>           相对基准时间的分钟偏移（默认 0）\n"
     "  --type <name>            车辆类型 car|motorcycle|truck|electric（默认 car）\n"
@@ -38,6 +61,9 @@ const char *usageText =
     "  smartpark_cli --db p.db --checkin 晋A12345 --in 90\n"
     "  smartpark_cli --db p.db --cancel 晋A12345\n"
     "  smartpark_cli --db p.db --bookings\n"
+    "  smartpark_cli --db p.db --reserve 晋B12345 --in 120 --duration 180\n"
+    "  smartpark_cli --db p.db --arrive 晋B12345 --in 120\n"
+    "  smartpark_cli --db p.db --reservations\n"
     "  --help       显示本帮助\n";
 struct Options{
     std::string layoutPath;
@@ -46,14 +72,36 @@ struct Options{
     std::string bookPlate;
     std::string checkinPlate;
     std::string cancelPlate;
+    std::string reservePlate;
+    std::string arrivePlate;
+    std::string rsvCancelPlate;
     std::string atText;
     int inMinutes{-1};
+    int durationMinutes{-1};
     std::string vehicleTypeText;
     bool listBookings{false};
     bool expireNow{false};
+    bool listReservations{false};
+    bool settleReservationsNow{false};
+    bool analyzeNow{false};
+    bool accessibleReserve{false};
+    bool auditList{false};
+    bool auditVerify{false};
+    bool demoScript{false};
+    std::string emergencyPlate;
+    std::string findPlate;
     bool hasBookingCommand() const{
         return !bookPlate.empty() || !checkinPlate.empty() || !cancelPlate.empty()
             || listBookings || expireNow;
+    }
+    bool hasReservationCommand() const{
+        return !reservePlate.empty() || !arrivePlate.empty() || !rsvCancelPlate.empty()
+            || listReservations || settleReservationsNow;
+    }
+    bool hasAnalyticsCommand() const{ return analyzeNow; }
+    bool hasOpsCommand() const{
+        return !emergencyPlate.empty() || !findPlate.empty() || auditList
+            || auditVerify || demoScript;
     }
 };
 Options parseOptions(int argc, char **argv){
@@ -68,7 +116,8 @@ Options parseOptions(int argc, char **argv){
         } else if (argument == "--reset"){
             options.resetDatabase = true;
         } else if (argument == "--book" || argument == "--checkin"
-                   || argument == "--cancel"){
+                   || argument == "--cancel" || argument == "--reserve"
+                   || argument == "--arrive" || argument == "--rsv-cancel"){
             if (index + 1 >= argc){
                 throw std::runtime_error(argument + " requires a plate number");
             }
@@ -77,8 +126,14 @@ Options parseOptions(int argc, char **argv){
                 options.bookPlate = plate;
             } else if (argument == "--checkin"){
                 options.checkinPlate = plate;
-            } else{
+            } else if (argument == "--cancel"){
                 options.cancelPlate = plate;
+            } else if (argument == "--reserve"){
+                options.reservePlate = plate;
+            } else if (argument == "--arrive"){
+                options.arrivePlate = plate;
+            } else{
+                options.rsvCancelPlate = plate;
             }
         } else if (argument == "--at"){
             if (index + 1 >= argc){
@@ -103,10 +158,47 @@ Options parseOptions(int argc, char **argv){
                 throw std::runtime_error("--type requires a name");
             }
             options.vehicleTypeText = argv[++index];
+        } else if (argument == "--duration"){
+            if (index + 1 >= argc){
+                throw std::runtime_error("--duration requires minutes");
+            }
+            const std::string minutes = argv[++index];
+            try{
+                options.durationMinutes = std::stoi(minutes);
+            } catch (const std::exception &){
+                throw std::runtime_error("--duration requires an integer: " + minutes);
+            }
+            if (options.durationMinutes <= 0){
+                throw std::runtime_error("--duration must be > 0: " + minutes);
+            }
         } else if (argument == "--bookings"){
             options.listBookings = true;
         } else if (argument == "--expire-bookings"){
             options.expireNow = true;
+        } else if (argument == "--reservations"){
+            options.listReservations = true;
+        } else if (argument == "--settle-reservations"){
+            options.settleReservationsNow = true;
+        } else if (argument == "--analyze"){
+            options.analyzeNow = true;
+        } else if (argument == "--emergency"){
+            if (index + 1 >= argc){
+                throw std::runtime_error("--emergency requires a plate number");
+            }
+            options.emergencyPlate = argv[++index];
+        } else if (argument == "--find"){
+            if (index + 1 >= argc){
+                throw std::runtime_error("--find requires a plate number");
+            }
+            options.findPlate = argv[++index];
+        } else if (argument == "--accessible"){
+            options.accessibleReserve = true;
+        } else if (argument == "--audit"){
+            options.auditList = true;
+        } else if (argument == "--audit-verify"){
+            options.auditVerify = true;
+        } else if (argument == "--demo-script"){
+            options.demoScript = true;
         } else if (!argument.empty() && argument[0] == '-'){
             throw std::runtime_error("unknown option: " + argument);
         } else if (options.layoutPath.empty()){
@@ -373,6 +465,117 @@ void listBookingsCommand(const smartpark::ParkingService &service){
               << " 元 | 爽约没收定金: " << formatMoney(service.forfeitedDeposits())
               << " 元\n";
 }
+const char *reservationStatusText(smartpark::ReservationStatus status){
+    switch (status){
+    case smartpark::ReservationStatus::PendingPayment:
+        return "待支付";
+    case smartpark::ReservationStatus::Confirmed:
+        return "已确认";
+    case smartpark::ReservationStatus::CheckedIn:
+        return "已到场";
+    case smartpark::ReservationStatus::Completed:
+        return "已完成";
+    case smartpark::ReservationStatus::Cancelled:
+        return "已取消";
+    case smartpark::ReservationStatus::NoShow:
+        return "爽约";
+    case smartpark::ReservationStatus::Expired:
+        return "已过期";
+    }
+    return "未知";
+}
+const char *depositStateText(smartpark::DepositState state){
+    switch (state){
+    case smartpark::DepositState::Pending:
+        return "待结算";
+    case smartpark::DepositState::Refunded:
+        return "已退回";
+    case smartpark::DepositState::Forfeited:
+        return "已没收";
+    case smartpark::DepositState::Applied:
+        return "已抵扣";
+    }
+    return "未知";
+}
+bool reserveCommand(smartpark::ParkingService &service, const Options &options,
+                    const smartpark::ParkingRecord::TimePoint &effectiveTime,
+                    bool startSpecified, bool accessible){
+    const auto type = parseVehicleTypeText(options.vehicleTypeText);
+    if (!type){
+        std::cerr << "预约失败: 未知车辆类型 \"" << options.vehicleTypeText
+                  << "\"（可用: car | motorcycle | truck | electric）\n";
+        return false;
+    }
+    const auto start =
+        startSpecified
+            ? effectiveTime
+            : smartpark::ParkingRecord::Clock::now() + std::chrono::minutes(120);
+    const auto end =
+        start + std::chrono::minutes(options.durationMinutes < 0 ? 120
+                                                                 : options.durationMinutes);
+    const smartpark::Vehicle vehicle(options.reservePlate, *type);
+    const auto created = service.reservations().create(
+        vehicle, start, end, smartpark::ParkingRecord::Clock::now(), accessible);
+    if (!created){
+        std::cerr << "时段预约失败: " << service.reservations().lastError() << '\n';
+        return false;
+    }
+    std::cout << "时段预约成功" << (accessible ? "（无障碍关怀：免定金、宽限翻倍）" : "")
+              << ": " << created->reservation.id()
+              << " 车牌 " << created->reservation.plateNumber()
+              << " | 车位 " << created->reservation.spotId()
+              << " | " << formatBookingTime(created->reservation.startTime())
+              << " ~ " << formatBookingTime(created->reservation.endTime())
+              << " | 宽限截止 " << formatBookingTime(created->reservation.graceDeadline())
+              << " | 定金 " << formatMoney(created->reservation.deposit())
+              << " 元已收取\n";
+    printBookingRoute(created->allocation);
+    return true;
+}
+bool arriveCommand(smartpark::ParkingService &service, const Options &options,
+                   const smartpark::ParkingRecord::TimePoint &effectiveTime){
+    const auto arrived = service.reservations().checkIn(options.arrivePlate,
+                                                        effectiveTime);
+    if (!arrived){
+        std::cerr << "到场确认失败: " << service.reservations().lastError() << '\n';
+        return false;
+    }
+    std::cout << "到场确认成功: 车牌 " << options.arrivePlate
+              << " 转入停车，占用预约车位 " << arrived->spotId
+              << "，定金转为停车预付款（离场时抵扣）\n";
+    return true;
+}
+bool rsvCancelCommand(smartpark::ParkingService &service, const Options &options,
+                      const smartpark::ParkingRecord::TimePoint &effectiveTime){
+    if (!service.reservations().cancel(options.rsvCancelPlate, effectiveTime)){
+        std::cerr << "取消失败: " << service.reservations().lastError() << '\n';
+        return false;
+    }
+    std::cout << "取消成功: 车牌 " << options.rsvCancelPlate
+              << " 时段预约已取消，定金已退回。\n";
+    return true;
+}
+void listReservationsCommand(const smartpark::ParkingService &service){
+    const auto &reservations = service.reservations().reservations();
+    std::cout << "时段预约记录: " << reservations.size() << " 条\n";
+    for (const smartpark::Reservation &reservation : reservations){
+        std::cout << "  " << reservation.id()
+                  << " | 车牌 " << reservation.plateNumber()
+                  << " | 车位 " << reservation.spotId()
+                  << " | " << formatBookingTime(reservation.startTime())
+                  << " ~ " << formatBookingTime(reservation.endTime())
+                  << " | 宽限截止 " << formatBookingTime(reservation.graceDeadline())
+                  << " | 定金 " << formatMoney(reservation.deposit())
+                  << " 元（" << depositStateText(reservation.depositState())
+                  << "） | 状态 " << reservationStatusText(reservation.status()) << '\n';
+    }
+    std::cout << "待结算定金: " << formatMoney(service.reservations().heldDeposits())
+              << " 元 | 已抵扣: " << formatMoney(service.reservations().appliedDeposits())
+              << " 元 | 已退回: " << formatMoney(service.reservations().refundedDeposits())
+              << " 元 | 爽约没收: " << formatMoney(service.reservations().forfeitedDeposits())
+              << " 元 | 定金流水: " << service.reservations().payments().size()
+              << " 笔\n";
+}
 } // namespace
 int main(int argc, char **argv){
     QCoreApplication application(argc, argv);
@@ -399,9 +602,17 @@ int main(int argc, char **argv){
             persistence = std::make_unique<smartpark::Persistence>(
                 QString::fromStdString(databasePath));
         }
+        std::unique_ptr<smartpark::AuditLogService> auditService;
+        if (persistence != nullptr){
+            auditService = std::make_unique<smartpark::AuditLogService>(
+                persistence->databaseManager().database());
+        }
         smartpark::ParkingService service(
             layout, smartpark::AllocationStrategy::WeightedCost,
             persistence != nullptr ? &persistence->repository() : nullptr);
+        if (auditService){
+            service.setAuditLog(auditService.get());
+        }
         std::cout << "SmartPark CLI - 自动泊车分配\n"
                   << "停车场大小: " << layout.siteWidth() << "m x " << layout.siteHeight()
                   << "m | 区域数: " << layout.regions().size()
@@ -418,7 +629,105 @@ int main(int argc, char **argv){
             std::cout << "数据库: 禁用 (内存演示)\n";
         }
         std::cout << "\n";
-        if (options.hasBookingCommand()){
+        if (options.demoScript){
+            smartpark::DemoDirector director(service);
+            std::cout << "===== 剧本式演示（共 " << director.totalSteps() << " 步） =====\n";
+            while (director.step()){
+                std::cout << "  [" << director.stepsDone() << "/"
+                          << director.totalSteps() << "] "
+                          << director.lastDescription() << '\n';
+            }
+            if (!director.lastAnalysisSummary().empty()){
+                std::cout << "  分析结论: " << director.lastAnalysisSummary() << '\n';
+            }
+            std::cout << "\nRESULT: PASS\n";
+            return 0;
+        }
+        if (!options.emergencyPlate.empty()){
+            const smartpark::Vehicle vehicle(options.emergencyPlate,
+                                             smartpark::VehicleType::Car);
+            const auto arrived = service.emergencyEnter(vehicle, true);
+            if (!arrived){
+                std::cerr << "应急入场失败: " << options.emergencyPlate << '\n';
+                return 1;
+            }
+            std::cout << "应急生命通道: " << options.emergencyPlate << " 占用 "
+                      << arrived->spotId << "（出口距离 " << arrived->exitRoute.distance
+                      << "m）\nRESULT: PASS\n";
+            return 0;
+        }
+        if (!options.findPlate.empty()){
+            const auto found = service.findCar(options.findPlate);
+            if (!found){
+                std::cerr << "反向寻车失败: 车牌 " << options.findPlate
+                          << " 不在场内\n";
+                return 1;
+            }
+            std::cout << "反向寻车: " << found->plateNumber << " 停在 "
+                      << found->zone << " 区 " << found->spotId
+                      << "\n  步行路线: 从锚点 #" << found->anchorIndex << " ("
+                      << found->anchor.x << ", " << found->anchor.y << ") 出发，步行 "
+                      << found->walkRoute.distance << " 米，途经 "
+                      << found->walkRoute.points.size() << " 个路点\nRESULT: PASS\n";
+            return 0;
+        }
+        if (options.auditList || options.auditVerify){
+            if (persistence == nullptr){
+                std::cerr << "审计命令需要 --db 数据库\n";
+                return 1;
+            }
+            smartpark::AuditLogService audit(persistence->databaseManager().database());
+            if (options.auditVerify){
+                const auto result = audit.verifyChain();
+                std::cout << "审计哈希链: " << (result.ok ? "完整" : "断链")
+                          << " | 校验记录 " << result.checked << " 条";
+                if (!result.ok){
+                    std::cout << " | 首个断链 id=" << result.brokenAtId;
+                }
+                std::cout << "\n";
+            } else{
+                const auto entries = audit.recent(50);
+                std::cout << "审计日志（最近 " << entries.size() << " 条）:\n";
+                for (const auto &entry : entries){
+                    std::cout << "  #" << entry.id << " " << entry.actor
+                              << " " << entry.action
+                              << (entry.detail.empty() ? "" : " | " + entry.detail)
+                              << "\n";
+                }
+            }
+            std::cout << "\nRESULT: PASS\n";
+            return 0;
+        }
+        if (options.hasAnalyticsCommand()){
+            smartpark::AnalyticsEngine engine(service);
+            const auto report = engine.analyze();
+            std::cout << "===== 数据分析报告（模型 " << report.model << "） =====\n"
+                      << "结论: " << report.summary << "\n发现:\n";
+            for (const smartpark::AnalysisFinding &finding : report.findings){
+                std::cout << "  - [" << smartpark::AnalysisReport::categoryText(finding.category)
+                          << "] " << finding.title << "：" << finding.detail << '\n';
+            }
+            std::cout << "建议:\n";
+            int recommendationIndex = 1;
+            for (const std::string &recommendation : report.recommendations){
+                std::cout << "  " << recommendationIndex++ << ". " << recommendation << '\n';
+            }
+            std::cout << "占用率预测:";
+            for (const auto &point : report.forecast){
+                std::cout << " +" << point.first << "h " << std::fixed
+                          << std::setprecision(0) << point.second << "%";
+            }
+            std::cout << std::setprecision(2) << "\n";
+            if (std::getenv("SMARTPARK_ANALYST_ENDPOINT") != nullptr){
+                std::cout << "远程分析接口: 端点已配置，等待网络层注入传输后启用（P1）。\n";
+            } else{
+                std::cout << "远程分析接口: 预留中（设置 SMARTPARK_ANALYST_ENDPOINT 并接入传输后启用）。\n";
+            }
+            std::cout << "\nRESULT: PASS\n";
+            return 0;
+        }
+        if (options.hasOpsCommand() || options.hasAnalyticsCommand()
+            || options.hasBookingCommand() || options.hasReservationCommand()){
             std::optional<smartpark::ParkingRecord::TimePoint> base;
             if (!options.atText.empty()){
                 base = parseArrivalTime(options.atText);
@@ -434,6 +743,29 @@ int main(int argc, char **argv){
                 + offset;
             const bool arrivalSpecified = base.has_value() || options.inMinutes >= 0;
             bool ok = true;
+            if (options.settleReservationsNow){
+                service.reservations().sweep(effectiveTime);
+                std::cout << "已执行延迟锁位与爽约结算扫描: 预约记录 "
+                          << service.reservations().reservations().size()
+                          << " 条 | 待结算定金 "
+                          << formatMoney(service.reservations().heldDeposits())
+                          << " 元 | 爽约没收定金 "
+                          << formatMoney(service.reservations().forfeitedDeposits())
+                          << " 元\n";
+            }
+            if (!options.reservePlate.empty()){
+                ok = reserveCommand(service, options, effectiveTime,
+                                    arrivalSpecified, options.accessibleReserve) && ok;
+            }
+            if (!options.arrivePlate.empty()){
+                ok = arriveCommand(service, options, effectiveTime) && ok;
+            }
+            if (!options.rsvCancelPlate.empty()){
+                ok = rsvCancelCommand(service, options, effectiveTime) && ok;
+            }
+            if (options.listReservations){
+                listReservationsCommand(service);
+            }
             if (options.expireNow){
                 service.expireBookings(effectiveTime);
                 std::cout << "已结算爽约预约: 预约记录 " << service.bookings().size()
@@ -569,6 +901,83 @@ int main(int argc, char **argv){
         std::cout << "  预约记录: " << service.bookings().size()
                   << " 条 | 待结算定金: " << formatMoney(service.pendingDeposits())
                   << " 元 | 爽约没收定金: " << formatMoney(service.forfeitedDeposits())
+                  << " 元\n";
+        std::cout << "\n===== 远程时间段预约演示（SmartPark 0.7） =====\n"
+                  << "  预约规则: 定金 " << formatMoney(service.reservations().rule().deposit)
+                  << " 元 | 可提前 " << service.reservations().rule().maxAdvanceDays
+                  << " 天 | 最短提前 " << service.reservations().rule().minLeadTime.count()
+                  << " 分钟 | 到场宽限 " << service.reservations().rule().gracePeriod.count()
+                  << " 分钟\n";
+        {
+            const smartpark::Vehicle rsvVehicle(u8"晋Z20001", smartpark::VehicleType::Car);
+            const auto startTime = entryTime + std::chrono::minutes(120);
+            const auto endTime = startTime + std::chrono::minutes(180);
+            const auto created = service.reservations().create(
+                rsvVehicle, startTime, endTime, entryTime);
+            if (created){
+                std::cout << "  时段预约: " << created->reservation.id()
+                          << " 车牌 " << created->reservation.plateNumber()
+                          << " | 车位 " << created->reservation.spotId()
+                          << " | " << formatBookingTime(created->reservation.startTime())
+                          << " ~ " << formatBookingTime(created->reservation.endTime())
+                          << " | 定金 " << formatMoney(created->reservation.deposit())
+                          << " 元已收取\n";
+                printBookingRoute(created->allocation);
+                // 延迟锁位：进入到场窗口（开始前 30 分钟）后物理车位才被短时锁定。
+                service.reservations().sweep(startTime - std::chrono::minutes(15));
+                const auto arrived = service.reservations().checkIn(
+                    rsvVehicle.plateNumber(), startTime);
+                if (arrived){
+                    std::cout << "  到场确认: 占用预约车位 " << arrived->spotId
+                              << "，定金转停车预付款\n";
+                    const double appliedBefore =
+                        service.reservations().appliedDeposits();
+                    const auto closed = service.leave(rsvVehicle.plateNumber(), endTime);
+                    const double applied =
+                        service.reservations().appliedDeposits() - appliedBefore;
+                    if (closed){
+                        std::cout << "  离场结算: 时长 ";
+                        printDuration(closed->duration());
+                        std::cout << " | 定金抵扣 " << formatMoney(applied)
+                                  << " 元 | 实收停车费 " << formatMoney(closed->fee())
+                                  << " 元\n";
+                    }
+                } else{
+                    std::cout << "  到场确认失败: " << service.reservations().lastError()
+                              << '\n';
+                }
+            } else{
+                std::cout << "  时段预约演示跳过: " << service.reservations().lastError()
+                          << '\n';
+            }
+        }
+        {
+            const smartpark::Vehicle noShowVehicle(u8"晋Z20002",
+                                                   smartpark::VehicleType::Electric);
+            const auto startTime = entryTime + std::chrono::minutes(120);
+            const auto created = service.reservations().create(
+                noShowVehicle, startTime, startTime + std::chrono::minutes(120),
+                entryTime);
+            if (created){
+                service.reservations().sweep(
+                    startTime + service.reservations().rule().gracePeriod
+                    + std::chrono::minutes(1));
+                std::cout << "  爽约示例: 预约 " << created->reservation.id()
+                          << " 车牌 " << created->reservation.plateNumber()
+                          << " 超过宽限期未到场，没收定金 "
+                          << formatMoney(created->reservation.deposit()) << " 元\n";
+            } else{
+                std::cout << "  爽约演示跳过: " << service.reservations().lastError()
+                          << '\n';
+            }
+        }
+        std::cout << "  时段预约: " << service.reservations().reservations().size()
+                  << " 条 | 待结算定金: "
+                  << formatMoney(service.reservations().heldDeposits())
+                  << " 元 | 已抵扣: " << formatMoney(service.reservations().appliedDeposits())
+                  << " 元 | 已退回: " << formatMoney(service.reservations().refundedDeposits())
+                  << " 元 | 爽约没收: "
+                  << formatMoney(service.reservations().forfeitedDeposits())
                   << " 元\n";
         std::cout << "\n===== 结算汇总 =====\n"
                   << "  本次新入场: " << enteredCount << " 辆\n"

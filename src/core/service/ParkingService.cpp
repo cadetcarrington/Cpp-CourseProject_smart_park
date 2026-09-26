@@ -1,9 +1,12 @@
 #include "core/service/ParkingService.h"
+#include "core/service/AuditLogService.h"
 #include "core/util/TimeUtil.h"
 #include "core/service/Billing.h"
+#include "core/service/ReservationService.h"
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -29,11 +32,14 @@ namespace smartpark{
 
     ParkingService::ParkingService(ParkingLayout layout, AllocationStrategy strategy,
                                    ParkingRepository *repository, BillingRule billingRule,
-                                   BookingPolicy bookingPolicy)
+                                   BookingPolicy bookingPolicy,
+                                   ReservationRule reservationRule)
         : layout_(std::move(layout))
         , spots_(layout_.spots())
         , planner_(layout_.siteWidth(), layout_.siteHeight(), spots_,
                    layoutObstacleBounds(layout_))
+        , pedestrianPlanner_(layout_.siteWidth(), layout_.siteHeight(),
+                             std::vector<ParkingSpot>{}, layoutObstacleBounds(layout_))
         , allocator_(layout_, planner_)
         , billing_(billingRule)
         , bookingPolicy_(bookingPolicy){
@@ -49,6 +55,8 @@ namespace smartpark{
         }
         allocator_.setStrategy(strategy);
         ensureReachable();
+        // ReservationService 在构造时校验规则参数（可能抛出 invalid_argument）。
+        reservations_ = std::make_unique<ReservationService>(*this, reservationRule);
         if (repository != nullptr){
             repository_ = repository;
             if (!repository_->saveLayout(layout_)){
@@ -57,6 +65,70 @@ namespace smartpark{
             }
             restore(*repository_);
         }
+    }
+
+    ParkingService::~ParkingService() = default;
+
+    ReservationService &ParkingService::reservations() noexcept{
+        return *reservations_;
+    }
+
+    void ParkingService::setAuditLog(AuditLogService *audit){
+        audit_ = audit;
+    }
+
+    void ParkingService::audit(const char *action, const std::string &detail){
+        if (audit_ != nullptr){
+            audit_->record("system", action, detail);
+        }
+    }
+
+    std::optional<CarFinderResult> ParkingService::findCar(
+        const std::string &plateNumber) const{
+        const auto record = std::find_if(
+            records_.begin(), records_.end(),
+            [&plateNumber](const ParkingRecord &item){
+                return item.plateNumber() == plateNumber && !item.isClosed();
+            });
+        if (record == records_.end()){
+            return std::nullopt;
+        }
+        const auto spotIt = std::find_if(
+            spots_.begin(), spots_.end(),
+            [&record](const ParkingSpot &item){
+                return item.identifier() == record->spotId();
+            });
+        if (spotIt == spots_.end()){
+            return std::nullopt;
+        }
+        std::vector<Point> anchors = layout_.entrances();
+        anchors.insert(anchors.end(), layout_.exits().begin(), layout_.exits().end());
+        const Point target = spotIt->accessPoint();
+        std::optional<CarFinderResult> result;
+        double bestDistance = std::numeric_limits<double>::infinity();
+        for (std::size_t index = 0; index < anchors.size(); ++index){
+            const std::vector<Route> routes =
+                pedestrianPlanner_.planFromToTargets(anchors[index], {target});
+            if (routes.empty() || routes.front().points.empty()){
+                continue;
+            }
+            if (routes.front().distance < bestDistance){
+                bestDistance = routes.front().distance;
+                CarFinderResult found;
+                found.plateNumber = plateNumber;
+                found.spotId = spotIt->identifier();
+                found.zone = spotIt->zone();
+                found.anchorIndex = index;
+                found.anchor = anchors[index];
+                found.walkRoute = routes.front();
+                result = std::move(found);
+            }
+        }
+        return result;
+    }
+
+    const ReservationService &ParkingService::reservations() const noexcept{
+        return *reservations_;
     }
 
     const ParkingLayout &ParkingService::layout() const noexcept{
@@ -94,6 +166,10 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
             }
             // 预约产生的 Reserved 由 expireBookings 统一处理（含爽约扣定金），这里跳过。
             if (hasActiveBookingForSpot(spot.identifier())){
+                continue;
+            }
+            // 时间段预约（Reservation）的短时锁由 ReservationService::sweep 管理。
+            if (reservations_->hasLockedSpot(spot.identifier())){
                 continue;
             }
             const std::optional<Vehicle> previousVehicle = spot.parkedVehicle();
@@ -161,6 +237,10 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
         }
         expireReservations(entryTime);
         expireBookings(entryTime);
+        // 时间段预约到场：车牌匹配时把预约转为 CheckedIn 并占用预约车位。
+        if (auto arrived = reservations_->checkIn(vehicle.plateNumber(), entryTime)){
+            return arrived;
+        }
         if (activeRecord(vehicle.plateNumber())){
             return std::nullopt;
         }
@@ -183,6 +263,7 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
             spot->release();
             return std::nullopt;
         }
+        audit("vehicle_enter", vehicle.plateNumber() + "@" + proposal->spotId);
         return toResult(*proposal);
     }
 
@@ -204,19 +285,123 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
         if (spot == nullptr || spot->status() != SpotStatus::Occupied){
             return std::nullopt;
         }
+        return closeActiveRecord(*record, *spot, exitTime);
+    }
+
+    std::optional<ParkingRecord> ParkingService::closeActiveRecord(
+        ParkingRecord &record, ParkingSpot &spot, ParkingRecord::TimePoint exitTime){
         const auto duration = std::chrono::duration_cast<std::chrono::seconds>(
-            exitTime - record->entryTime());
-        const double fee = billing_.calculateFee(duration);
-
-        if (repository_ != nullptr && !repository_->saveExit(*record, exitTime, fee)) {
+            exitTime - record.entryTime());
+        const double baseFee = billing_.calculateFee(duration);
+        ReservationService::ExitSettlement settlement =
+            reservations_->prepareExitSettlement(record.plateNumber(), baseFee,
+                                                 exitTime);
+        reservations_->applyExitSettlement(settlement);
+        const double fee = baseFee - settlement.credit;
+        if (repository_ != nullptr){
+            if (settlement.reservation != nullptr){
+                if (!repository_->saveExitWithReservation(record, exitTime, fee,
+                                                          *settlement.reservation,
+                                                          settlement.receipt)){
+                    reservations_->rollbackExitSettlement(settlement);
+                    return std::nullopt;
+                }
+            } else if (!repository_->saveExit(record, exitTime, fee)) {
+                reservations_->rollbackExitSettlement(settlement);
+                return std::nullopt;
+            }
+        }
+        if (!spot.release()) {
+            reservations_->rollbackExitSettlement(settlement);
             return std::nullopt;
         }
-        if (!spot->release()) {
+        record.close(exitTime, fee);
+        audit("vehicle_exit", record.plateNumber() + "@" + record.spotId()
+              + " fee=" + std::to_string(record.fee()));
+        return record;
+    }
+
+    std::optional<AllocationResult> ParkingService::emergencyEnter(
+        const Vehicle &vehicle, bool allowEviction,
+        ParkingRecord::TimePoint entryTime){
+        if (!timeutil::isValid(entryTime)){
             return std::nullopt;
         }
+        expireReservations(entryTime);
+        expireBookings(entryTime);
+        if (activeRecord(vehicle.plateNumber())){
+            return std::nullopt;
+        }
+        // 应急权重：只优化出口距离，忽略拥堵/类型/分区项。
+        const AllocationWeights saved = allocator_.weights();
+        AllocationWeights weights = saved;
+        weights.entryPath = 0.0;
+        weights.exitPath = 10.0;
+        weights.laneCongestion = 0.0;
+        weights.turnCount = 0.0;
+        weights.typePenalty = 0.0;
+        weights.zonePressure = 0.0;
+        allocator_.setWeights(weights);
+        std::optional<AllocationProposal> proposal = allocator_.propose(vehicle, spots_);
+        allocator_.setWeights(saved);
 
-        record->close(exitTime, fee);
-        return *record;
+        auto occupyAndRecord = [&](const AllocationProposal &chosen)
+            -> std::optional<AllocationResult> {
+            ParkingSpot *spot = findSpot(chosen.spotId);
+            if (spot == nullptr || !spot->occupy(vehicle)){
+                return std::nullopt;
+            }
+            records_.emplace_back(vehicle.plateNumber(), chosen.spotId, entryTime);
+            if (repository_ != nullptr
+                && !repository_->saveEntry(records_.back(), *spot)){
+                records_.pop_back();
+                spot->release();
+                return std::nullopt;
+            }
+            audit("emergency_enter", vehicle.plateNumber() + "@" + chosen.spotId);
+            return toResult(chosen);
+        };
+
+        if (proposal.has_value()){
+            return occupyAndRecord(*proposal);
+        }
+        if (!allowEviction){
+            return std::nullopt;
+        }
+        // 满场：让位出口距离最近的占用车（正常结算后腾让给应急车辆）。
+        const std::vector<Point> &exits = layout_.exits();
+        ParkingSpot *best = nullptr;
+        double bestDistance = std::numeric_limits<double>::infinity();
+        for (const ParkingSpot &item : spots_){
+            if (item.status() != SpotStatus::Occupied || !item.parkedVehicle()){
+                continue;
+            }
+            double distance = std::numeric_limits<double>::infinity();
+            for (const Point &exit : exits){
+                const Route route = planner_.plan(item.accessPoint(), exit);
+                if (!route.points.empty() && route.distance < distance){
+                    distance = route.distance;
+                }
+            }
+            if (distance < bestDistance){
+                bestDistance = distance;
+                best = findSpot(item.identifier());
+            }
+        }
+        if (best == nullptr || !best->parkedVehicle()){
+            return std::nullopt;
+        }
+        const std::string evictedPlate = best->parkedVehicle()->plateNumber();
+        const auto closed = leave(evictedPlate, entryTime);
+        if (!closed){
+            return std::nullopt;
+        }
+        audit("emergency_evict", evictedPlate + "@" + best->identifier());
+        proposal = allocator_.propose(vehicle, spots_, best->identifier());
+        if (!proposal.has_value()){
+            return std::nullopt;
+        }
+        return occupyAndRecord(*proposal);
     }
 
     bool ParkingService::updateVehicleType(
@@ -333,7 +518,8 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
             || !timeutil::canAdd(arrivalTime, bookingPolicy_.gracePeriod)
             || activeRecord(vehicle.plateNumber())
             || findReservedSpot(vehicle.plateNumber()) != nullptr
-            || findActiveBooking(vehicle.plateNumber()) != nullptr){
+            || findActiveBooking(vehicle.plateNumber()) != nullptr
+            || reservations_->findOpen(vehicle.plateNumber()).has_value()){
             return std::nullopt;
         }
         const auto maxAdvance =
@@ -526,17 +712,7 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
             }
             // 正常离场：saveExit 在单个事务里同时关闭记录并置空车位，避免双写。
             const ParkingRecord::TimePoint exitTime = ParkingRecord::Clock::now();
-            const auto duration = std::chrono::duration_cast<std::chrono::seconds>(
-                exitTime - record->entryTime());
-            const double fee = billing_.calculateFee(duration);
-            if (repository_ != nullptr && !repository_->saveExit(*record, exitTime, fee)){
-                return false;
-            }
-            record->close(exitTime, fee);
-            if (!spot->release()){
-                return false;
-            }
-            return true;
+            return closeActiveRecord(*record, *spot, exitTime).has_value();
         }
 
         // 预留释放：单次写入车位状态，失败时回滚内存，保证与数据库一致。
@@ -801,6 +977,7 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
             }
             bookings_.push_back(booking);
         }
+        reservations_->restore(repository);
     }
 
 } // namespace smartpark

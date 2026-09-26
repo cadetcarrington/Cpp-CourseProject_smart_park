@@ -41,10 +41,11 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 - Qt Admin GUI 支持 `--db <路径>`，应用布局时若与数据库签名不一致会提示并可选重置数据库。
 - `Booking` 模型与预约 API：远程预约、近一周时间窗、预付定金、到场确认、取消、爽约扣定金与预期路线，持久化到 `bookings` 表并跨重启恢复。
 - 预约可操作化：CLI 支持 `--book` / `--checkin` / `--cancel` / `--bookings` / `--expire-bookings` 预约命令与 `--at` / `--in` 基准时间参数（指定命令时只执行预约流程，不运行自动演示）；Qt Admin GUI 新增预约面板（到场时间选择、预约 / 到场确认 / 取消按钮、预约记录表格与定金统计），车位图同步显示预约预期路线。
+- 远程时间段预约核心（`Reservation`，SmartPark 0.7）：未来 7 天时间校验、时间段冲突检查（同一车位重叠窗口拒绝、同一车牌仅一个未结束订单）、`FakePaymentGateway` 定金模拟支付、延迟锁位（到场窗口前 30 分钟才短时锁定物理车位）、到场转停车并定金抵扣停车费、取消退定金与爽约没收；订单与定金流水持久化到 `reservations` / `deposit_payments` 表并跨重启恢复。
 
-CLI 启动时打印默认计费规则，批量演示入场/离场并汇总累计停车费；同时演示预约流程（远程预约返回预期路线、到场确认、爽约没收定金），并汇总待结算与爽约没收定金。
+CLI 启动时打印默认计费规则，批量演示入场/离场并汇总累计停车费；同时演示预约流程（远程预约返回预期路线、到场确认、爽约没收定金）与时段预约流程（创建收定金、延迟锁位、到场转预付、离场抵扣、爽约没收），并汇总待结算与爽约没收定金。
 
-下一步优先实现 SmartPark 0.7 远程预约核心，再接入 TCP 服务端与用户端，使预约、定金和路线查询可以通过网络完成；之后把 `BillingRule` 与预约规则扩展为 GUI 可配置、可持久化。
+下一步优先实现 SmartPark 0.7 的 TCP 协议与服务端（先写 `docs/tcp-protocol.md`，再用 `QTcpServer` 实现登录、心跳、预约查询/创建/取消和入场/离场事件），随后接入用户端与 Gate 终端；之后把 `BillingRule` / `ReservationRule` 扩展为 GUI 可配置、可持久化。
 
 尚未接入 TCP 通信、真实 LPR、多线程、用户端或统计图表。调研来源与明确不做的方案见 `docs/research-sources.md`。
 
@@ -91,9 +92,24 @@ Booked ──到场(confirmBooking)──> CheckedIn ──> 停车记录 / 离�
 
 > 第一版从下单起即把车位锁为 `Reserved` 直到到场截止时间，并以“到场退定金”作为简化语义；完整的远程时间段预约（时间段冲突检查、延迟锁位、定金抵扣停车费、模拟支付）见下节。
 
-## 远程预约系统（SmartPark 0.7 完整目标）
+## 数据分析接口（本地小模型 + 预留远程 API）
 
-预约系统是下一阶段的核心功能。用户端通过 SmartPark Server 远程提交车牌、车辆类型、预计到达时间和预计离开时间，只能预约从当前时刻起 **7 天内** 的时间段。服务端完成时间校验、空闲车位匹配、时间段冲突检查、定金支付确认和路线规划后，才生成有效预约。
+`AnalyticsEngine`（`src/core/service/AnalyticsEngine.h/.cpp`）对运营数据给出中文结论：从 `ParkingService` 重建近 72 小时逐时占用率序列，由本地小模型（普通最小二乘线性回归，`local-ols-v1`）拟合趋势并外推未来 6 小时占用率，再用规则引擎生成结构化发现（预测/高峰/收入/分区/预约/数据质量）与建议。数据不足时如实报告置信度受限，不编造结论。CLI 通过 `--analyze` 输出报告。
+
+`RemoteAnalystClient`（`src/core/service/RemoteAnalystClient.h/.cpp`）是预留的远程分析接口：把聚合运营快照（只含统计指标，不含车牌等隐私数据）组装为 OpenAI 兼容的 `chat/completions` 请求，输出与本地引擎相同的 `AnalysisReport` 结构，两者可互换。传输层通过 `setTransport()` 注入——网络层（P1）落地后接入 HTTP 实现即可启用，核心代码无需改动；测试用注入的假传输验证了请求组装与结论解析。
+
+### 模型选型建议
+
+| 阶段 | 方案 | 说明 |
+| --- | --- | --- |
+| 当前（已实现） | 本地 OLS 线性回归 + 规则引擎 | 零依赖、可解释、C++ 内置训练；适合当前数据量 |
+| 本地进阶 | LightGBM/XGBoost 导出 ONNX，ONNX Runtime 推理 | 特征：星期/小时/预约量/天气；与 LPR 的 ONNX 部署路线统一 |
+| 远程 API | OpenAI 兼容接口（GLM-4-Flash、DeepSeek 等） | 只上传聚合指标，不传车牌隐私；接口已预留 |
+| 不建议 | LSTM/Prophet 时序模型、真实支付风控模型 | 数据量不足，收益不抵复杂度 |
+
+## 远程预约系统（SmartPark 0.7 完整目标，核心已实现）
+
+预约系统是 SmartPark 0.7 的核心功能。用户端通过 SmartPark Server 远程提交车牌、车辆类型、预计到达时间和预计离开时间，只能预约从当前时刻起 **7 天内** 的时间段。服务端完成时间校验、空闲车位匹配、时间段冲突检查、定金支付确认和路线规划后，才生成有效预约。核心领域逻辑已在 `Reservation` / `ReservationService` 中实现并通过单元测试，TCP 接口在下一阶段开放。
 
 预约主流程：
 
@@ -139,25 +155,31 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
 
 计划新增 `Reservation`、`ReservationRule`、`DepositPayment` 和 `ReservationService`。`Reservation` 至少持久化预约编号、车牌、车辆类型、车位、预约起止时间、宽限期截止时间、状态、定金金额、支付状态以及预期路线。数据库对同一车位的重叠有效时间段执行冲突检查，对同一车牌限制只能存在一个未结束预约；创建预约、确认定金和占用预约时段必须使用事务，防止并发重复预订。
 
-现有 `ParkingService::reserve(ttl)` 继续承担“临近入场时短暂锁定实体车位”的职责。未来预约不会从下单时一直把 `ParkingSpot` 置为 `Reserved`；服务端在预约到场窗口临近时才创建短时锁，到场后由车牌匹配把预约转为 `CheckedIn` 和实际占用，爽约后释放短时锁。这样同一车位可以接受互不重叠的未来预约，也不会被一周后的订单提前占满。
+以上核心已实现（2026-09-25）：`Reservation` / `ReservationRule` / `DepositPayment` 持久化到 `reservations` 与 `deposit_payments` 表；同一车牌的未结束订单由部分唯一索引 `idx_reservations_open_plate` 兜底；创建、到场与离场结算均在单个 SQLite 事务内完成。预约成功响应包含选定入口、车位编号、预计距离、预计转弯数和路线点集（序列化存入 `route` 列），供用户端绘制预期路线；该路线是预约时基于布局和当时占用情况生成的快照，车辆实际到达后，系统会按照实时拥堵重新规划，并把最新路线发送给用户端或 Gate Terminal。
 
-预约成功响应包含选定入口、车位编号、预计距离、预计转弯数和路线点集，供用户端绘制预期路线。该路线是预约时基于布局和当时占用情况生成的快照；车辆实际到达后，系统会按照实时拥堵重新规划，并把最新路线发送给用户端或 Gate Terminal。
+`FakePaymentGateway` 在本地完成支付成功、失败、退款和爽约扣款的确定性测试，只保存模拟交易号，不接入真实支付平台。失败路径通过测试钩子显式注入；后续真实支付必须由服务端验证支付回调和幂等键，客户端提交的“已支付”状态不能直接采信。
 
-第一阶段使用 `FakePaymentGateway` 在本地完成支付成功、失败、退款和爽约扣款的确定性测试，只保存模拟交易号，不接入真实支付平台。后续真实支付必须由服务端验证支付回调和幂等键，客户端提交的“已支付”状态不能直接采信。
+延迟锁位语义：预约从下单起**不**占用实体车位；`ReservationService::sweep()` 在进入到场窗口（开始时间前 `lockLeadTime`，默认 30 分钟）时才把物理车位短时锁定到宽限期截止。同一车位因此可以接受互不重叠的时间段预约，也不会被一周后的订单提前占满。到场确认窗口为 `[开始时间 - 锁位提前量, 宽限期截止]`，车牌匹配即把预约转为 `CheckedIn` 并占用预约车位；`ParkingService::enter()` 对匹配车牌自动完成该转换。离场时定金按 `min(定金, 应收费用)` 抵扣，余额不退。
 
 ## 当前进度
 
-截至 2026-09-12，项目处于 **SmartPark 0.7**：预约系统第一版（`Booking`）已实现并在 CLI 与 Admin GUI 可操作化，完整的远程时间段预约（`Reservation`）已完成需求设计、尚未编码：
+截至 2026-09-26，项目处于 **SmartPark 0.7**：预约体系（`Booking` + `Reservation`）、数据分析层与管理端 GUI（登录注册/毛玻璃主题/原生能力）均已落地，TCP 服务端尚未开始：
 
 - 已完成核心模型、60 车位自动分配、自定义多矩形布局（含南北向车位与机房障碍）、栅格 A* / Dijkstra 路线、拥堵边权、预留 TTL、CLI 与 Qt GUI。
 - SQLite 持久化已接入 CLI 与 Admin GUI，支持跨重启恢复车位状态、预约和停车记录。
 - 收费服务已接入 `ParkingService`、CLI 与 Admin GUI；离场费用随停车记录持久化。
-- 最近一次在 `s1` 上验证：CLI 与 Qt 构建通过，`cli-tests` / `qt-tests` 均为 2/2 通过，GUI offscreen 启动正常。
-- CLI 默认持久化可重复运行，连续运行至 60/60 满场后仍稳定输出 `RESULT: PASS`。
-- 预约系统第一版（`Booking`）已完成：远程预约、近一周时间窗、预付定金、到场退回定金、爽约没收定金与预期路线，持久化到 `bookings` 表并跨重启恢复。
-- 完整的远程时间段预约（`Reservation`：时间段冲突检查、延迟锁位、定金抵扣停车费、模拟支付、用户端路线接口）尚未编码。
+- CLI 默认持久化可重复运行，连续运行至 60/60 满场后仍稳定输出 `RESULT: PASS`；75 车位图纸布局 `data/garage-6f.txt` 验证通过。
+- 预约第一版（`Booking`）：远程预约、近一周时间窗、预付定金、到场退回定金、爽约没收定金与预期路线，持久化到 `bookings` 表并跨重启恢复。
+- 远程时间段预约核心（`Reservation`）已完成：未来 7 天时间校验、最短提前 30 分钟、最短时长 30 分钟、时间段冲突检查、同一车牌唯一未结束订单、`FakePaymentGateway` 定金模拟支付（含失败注入）、延迟锁位（开始前 30 分钟短时锁）、到场转停车与定金抵扣、取消退定金、爽约没收；订单与流水持久化并跨重启恢复。8 个专项单元测试覆盖模型状态机、冲突、锁位、抵扣、爽约、取消、支付失败与重启恢复。
+- 2026-09-23 增量：Admin GUI 登录界面与产品化界面重构、`ParkingInsightEngine` 运营洞察（占用预测/风险提示）、`ChartWidgets` 统计图表、分配算法分区压力均衡项。
+- 2026-09-25~26 增量：
+  - 界面：浅色企业风主题（低饱和蓝）+ 主界面毛玻璃模式（整窗高斯模糊光斑 + 半透明面板，`SMARTPARK_NO_GLASS=1` 回退）、登录/注册重做（`UserStore` 盐化哈希口令、失败锁定、密码可见切换）。
+  - 创新 Top-5（10 角度子代理评分选拔）：应急生命通道（出口最近车位 + 满场让位）、无障碍关怀预约（免定金/宽限翻倍/无障碍车位限定/少转弯路线）、哈希链防篡改审计日志（`AuditLogService` + `verifyChain`）、反向寻车（行人栅格步行路线）、剧本式一键演示（`DemoDirector` 16 步）。
+  - 数据分析：`AnalyticsEngine` 本地 OLS 占用率预测 + 规则结论（CLI `--analyze`），`RemoteAnalystClient` 预留 OpenAI 兼容远程分析接口。
+  - macOS 原生：菜单栏余位图标、通知中心、中文语音播报、PDF 报告导出、NSURLSession 远程分析传输（`MacSystemBridge`）。
+  - 算法：分区均衡升级为负载水位填充（跨分区低负载无条件优先，同档内按距离/拥堵/类型），车库布局 38 辆实测 13 分区负载 25%~62% 均衡。
 
-尚未完成：SmartPark 0.7 远程预约、TCP Server、Gate Terminal、真实 LPR、用户端与统计图表。
+尚未完成：TCP Server 与协议文档、Gate Terminal、用户端、真实 LPR；`ReservationRule`/计费规则配置化与真实支付在后续阶段接入。
 
 ## 后续发展路线
 
@@ -190,27 +212,41 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
 ```text
 .
 ├── apps/
-│   ├── admin/       # 管理员端 Qt GUI：布局编辑、车位图、路线显示
-│   ├── cli/         # 终端演示程序：自动分配与自定义布局验证
-│   ├── server/      # SmartPark 服务端入口（预留）
+│   ├── admin/       # 管理员端 Qt GUI
+│   │   ├── main.cpp / MainWindow.*      # 入口与主窗口（总览/车位图/作业/预约/记录）
+│   │   ├── LoginDialog.* / RegisterDialog.* # 登录与注册（SQLite 账号验证）
+│   │   ├── UserStore.*                  # users 表：盐化哈希口令、注册/验证
+│   │   ├── Theme.h                      # 视觉主题：浅色/毛玻璃样式表与配色
+│   │   ├── ChartWidgets.h               # 环形/折线/条形统计图表
+│   │   ├── NativeEffects.*              # macOS 原生毛玻璃（实验路径）
+│   │   └── MacSystemBridge.*            # macOS 原生桥接：菜单栏/通知/语音/PDF/HTTP
+│   ├── cli/         # 终端程序：自动演示、预约/时段预约/分析/应急/寻车/审计命令
+│   ├── server/      # SmartPark 服务端入口（预留，P1 TCP）
 │   └── gate/        # 出入口终端入口（预留）
 ├── docs/            # 调研来源与路线说明
+├── data/            # 示例布局（garage-6f.txt 6 层车库 75 位图纸）
 ├── src/
 │   ├── core/
-│   │   ├── model/   # Geometry、Vehicle、ParkingSpot、ParkingLayout、ParkingRecord、Booking
-│   │   ├── persistence/ # DatabaseManager、ParkingRepository、Persistence
-│   │   └── service/ # GridPlanner、SpotAllocator、ParkingService
-│   ├── database/    # 数据库连接与仓储层
-│   ├── network/     # TCP 协议与通信实现
-│   └── lpr/         # 车牌识别统一接口及两种后端实现
-├── models/          # 后续：ONNX / HyperLPR 模型资源；大权重不直接提交 Git
-├── training/        # 后续：检测、识别、数据转换与评测脚本
-├── resources/
-│   ├── icons/       # 图标资源
-│   ├── styles/      # Qt 样式表
-│   └── images/      # 图片资源
+│   │   ├── model/        # Geometry、Vehicle、ParkingSpot、ParkingLayout、
+│   │   │                 # ParkingRecord、Booking、Reservation
+│   │   ├── persistence/  # DatabaseManager、ParkingRepository、Persistence
+│   │   ├── service/      # GridPlanner、SpotAllocator、ParkingService、Billing、
+│   │   │                 # ReservationService、FakePaymentGateway、AnalyticsEngine、
+│   │   │                 # RemoteAnalystClient、AuditLogService、DemoDirector、
+│   │   │                 # ParkingInsightEngine
+│   │   └── util/         # TimeUtil 时间范围与安全转换
+│   ├── database/    # 数据库连接与仓储层（预留目录）
+│   ├── network/     # TCP 协议与通信实现（预留，P1）
+│   └── lpr/         # 车牌识别统一接口及两种后端实现（预留）
+├── scripts/         # 构建/运行脚本（build-admin、run-admin 等）
+├── resources/       # 图标/样式/图片资源
 ├── sql/             # 数据库建表与初始化脚本
-└── tests/           # 单元测试与集成测试
+├── tests/           # core_model_tests、admin_main_window_tests + CTest 配置
+├── training/        # LPR 训练脚本（检测/识别/评测）
+├── CMakeLists.txt   # 顶层构建：C++17、CTest、可选 Qt 组件
+├── CMakePresets.json# cli / qt 构建预设
+├── README.md        # 项目说明（本文档）
+└── handoff.md       # 会话交接说明
 ```
 
 ## 开发里程碑
@@ -222,12 +258,75 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
 5. ✅ SQLite 持久化：核心层已完成，CLI/GUI 已接入并支持重启恢复。
 6. ✅ 收费系统：根据停车时长、免费时长、计费单元和单次封顶计算并持久化费用，CLI/GUI 已展示。
 7. ✅ 预约系统（第一版 `Booking`）：远程预约、近一周时间窗、预付定金、爽约扣定金与预期路线。
-8. ⬜ 预约完整版（`Reservation`）：未来 7 天时间段预约、时间段冲突检查、定金模拟支付、延迟锁位与定金抵扣。
+8. ✅ 预约完整版核心（`Reservation`）：未来 7 天时间段预约、时间段冲突检查、定金模拟支付、延迟锁位与定金抵扣（GUI 面板与 TCP 接口随后续里程碑接入）。
 9. ⬜ 服务端：以 TCP 建立管理员端、用户端与服务端架构，开放预约和停车事件接口。
 10. ⬜ 用户端与出入口终端：用户端提交预约并查看路线；Gate 手动输入车牌并通过服务端核销预约。
 11. ⬜ 车牌识别：实现 HyperLPR3 基线，并完成 YOLO11m + PP-OCRv5 中国车牌专用模型训练、评测与 C++ 部署。
 
 ## 最近工作记录
+
+2026-09-26 分区均衡改为水位填充（用户实测反馈低占用时不均衡）：
+
+- 问题：二次渐进曲线（负载²×等效步行米数）在低占用时压力项极小（第 2 辆车仅约 4 米代价），前几辆车必然堆满最近分区——实测 4 辆车时 A2 区 50%、F 区 25%、其余 0%。
+- 修正：`SpotAllocator::propose()` 改为**负载水位优先**——跨分区时"计入本车后负载占比"更低的分区无条件优先，同水位档内才由距离/拥堵/类型评分决定。仅在 WeightedCost 且 `zonePressure` 权重 > 0 时启用（Nearest 策略与显式关闭均衡时保持纯距离行为）。
+- 效果：车库布局（14 分区 75 位）连续入场 38 辆，分布 A1/A2 3/B 4/C 5/D 5/E 7/F 2/G 2/H 3/I 2/J 2/L 1/M 1，各分区负载比 25%~62%，无空置分区；首辆车仍就近入场。
+- `zonePressureCost` 保留在评分明细中用于展示，跨分区决策由水位规则主导。
+
+2026-09-25 主界面毛玻璃模式：
+
+- `Theme.h` 新增 `glassMainWindowStyleSheet()`：主窗口整体毛玻璃化——`MainWindow::paintEvent` 绘制整窗高斯模糊光斑背景（复用 `auroraBackdrop`，按尺寸缓存），侧边栏/顶栏/菜单栏/工具栏/状态栏/卡片全部改为半透明玻璃材质（rgba 白 0.59~0.9），光斑从玻璃下透出；表格保持 0.92 不透明度保证可读性。
+- 回退开关：`SMARTPARK_NO_GLASS=1` 使用 `solidMainWindowStyleSheet()` 纯色主题（原样式保留为 `solidMainWindowStyleSheet`）。
+- 离屏快照验证：光斑从侧边栏与卡片间隙透出、图例/表格/图表完整可读；此前修复的滚动容器与刻度自适应保持生效。
+
+2026-09-25 macOS 原生 API 深度接入（按子代理调研报告 Top-5）：
+
+- 新增统一 ObjC++ 桥接层 `apps/admin/MacSystemBridge.h/.mm`（仅主目标编译，宏 `SMARTPARK_MACOS_NATIVE`；非 macOS/测试目标为内联空实现），链接 UserNotifications、AVFoundation、PDFKit、AppKit：
+  1. **NSStatusItem 菜单栏余位图标**：常驻菜单栏显示"SmartPark 余位 N"，随 `refreshDashboard` 实时刷新（`SMARTPARK_NO_MENU_BAR=1` 可关闭）。
+  2. **UNUserNotificationCenter 本地通知**：应急车辆入场即推送通知中心横幅；首次调用触发系统授权弹窗，前台展示需 delegate 回调（已实现）。
+  3. **AVSpeechSynthesizer 中文语音播报**：应急入场时朗读事件文本（zh-CN，婷婷语音，缺失时回退默认语音）。
+  4. **NSURLSession 同步 POST**：填入 `RemoteAnalystClient` 预留的 Transport 接缝——设置 `SMARTPARK_ANALYST_ENDPOINT`（+ `SMARTPARK_ANALYST_API_KEY`）后，"数据分析报告"对话框可请求远程 LLM 生成自然语言结论（子线程 + QTimer 轮询回传，20 秒超时）。
+  5. **PDFKit 报告导出 + NSWorkspace**：分析对话框"导出 PDF"生成 A4 报告（含标题/作者元数据）到桌面并自动在 Finder 中定位。
+- 加固：`--smoke-test` 未显式指定 `--db` 时强制使用临时数据库，杜绝恢复失败模态框卡住自动化（曾使冒烟测试挂起的根因）。
+- 报告确认 Vision.framework 通用 OCR 对中国车牌（小尺寸/斜角/字符集约束）不可靠，LPR 仍按 README 的 YOLO+PP-OCRv5 专用模型路线推进。
+
+2026-09-25 十角度创新点评分与 Top-5 实现：
+
+- 由 10 个独立顾问从运营效率、用户体验、预测分析、安全隐私、架构工程、商业模式、IoT 硬件模拟、绿色能源、答辩演示、社会价值十个角度各提 3-4 个创新点并按「创新性 40% + 可实现性 30% + 价值 30%」打 1-10 分，共 40 个创新点。汇总去重后选前 5 实现：
+  1. **应急生命通道模式**（9.0）：`ParkingService::emergencyEnter()`——应急车优先分配出口距离最近的车位（专用应急权重），满场时出口最近的占用车自动结算让位；CLI `--emergency`、GUI「车辆作业」页红色横幅 + 一键入场按钮；应急/让位动作写入审计链。
+  2. **无障碍关怀预约**（8.5）：`ReservationService::create(..., accessible)`——免定金、到场宽限翻倍（60 分钟）、仅限无障碍车位、转向权重 ×4 的少转弯路线；CLI `--reserve --accessible`；`reservations` 表新增 `accessible` 列跨重启保留。
+  3. **哈希链防篡改审计日志**（8.5）：`AuditLogService`——append-only `audit_logs` 表，每条 hash = SHA-256(prev_hash + 内容)，`verifyChain()` 检测删改并定位断链行；入场/离场/预约创建/取消/到场/爽约/应急全量埋点；CLI `--audit` / `--audit-verify`。
+  4. **反向寻车**（8.5，两角度重复提出合并）：`ParkingService::findCar()`——行人栅格规划器（车位可穿越、机房楼梯仍阻挡）从最近出入口到车位步行路线；CLI `--find`。
+  5. **剧本式一键演示**（8.5）：`DemoDirector`——16 步虚拟时钟脚本（入场→分区再平衡→无障碍预约→爽约→到场→离场计费→分析结论），车牌按次唯一化可重复运行；CLI `--demo-script`；GUI「快捷操作」新增数据分析报告对话框。
+- 其余 35 个创新点（有序充电调度 8.0、道闸仿真 8.0、LED 引导屏 8.0、峰谷动态定价沙盘 8.0、预测式选位 8.0、异常检测 8.0、RBAC 8.0、事件总线 8.0、潮汐通道仿真 8.0、预缴费倒计时 8.0 等）已记录评分备选。
+- 新增 6 个专项测试：审计链校验/篡改检测/埋点集成、应急让位、无障碍权益与重启保留、寻车路线、演示脚本；全量测试通过。
+
+2026-09-25 分区压力算法重做与界面去概念稿化：
+
+- 分区压力算法重写（`SpotAllocator`）：旧实现 `6.0 × 放置前负载`（满分 6 分）相对路径项（米）几乎不起作用，车辆把最近分区塞满才外溢。新算法把压力换算成与路径同量纲的等效步行米数——`zonePressure(默认 0.8) × 场地对角线 × 计入本车后负载占比²`，负载越接近满区边际代价越高。默认布局连续入场 30 辆的分布从「A 区塞满 20、B 区 10、C 区 0」变为 **A 13 / B 10 / C 7**，近门优先的商业逻辑保留、无分区被塞满或空置。新增分布回归测试 `testZonePressureSpreadsLoadAcrossZones`。
+- 界面按真实企业软件调研重做（调研对象：FlashParking、SKIDATA、捷顺/ETCP、SpotHero、JustPark、Q-Park、Chase、Bank of America 等，共性结论：浅色主题、低饱和主色只用于主按钮/链接/选中态、高密度表格、动词短语按钮、无渐变撞色）：主题从深色「石墨+金」改为**白/浅灰底 + 低饱和企业蓝 #1E5AA8**，白底侧边栏蓝色选中态，表格细分隔线，状态 badge 浅底色块，图表灰网格；登录/注册页同步改浅色，原生毛玻璃切换为浅色材质（`UnderWindowBackground`）。
+- 文案去营销味：按钮改为动词短语（“登录”、“注册新账号”），移除“实时运营控制台”“智能决策”“本地运营终端”等自我宣传式措辞，预测行改为“预测：60 分钟后占用率 X%（置信度 Y%）”。
+- 代码注释同步精简：移除教科书式自我解释与变更历史式注释，只保留业务约束说明。
+
+2026-09-25 管理端界面换装与登录/注册重做：
+
+- 视觉主题从蓝色系（#1D4E89）整体更换为**曜石石墨 + 香槟金**：集中到 `apps/admin/Theme.h`（主窗口与认证对话框样式表、图表用色常量、自绘高斯光斑背景），`MainWindow`、`LoginDialog`、`RegisterDialog` 与 `ChartWidgets` 全部取值于该主题，不再散落色值。
+- macOS 原生毛玻璃：新增 `apps/admin/NativeEffects.h/.mm`（Objective-C++ 调用 AppKit `NSVisualEffectView`，`BehindWindow` 混合模式对窗口背后内容做系统级高斯模糊），登录/注册窗口半透明透出毛玻璃；仅 `smartpark_admin` 主目标编译（`SMARTPARK_HAS_NATIVE_VIBRANCY` 宏 + AppKit framework），其他平台与测试目标为空实现。`SMARTPARK_NO_VIBRANCY=1` 可强制关闭。
+- 非 macOS / 原生效果关闭时的回退：`Theme::auroraBackdrop()` 用 `QGraphicsBlurEffect` 对金色/青色/绛色光斑做真实高斯模糊后铺底，视觉对应毛玻璃。
+- 登录逻辑完善（`LoginDialog` 重写）：认证改接 `UserStore`（SQLite `users` 表）；空账号/空密码分别提示并标红输入框；账号不存在与密码错误分开提示；连续 5 次密码错误锁定 30 秒（按钮倒计时）；密码可见切换（👁 动作）；记住账号；账号框回车跳密码框。
+- 注册功能：新增 `RegisterDialog`（账号 + 密码 + 确认密码，实时校验、密码强度提示、重复账号检测），注册成功回填登录账号。新增 `UserStore`（`apps/admin/UserStore.h/.cpp`）：盐化 12000 轮迭代 SHA-256 口令摘要、常量时间比较、空库自动播种演示账号 admin/smartpark、登录时间戳记录。
+- Admin 测试新增 3 项：`UserStore` 播种与登录验证（含重启持久化）、注册校验与重复拒绝、`LoginDialog` 交互（空字段提示 → 错误密码剩余次数 → 演示账号通过验证），并保存对话框离屏渲染快照。
+- 注意：终端若未授予 macOS「屏幕录制」权限，`screencapture` 会省略其他应用的窗口（呈现为"窗口不可见"假象）；GUI 视觉验收请在真实屏幕确认。
+
+2026-09-25 完成 SmartPark 0.7 远程时间段预约核心（`Reservation`）：
+
+- 新增 `Reservation` / `ReservationRule` / `DepositPayment` 模型（`src/core/model/Reservation.h/.cpp`）：状态机 `PendingPayment -> Confirmed -> CheckedIn -> Completed`，另有 `Cancelled` / `NoShow` / `Expired`；定金结算状态 `Pending / Refunded / Forfeited / Applied`；预期路线快照可文本序列化并随订单持久化。
+- 新增 `FakePaymentGateway`（`src/core/service/FakePaymentGateway.h/.cpp`）：确定性模拟定金收取/退回/没收，支持注入支付失败。
+- 新增 `ReservationService`（`src/core/service/ReservationService.h/.cpp`）：未来 7 天校验、最短提前/最短时长校验、同车位时间段冲突检查、同车牌唯一未结束订单、延迟锁位 `sweep()`、到场确认（窗口 `[开始-30min, 宽限截止]`，`ParkingService::enter()` 自动车牌匹配）、取消退定金、爽约没收、离场定金抵扣（`prepare/apply/rollback` 三段式保证与 SQLite 事务一致）。
+- `ParkingRepository` 新增 `reservations` / `deposit_payments` 表：订单、状态与定金流水持久化；部分唯一索引兜底同车牌唯一开放订单；`saveReservationOrder` / `saveReservationCheckIn` / `saveExitWithReservation` 等事务方法。
+- CLI 可操作化：`--reserve`（`--duration` 时长）、`--arrive`、`--rsv-cancel`、`--reservations`、`--settle-reservations`；自动演示新增时段预约全流程（预约收定金 -> 延迟锁位 -> 到场转预付 -> 离场抵扣：3 小时应收 25 元实收 5 元 -> 爽约没收）。
+- 新增 8 个单元测试：模型状态机与路线序列化、创建校验与冲突、延迟锁位/到场/抵扣、爽约与取消、支付失败、入场自动确认、跨重启恢复、模拟网关。
+- 本轮验证（Mac，Qt 6.8.3）：`ctest` 4/4 通过（CLI 演示、CLI 预约、核心测试、Admin GUI 测试）；CLI 端到端验证预约->到场->取消->列表跨重启正常；`data/garage-6f.txt` 75 车位图纸 `RESULT: PASS`。
+- s1 本轮不可达（10.108.17.55 连接超时），改动未提交未推送；`origin/main` 落后本地 2 个提交（`ac95d52` + 本轮）。
 
 2026-09-14 把 6-1 电气室/设备用房/蓄电池室和 6-7/6-8 水箱间改成停车位：
 
@@ -749,6 +848,7 @@ CLI 默认把车位与停车记录持久化到 SQLite：未指定 `--db` 时使�
 | `src/core/model/ParkingLayout.h/.cpp` | 解析自定义布局并生成车位矩形、类型和出入口。 |
 | `src/core/model/ParkingRecord.h/.cpp` | 保存一次停车的车牌、车位、时间、时长和费用。 |
 | `src/core/model/Booking.h/.cpp` | 定义预约记录（编号、车牌、车位、时间、定金、状态）与 `BookingPolicy`。 |
+| `src/core/model/Reservation.h/.cpp` | 定义远程时间段预约（状态机、定金结算状态、预期路线快照序列化）、`ReservationRule` 与 `DepositPayment`。 |
 | `src/core/model/Vehicle.h` | 声明车辆类型、车辆数据与只读访问接口。 |
 | `src/core/model/Vehicle.cpp` | 实现车辆构造、非空车牌校验和数据访问。 |
 | `src/core/persistence/DatabaseManager.h/.cpp` | SQLite 连接与生命周期管理。 |
@@ -759,11 +859,23 @@ CLI 默认把车位与停车记录持久化到 SQLite：未指定 `--db` 时使�
 | `src/core/service/GridPlanner.h/.cpp` | 实现障碍感知栅格 A*、多目标搜索和拥堵边权。 |
 | `src/core/service/SpotAllocator.h/.cpp` | 独立选位、策略、评分和路径缓存。 |
 | `src/core/service/Billing.h/.cpp` | 定义计费规则并计算离场费用。 |
-| `src/core/service/ParkingService.h/.cpp` | 实现入场、离场、计费、预留 TTL、预约（创建/确认/取消/爽约）、剩余车位和历史记录查询。 |
+| `src/core/service/ParkingService.h/.cpp` | 实现入场、离场、计费、预留 TTL、预约（创建/确认/取消/爽约）、时间段预约接入（自动到场、定金抵扣、延迟锁位扫描）、剩余车位和历史记录查询。 |
+| `src/core/service/ReservationService.h/.cpp` | 实现远程时间段预约：冲突检查、延迟锁位、定金模拟支付、取消/到场/爽约状态机与持久化协作。 |
+| `src/core/service/AnalyticsEngine.h/.cpp` | 本地数据分析：OLS 小模型拟合占用率趋势、生成中文结论与建议。 |
+| `src/core/service/RemoteAnalystClient.h/.cpp` | 预留的远程分析接口：OpenAI 兼容请求组装与响应解析，传输层可注入。 |
+| `src/core/service/AuditLogService.h/.cpp` | 哈希链防篡改审计日志：append-only 记录与链完整性校验。 |
+| `src/core/service/DemoDirector.h/.cpp` | 剧本式一键演示：虚拟时钟驱动入场/预约/爽约/离场/分析的 16 步脚本。 |
+| `src/core/service/FakePaymentGateway.h/.cpp` | 确定性模拟定金支付网关（收取/退回/没收/失败注入）。 |
 | `tests/CMakeLists.txt` | 构建并注册模型单元测试。 |
 | `tests/core_model_tests.cpp` | 验证模型、预留、计费边界、类型匹配、拥堵绕行、多入口选择与预约生命周期。 |
 | `apps/admin/CMakeLists.txt` | 构建可选 Qt 管理员端，Qt 自动处理只作用于该目标。 |
-| `apps/admin/main.cpp` | 独立 GUI 入口，解析 `--db` 参数并启动主窗口。 |
+| `apps/admin/main.cpp` | 独立 GUI 入口，解析 `--db` 参数、打开账号库并启动登录/主窗口。 |
+| `apps/admin/Theme.h` | 统一视觉主题：曜石石墨 + 香槟金配色、主窗口/认证对话框样式表、自绘高斯光斑背景。 |
+| `apps/admin/NativeEffects.h/.mm` | macOS 原生 NSVisualEffectView 毛玻璃封装（非 macOS 为空实现）。 |
+| `apps/admin/UserStore.h/.cpp` | 登录/注册账号存储：users 表、盐化迭代 SHA-256 口令摘要、演示账号播种。 |
+| `apps/admin/LoginDialog.h/.cpp` | 登录对话框：字段校验、失败锁定、密码可见切换、记住账号、注册入口。 |
+| `apps/admin/RegisterDialog.h/.cpp` | 注册对话框：账号/密码/确认密码校验与强度提示。 |
+| `apps/admin/MacSystemBridge.h/.mm` | macOS 原生桥接：菜单栏余位、通知中心、中文语音、PDF 导出、NSURLSession 同步 POST。 |
 | `apps/admin/MainWindow.h/.cpp` | 实现布局编辑、车位图、自动分配、路线显示与数据库恢复/重置交互。 |
 
 运行流程：系统启动 `smartpark_cli` → 解析布局 → 构建障碍栅格 → `SpotAllocator` 按策略为候选车位计算路线和评分 → 选择最优车位并占用或预留 → 输出路线和状态 → 检查结果并返回退出码。
@@ -800,10 +912,20 @@ cmake --build --preset qt-debug --parallel
 ctest --preset qt-tests
 ./build/qt/apps/admin/smartpark_admin
 
-# 预约命令示例
+# 预约命令示例（Booking 第一版）
 ./build/cli/apps/cli/smartpark_cli --db /tmp/p.db --book 晋A12345 --in 90
 ./build/cli/apps/cli/smartpark_cli --db /tmp/p.db --checkin 晋A12345 --in 90
 ./build/cli/apps/cli/smartpark_cli --db /tmp/p.db --bookings
+
+# 时段预约命令示例（Reservation，含定金支付与冲突检查）
+./build/cli/apps/cli/smartpark_cli --db /tmp/p.db --reserve 晋B12345 --in 120 --duration 180
+./build/cli/apps/cli/smartpark_cli --db /tmp/p.db --arrive 晋B12345 --in 120
+./build/cli/apps/cli/smartpark_cli --db /tmp/p.db --rsv-cancel 晋B12345
+./build/cli/apps/cli/smartpark_cli --db /tmp/p.db --reservations
+./build/cli/apps/cli/smartpark_cli --db /tmp/p.db --settle-reservations
+
+# 数据分析：本地模型输出结论与建议
+./build/cli/apps/cli/smartpark_cli --db /tmp/p.db --analyze
 ```
 
 如果当前终端没有图形显示，可以使用 Qt 的 offscreen 平台插件做启动检查：
