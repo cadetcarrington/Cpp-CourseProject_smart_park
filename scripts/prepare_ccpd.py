@@ -7,6 +7,9 @@ import argparse
 import hashlib
 import shutil
 import sys
+import ipaddress
+import socket
+import urllib.parse
 import urllib.request
 from collections import Counter
 from pathlib import Path
@@ -61,6 +64,27 @@ def parse_split_lines(lines: Iterable[str], root: Path, base: Path) -> list[Path
     return found
 
 
+def fetch_allowed_url(url: str, timeout: int = 30) -> bytes:
+    """下载前校验协议、域名白名单与解析 IP 边界，防 SSRF。
+
+    仅允许 https 的 CCPD 官方 split 地址；解析出的所有 IP 必须是公网地址，
+    拒绝内网/环回/链路本地/保留段，防 DNS rebinding 打内网或云元数据。
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != "raw.githubusercontent.com":
+        raise ValueError(f"blocked non-allowlisted url: {url}")
+    resolved = {info[4][0] for info in socket.getaddrinfo(
+        parsed.hostname, 443, proto=socket.IPPROTO_TCP)}
+    for address in resolved:
+        ip = ipaddress.ip_address(address)
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            raise ValueError(f"blocked non-public resolved address: {address}")
+    request = urllib.request.Request(url, headers={"User-Agent": "smartpark-ccpd-prepare"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read()
+
+
 def local_or_downloaded_split(name: str, root: Path, base: Path, allow_download: bool) -> tuple[list[Path], str]:
     local = sorted(root.rglob(f"{name}.txt"))
     for split_file in local:
@@ -69,8 +93,7 @@ def local_or_downloaded_split(name: str, root: Path, base: Path, allow_download:
             return items, str(split_file)
     if allow_download:
         try:
-            with urllib.request.urlopen(OFFICIAL_SPLIT_URLS[name], timeout=30) as response:
-                content = response.read().decode("utf-8", "replace")
+            content = fetch_allowed_url(OFFICIAL_SPLIT_URLS[name]).decode("utf-8", "replace")
             items = parse_split_lines(content.splitlines(), root, base)
             if items:
                 return items, OFFICIAL_SPLIT_URLS[name]

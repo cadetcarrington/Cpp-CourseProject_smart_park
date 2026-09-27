@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
-import random
 import subprocess
 import sys
 from pathlib import Path
@@ -51,8 +51,8 @@ def resolve_eval_list(data: Path, eval_list: Path | None, max_eval: int) -> Path
         return val
     green_set = set(green_lines)
     rest = [ln for ln in lines if ln not in green_set]
-    rng = random.Random(42)
-    rng.shuffle(rest)
+    # 确定性打乱：按 sha256(行) 排序，等效固定种子的随机排列且不依赖 PRNG。
+    rest.sort(key=lambda ln: hashlib.sha256(("ccpd-eval-subsample|" + ln).encode()).hexdigest())
     keep_n = max(0, max_eval - len(green_lines))
     selected = green_lines + rest[:keep_n]
     cached.write_text("\n".join(selected) + "\n", encoding="utf-8")
