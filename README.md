@@ -259,11 +259,19 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
 6. ✅ 收费系统：根据停车时长、免费时长、计费单元和单次封顶计算并持久化费用，CLI/GUI 已展示。
 7. ✅ 预约系统（第一版 `Booking`）：远程预约、近一周时间窗、预付定金、爽约扣定金与预期路线。
 8. ✅ 预约完整版核心（`Reservation`）：未来 7 天时间段预约、时间段冲突检查、定金模拟支付、延迟锁位与定金抵扣（GUI 面板与 TCP 接口随后续里程碑接入）。
-9. ⬜ 服务端：以 TCP 建立管理员端、用户端与服务端架构，开放预约和停车事件接口。
+9. ✅ 服务端：TCP 协议 v1 + `QTcpServer` 服务端（登录/心跳/状态/入场/离场/预约/分析接口 + 事件广播）；Gate 与用户端接入在里程碑 10。
 10. ⬜ 用户端与出入口终端：用户端提交预约并查看路线；Gate 手动输入车牌并通过服务端核销预约。
 11. ⬜ 车牌识别：实现 HyperLPR3 基线，并完成 YOLO11m + PP-OCRv5 中国车牌专用模型训练、评测与 C++ 部署。
 
 ## 最近工作记录
+
+2026-09-27 P1：TCP 协议与服务端落地（里程碑 9 完成）：
+
+- 协议 v1（`docs/tcp-protocol.md`）：4 字节大端长度前缀 + UTF-8 JSON 帧（上限 1MiB）；request/response/event 三类封包；登录会话 + token；心跳（客户端 20s/服务端 15s 扫描，60s 无帧踢除）；连续 5 次登录失败断开。
+- `src/network/`：`Protocol` 帧编解码（粘包拆包 + 超限拒绝）、`SmartParkTcpServer`（QTcpServer 事件驱动单线程，会话表 + 10 个 action：login/heartbeat/parking.status/spot.list/parking.enter/parking.leave/reservation.create/cancel/checkin/analytics.report，动作后向所有已登录连接广播 6 类事件）、`TcpClient`（同步请求等待 + 事件收集，供自测与后续 Gate/用户端复用）。
+- `apps/server/smartpark_server`：`--port/--db/--layout` 长驻服务；`--selftest` 进程内端到端自测（临时目录保证可重复）：连接→登录→状态→入场→建预约→窗口外到场拒绝→离场结算→分析报告→第二客户端事件广播→未登录拒绝→审计链校验，15 项断言全过；CTest 注册 `smartpark_server_selftest`。
+- `UserStore` 从 apps/admin 迁入 `src/core/service/`（namespace smartpark），服务端与 GUI 共用账号验证。
+- 全量测试 5/5 通过（新增 server_selftest）。
 
 2026-09-26 分区均衡改为水位填充（用户实测反馈低占用时不均衡）：
 

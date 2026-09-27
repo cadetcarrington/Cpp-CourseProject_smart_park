@@ -16,7 +16,6 @@ if(TARGET smartpark_admin)
         ${CMAKE_SOURCE_DIR}/apps/admin/MainWindow.cpp
         ${CMAKE_SOURCE_DIR}/apps/admin/LoginDialog.cpp
         ${CMAKE_SOURCE_DIR}/apps/admin/RegisterDialog.cpp
-        ${CMAKE_SOURCE_DIR}/apps/admin/UserStore.cpp
     )
     target_include_directories(smartpark_admin_tests
         PRIVATE ${CMAKE_SOURCE_DIR}/apps/admin

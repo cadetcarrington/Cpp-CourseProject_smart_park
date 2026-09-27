@@ -15,6 +15,8 @@ add_library(smartpark_core STATIC
     util/TimeUtil.h
     service/AuditLogService.cpp
     service/AuditLogService.h
+    service/UserStore.cpp
+    service/UserStore.h
     service/Billing.cpp
     service/Billing.h
     service/DemoDirector.cpp

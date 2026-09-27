@@ -9,7 +9,7 @@
 #include <QStyle>
 #include <QVBoxLayout>
 
-RegisterDialog::RegisterDialog(smartpark_ui::UserStore &userStore, QWidget *parent)
+RegisterDialog::RegisterDialog(smartpark::UserStore &userStore, QWidget *parent)
     : QDialog(parent)
     , userStore_(userStore){
     setWindowTitle(tr("注册 SmartPark 账号"));
@@ -172,22 +172,22 @@ void RegisterDialog::attemptRegister(){
     markInvalid(confirmInput_, false);
 
     if (userName.isEmpty() || password.isEmpty()){
-        errorLabel_->setText(smartpark_ui::UserStore::registerErrorText(
-            smartpark_ui::UserStore::RegisterResult::EmptyFields));
+        errorLabel_->setText(smartpark::UserStore::registerErrorText(
+            smartpark::UserStore::RegisterResult::EmptyFields));
         errorLabel_->setVisible(true);
         return;
     }
-    if (!smartpark_ui::UserStore::isValidUserName(userName)){
+    if (!smartpark::UserStore::isValidUserName(userName)){
         markInvalid(userNameInput_, true);
-        errorLabel_->setText(smartpark_ui::UserStore::registerErrorText(
-            smartpark_ui::UserStore::RegisterResult::InvalidUserName));
+        errorLabel_->setText(smartpark::UserStore::registerErrorText(
+            smartpark::UserStore::RegisterResult::InvalidUserName));
         errorLabel_->setVisible(true);
         return;
     }
-    if (!smartpark_ui::UserStore::isValidPassword(password)){
+    if (!smartpark::UserStore::isValidPassword(password)){
         markInvalid(passwordInput_, true);
-        errorLabel_->setText(smartpark_ui::UserStore::registerErrorText(
-            smartpark_ui::UserStore::RegisterResult::InvalidPassword));
+        errorLabel_->setText(smartpark::UserStore::registerErrorText(
+            smartpark::UserStore::RegisterResult::InvalidPassword));
         errorLabel_->setVisible(true);
         return;
     }
@@ -201,11 +201,11 @@ void RegisterDialog::attemptRegister(){
     }
 
     const auto result = userStore_.registerUser(userName, password);
-    if (result != smartpark_ui::UserStore::RegisterResult::Success){
-        markInvalid(result == smartpark_ui::UserStore::RegisterResult::DuplicateUser
+    if (result != smartpark::UserStore::RegisterResult::Success){
+        markInvalid(result == smartpark::UserStore::RegisterResult::DuplicateUser
                         ? userNameInput_ : passwordInput_,
                     true);
-        errorLabel_->setText(smartpark_ui::UserStore::registerErrorText(result));
+        errorLabel_->setText(smartpark::UserStore::registerErrorText(result));
         errorLabel_->setVisible(true);
         return;
     }

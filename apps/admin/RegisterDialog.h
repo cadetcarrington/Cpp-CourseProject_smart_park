@@ -3,7 +3,7 @@
 #include <QDialog>
 #include <QString>
 
-#include "UserStore.h"
+#include "core/service/UserStore.h"
 
 class QLabel;
 class QLineEdit;
@@ -15,7 +15,7 @@ class RegisterDialog : public QDialog{
     Q_OBJECT
 
 public:
-    explicit RegisterDialog(smartpark_ui::UserStore &userStore,
+    explicit RegisterDialog(smartpark::UserStore &userStore,
                             QWidget *parent = nullptr);
 
     QString registeredUserName() const;
@@ -30,7 +30,7 @@ private slots:
 private:
     void markInvalid(QLineEdit *input, bool invalid) const;
 
-    smartpark_ui::UserStore &userStore_;
+    smartpark::UserStore &userStore_;
     QLineEdit *userNameInput_{nullptr};
     QLineEdit *passwordInput_{nullptr};
     QLineEdit *confirmInput_{nullptr};

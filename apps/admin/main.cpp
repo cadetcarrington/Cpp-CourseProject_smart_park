@@ -8,7 +8,7 @@
 
 #include "LoginDialog.h"
 #include "MainWindow.h"
-#include "UserStore.h"
+#include "core/service/UserStore.h"
 #include "core/persistence/Persistence.h"
 
 int main(int argc, char *argv[]){
@@ -53,7 +53,7 @@ int main(int argc, char *argv[]){
     // Closing a window normally exits the application. A requested logout closes the current
     // session window and re-enters this loop, so users return to LoginDialog instead of quitting.
     // 登录/注册账号与停车数据同库存放（users 表）；空库会自动播种演示账号。
-    smartpark_ui::UserStore userStore(databasePath);
+    smartpark::UserStore userStore(databasePath);
     if (!userStore.lastError().isEmpty()){
         QMessageBox::critical(
             nullptr, QStringLiteral("SmartPark"),
