@@ -26,7 +26,9 @@ if(MSVC)
 endif()
 
 add_subdirectory(src/core)
+add_subdirectory(src/network)
 add_subdirectory(apps/cli)
+add_subdirectory(apps/server)
 
 if(SMARTPARK_BUILD_ADMIN)
     find_package(Qt6 6.2 REQUIRED COMPONENTS Widgets)
@@ -37,6 +39,5 @@ if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
 
-# 以下目标在对应模块开始实现时再启用。
-# add_subdirectory(apps/server)
+# gate 终端在 P2 阶段实现。
 # add_subdirectory(apps/gate)

@@ -1,6 +1,6 @@
 #include "MainWindow.h"
 #include "LoginDialog.h"
-#include "UserStore.h"
+#include "core/service/UserStore.h"
 
 #include <QtTest/qtest.h>
 #include <QComboBox>
@@ -146,69 +146,69 @@ void AdminMainWindowTests::seedsDemoAccountAndVerifiesLogin(){
     QTemporaryDir databaseDir;
     QVERIFY(databaseDir.isValid());
     {
-        smartpark_ui::UserStore store(databaseDir.filePath("users.db"));
+        smartpark::UserStore store(databaseDir.filePath("users.db"));
         QVERIFY(store.lastError().isEmpty());
         // 空库自动播种演示账号，登录界面的提示与实际凭据保持一致。
         QCOMPARE(store.verifyLogin(QStringLiteral("admin"), QStringLiteral("smartpark")),
-                 smartpark_ui::UserStore::LoginResult::Success);
+                 smartpark::UserStore::LoginResult::Success);
         QCOMPARE(store.verifyLogin(QStringLiteral("admin"), QStringLiteral("wrong")),
-                 smartpark_ui::UserStore::LoginResult::WrongPassword);
+                 smartpark::UserStore::LoginResult::WrongPassword);
         QCOMPARE(store.verifyLogin(QStringLiteral("ghost"), QStringLiteral("smartpark")),
-                 smartpark_ui::UserStore::LoginResult::UnknownUser);
+                 smartpark::UserStore::LoginResult::UnknownUser);
         QCOMPARE(store.verifyLogin(QString(), QStringLiteral("x")),
-                 smartpark_ui::UserStore::LoginResult::EmptyFields);
+                 smartpark::UserStore::LoginResult::EmptyFields);
         QCOMPARE(store.verifyLogin(QStringLiteral("admin"), QString()),
-                 smartpark_ui::UserStore::LoginResult::EmptyFields);
+                 smartpark::UserStore::LoginResult::EmptyFields);
     }
     {
         // 重开连接后凭据仍然有效（持久化）。
-        smartpark_ui::UserStore store(databaseDir.filePath("users.db"));
+        smartpark::UserStore store(databaseDir.filePath("users.db"));
         QVERIFY(store.lastError().isEmpty());
         QCOMPARE(store.verifyLogin(QStringLiteral("admin"), QStringLiteral("smartpark")),
-                 smartpark_ui::UserStore::LoginResult::Success);
+                 smartpark::UserStore::LoginResult::Success);
     }
 }
 
 void AdminMainWindowTests::registersUsersWithValidation(){
     QTemporaryDir databaseDir;
     QVERIFY(databaseDir.isValid());
-    smartpark_ui::UserStore store(databaseDir.filePath("users.db"));
+    smartpark::UserStore store(databaseDir.filePath("users.db"));
     QVERIFY(store.lastError().isEmpty());
 
     QCOMPARE(store.registerUser(QStringLiteral("op01"), QStringLiteral("secret123")),
-             smartpark_ui::UserStore::RegisterResult::Success);
+             smartpark::UserStore::RegisterResult::Success);
     QCOMPARE(store.verifyLogin(QStringLiteral("op01"), QStringLiteral("secret123")),
-             smartpark_ui::UserStore::LoginResult::Success);
+             smartpark::UserStore::LoginResult::Success);
     QCOMPARE(store.verifyLogin(QStringLiteral("op01"), QStringLiteral("secret124")),
-             smartpark_ui::UserStore::LoginResult::WrongPassword);
+             smartpark::UserStore::LoginResult::WrongPassword);
 
     // 重复账号、非法输入被拒绝且不影响已有数据。
     QCOMPARE(store.registerUser(QStringLiteral("op01"), QStringLiteral("secret123")),
-             smartpark_ui::UserStore::RegisterResult::DuplicateUser);
+             smartpark::UserStore::RegisterResult::DuplicateUser);
     QCOMPARE(store.registerUser(QStringLiteral("a"), QStringLiteral("secret123")),
-             smartpark_ui::UserStore::RegisterResult::InvalidUserName);
+             smartpark::UserStore::RegisterResult::InvalidUserName);
     QCOMPARE(store.registerUser(QStringLiteral("has space"), QStringLiteral("secret123")),
-             smartpark_ui::UserStore::RegisterResult::InvalidUserName);
+             smartpark::UserStore::RegisterResult::InvalidUserName);
     QCOMPARE(store.registerUser(QStringLiteral("op02"), QStringLiteral("12345")),
-             smartpark_ui::UserStore::RegisterResult::InvalidPassword);
+             smartpark::UserStore::RegisterResult::InvalidPassword);
     QCOMPARE(store.registerUser(QString(), QStringLiteral("secret123")),
-             smartpark_ui::UserStore::RegisterResult::EmptyFields);
+             smartpark::UserStore::RegisterResult::EmptyFields);
     QCOMPARE(store.verifyLogin(QStringLiteral("op02"), QStringLiteral("12345")),
-             smartpark_ui::UserStore::LoginResult::UnknownUser);
+             smartpark::UserStore::LoginResult::UnknownUser);
 
     // 注册后的账号与种子账号互不影响；盐化摘要让同密码产生不同存储。
     QCOMPARE(store.registerUser(QStringLiteral("op03"), QStringLiteral("smartpark")),
-             smartpark_ui::UserStore::RegisterResult::Success);
+             smartpark::UserStore::RegisterResult::Success);
     QCOMPARE(store.verifyLogin(QStringLiteral("op03"), QStringLiteral("smartpark")),
-             smartpark_ui::UserStore::LoginResult::Success);
-    QVERIFY(smartpark_ui::UserStore::isValidUserName(QStringLiteral("管理员01")));
-    QVERIFY(!smartpark_ui::UserStore::isValidUserName(QStringLiteral(" bad")));
+             smartpark::UserStore::LoginResult::Success);
+    QVERIFY(smartpark::UserStore::isValidUserName(QStringLiteral("管理员01")));
+    QVERIFY(!smartpark::UserStore::isValidUserName(QStringLiteral(" bad")));
 }
 
 void AdminMainWindowTests::loginDialogValidatesAndAuthenticates(){
     QTemporaryDir databaseDir;
     QVERIFY(databaseDir.isValid());
-    smartpark_ui::UserStore store(databaseDir.filePath("users.db"));
+    smartpark::UserStore store(databaseDir.filePath("users.db"));
     QVERIFY(store.lastError().isEmpty());
     LoginDialog dialog(store);
     auto *userNameInput = dialog.findChild<QLineEdit *>("loginUserNameInput");

@@ -4,7 +4,7 @@
 #include <QString>
 #include <QTimer>
 
-#include "UserStore.h"
+#include "core/service/UserStore.h"
 
 class QCheckBox;
 class QLabel;
@@ -19,7 +19,7 @@ class LoginDialog : public QDialog{
     Q_OBJECT
 
 public:
-    explicit LoginDialog(smartpark_ui::UserStore &userStore,
+    explicit LoginDialog(smartpark::UserStore &userStore,
                          QWidget *parent = nullptr);
 
     QString userName() const;
@@ -38,7 +38,7 @@ private:
     void markInvalid(QLineEdit *input, bool invalid) const;
     void setLockdown(bool locked);
 
-    smartpark_ui::UserStore &userStore_;
+    smartpark::UserStore &userStore_;
     QLineEdit *userNameInput_{nullptr};
     QLineEdit *passwordInput_{nullptr};
     QCheckBox *rememberUserCheck_{nullptr};

@@ -15,6 +15,15 @@ SmartPark 0.7 远程时间段预约核心（`Reservation`）已完成并全部�
 - GitHub 远程名是 `github`，不是 `origin`；`origin` 指向 s1 的 `~/Cpp-CourseProject_smart_park`
 - 用户没明确说就不要 commit / push；push 前记得 s1 上的 `smartpark-my-layout.db` 不能提交
 
+## 本轮做了什么（2026-09-27 第十轮：P1 TCP 服务端）
+
+- `docs/tcp-protocol.md`：协议 v1 全文（分帧/封包/会话心跳/动作表/事件表）。
+- `src/network/`（smartpark_network 静态库，Qt6::Network）：`Protocol`（encodeFrame/tryDecodeFrame，4 字节大端前缀 + 1MiB 上限）、`SmartParkTcpServer`（会话 QHash<QTcpSocket*,Session>、token 校验、10 action、6 事件广播、15s 心跳扫描踢除、审计埋点）、`TcpClient`（同步 request + 事件收集 + setToken）。
+- `apps/server/smartpark_server`：`--port/--db/--layout` 长驻；`--selftest` 15 项断言（临时目录可重复）；CTest `smartpark_server_selftest`。
+- `UserStore` 迁入 `src/core/service/`（namespace smartpark）——GUI/服务端共用；admin 与 tests 的 CMake/引用已同步。
+- 踩坑记录：前向声明误放 namespace 外导致同名全局类型（"cannot initialize member with rvalue of same type"）；checkin 到场窗口校验会拒绝立即到场（协议自测改为断言拒绝行为）；selftest 必须用 QTemporaryDir 否则重跑撞库。
+- 下一步（P2）：Gate Terminal（模拟道闸 + 断线补报）与用户端接 TcpClient；GUI 可选"启动服务端"面板。
+
 ## 本轮做了什么（2026-09-26 第九轮：水位填充分区均衡）
 
 用户实测 4 辆车全堆门口区（二次渐进曲线低占用时代价≈0）。`SpotAllocator::propose()` 选位逻辑改为水位填充：跨分区"放置后负载占比"更低者无条件优先（`zoneBalance = WeightedCost && zonePressure > 0` 才启用；Nearest/权重为 0 保持纯距离），同档内走原加权分。车库 38 辆实测 13 分区负载 25%~62% 均衡分布；testZonePressureBalancing（水位档语义）/SpreadsLoad/ congestion 等回归全过。zonePressureCost 仍在明细中展示但不主导跨区决策。

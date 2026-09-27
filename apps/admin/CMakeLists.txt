@@ -6,8 +6,6 @@ set(ADMIN_SOURCES
     LoginDialog.cpp
     RegisterDialog.h
     RegisterDialog.cpp
-    UserStore.h
-    UserStore.cpp
     Theme.h
     NativeEffects.h
     MacSystemBridge.h

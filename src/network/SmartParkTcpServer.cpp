@@ -1,0 +1,468 @@
+#include "network/SmartParkTcpServer.h"
+#include "core/service/AnalyticsEngine.h"
+#include "core/service/AuditLogService.h"
+#include "core/service/ParkingService.h"
+#include "core/service/ReservationService.h"
+#include "core/service/UserStore.h"
+#include "network/Protocol.h"
+
+#include <QDateTime>
+#include <QJsonArray>
+#include <QTimerEvent>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QUuid>
+
+namespace smartpark{
+namespace{
+using Clock = ParkingRecord::Clock;
+using TimePoint = ParkingRecord::TimePoint;
+
+std::optional<VehicleType> vehicleTypeFromString(const QString &text){
+    if (text == QStringLiteral("car")) return VehicleType::Car;
+    if (text == QStringLiteral("motorcycle")) return VehicleType::Motorcycle;
+    if (text == QStringLiteral("truck")) return VehicleType::Truck;
+    if (text == QStringLiteral("electric")) return VehicleType::Electric;
+    return std::nullopt;
+}
+
+QString vehicleTypeToString(VehicleType type){
+    switch (type){
+    case VehicleType::Car: return QStringLiteral("car");
+    case VehicleType::Motorcycle: return QStringLiteral("motorcycle");
+    case VehicleType::Truck: return QStringLiteral("truck");
+    case VehicleType::Electric: return QStringLiteral("electric");
+    }
+    return QStringLiteral("car");
+}
+
+TimePoint msToTime(qint64 ms){
+    return TimePoint{} + std::chrono::milliseconds(ms);
+}
+
+QJsonObject allocationToPayload(const AllocationResult &result){
+    QJsonObject payload;
+    payload.insert(QStringLiteral("plateNumber"),
+                   QString::fromStdString(result.plateNumber));
+    payload.insert(QStringLiteral("spotId"), QString::fromStdString(result.spotId));
+    payload.insert(QStringLiteral("entryDistance"), result.entryRoute.distance);
+    payload.insert(QStringLiteral("exitDistance"), result.exitRoute.distance);
+    payload.insert(QStringLiteral("entryTurns"), result.entryRoute.turnCount);
+    payload.insert(QStringLiteral("exitTurns"), result.exitRoute.turnCount);
+    payload.insert(QStringLiteral("score"), result.score);
+    return payload;
+}
+} // namespace
+
+SmartParkTcpServer::SmartParkTcpServer(ParkingService &service,
+                                       AuditLogService *audit, UserStore *users,
+                                       Options options, QObject *parent)
+    : QObject(parent)
+    , service_(&service)
+    , audit_(audit)
+    , users_(users)
+    , options_(options){
+    server_ = new QTcpServer(this);
+    connect(server_, &QTcpServer::newConnection, this,
+            &SmartParkTcpServer::onNewConnection);
+    idleTimerId_ = startTimer(15000);
+}
+
+bool SmartParkTcpServer::listen(){
+    if (!server_->listen(QHostAddress::Any, options_.port)){
+        lastError_ = server_->errorString();
+        return false;
+    }
+    return true;
+}
+
+quint16 SmartParkTcpServer::port() const{
+    return server_->serverPort();
+}
+
+const QString &SmartParkTcpServer::lastError() const noexcept{
+    return lastError_;
+}
+
+void SmartParkTcpServer::timerEvent(QTimerEvent *event){
+    if (event->timerId() == idleTimerId_){
+        kickIdleSessions();
+    }
+    QObject::timerEvent(event);
+}
+
+void SmartParkTcpServer::onNewConnection(){
+    while (QTcpSocket *socket = server_->nextPendingConnection()){
+        Session session;
+        session.socket = socket;
+        session.lastSeenMs = QDateTime::currentMSecsSinceEpoch();
+        sessions_.insert(socket, session);
+        connect(socket, &QTcpSocket::disconnected, this, [this, socket]{
+            const auto it = sessions_.find(socket);
+            if (it != sessions_.end()){
+                onDisconnected(it.value());
+                sessions_.erase(it);
+            }
+            socket->deleteLater();
+        });
+        connect(socket, &QTcpSocket::readyRead, this, [this, socket]{
+            const auto it = sessions_.find(socket);
+            if (it != sessions_.end()){
+                onReadyRead(it.value());
+            }
+        });
+    }
+}
+
+void SmartParkTcpServer::onReadyRead(Session &session){
+    session.lastSeenMs = QDateTime::currentMSecsSinceEpoch();
+    session.buffer.append(session.socket->readAll());
+    QJsonObject message;
+    while (true){
+        const auto status = protocol::tryDecodeFrame(session.buffer, &message);
+        if (status == protocol::FrameStatus::NeedMore){
+            return;
+        }
+        if (status == protocol::FrameStatus::Invalid){
+            audit_->record("tcp", "protocol_invalid_frame",
+                           session.user.toStdString());
+            session.socket->disconnectFromHost();
+            return;
+        }
+        handleMessage(session, message);
+    }
+}
+
+void SmartParkTcpServer::onDisconnected(Session &session){
+    if (session.authenticated && audit_ != nullptr){
+        audit_->record(session.user.toStdString(), "tcp_disconnect");
+    }
+}
+
+void SmartParkTcpServer::handleMessage(Session &session,
+                                       const QJsonObject &message){
+    const QString type = message.value(QStringLiteral("type")).toString();
+    if (type != QStringLiteral("request")){
+        return;  // 事件/未知类型不处理
+    }
+    const QString id = message.value(QStringLiteral("id")).toString();
+    const QString action = message.value(QStringLiteral("action")).toString();
+    const QString token = message.value(QStringLiteral("token")).toString();
+    const QJsonObject payload =
+        message.value(QStringLiteral("payload")).toObject();
+
+    if (action == QStringLiteral("login")){
+        bool ok = false;
+        QString error;
+        const QJsonObject result = actionLogin(session, payload, &ok, &error);
+        respond(session, id, ok, result, error);
+        return;
+    }
+    // 会话校验：token 匹配且已登录。
+    if (!session.authenticated || token != session.token){
+        respond(session, id, false, {}, QStringLiteral("会话未登录或 token 无效"));
+        return;
+    }
+    session.lastSeenMs = QDateTime::currentMSecsSinceEpoch();
+    dispatch(session, id, action, payload);
+}
+
+void SmartParkTcpServer::dispatch(Session &session, const QString &id,
+                                  const QString &action,
+                                  const QJsonObject &payload){
+    bool ok = false;
+    QString error;
+    QJsonObject result;
+    if (action == QStringLiteral("heartbeat")){
+        result.insert(QStringLiteral("ts"), QDateTime::currentMSecsSinceEpoch());
+        ok = true;
+    } else if (action == QStringLiteral("parking.status")){
+        result = actionStatus(payload, &ok, &error);
+    } else if (action == QStringLiteral("spot.list")){
+        result = actionSpotList(payload, &ok, &error);
+    } else if (action == QStringLiteral("parking.enter")){
+        result = actionEnter(payload, &ok, &error);
+    } else if (action == QStringLiteral("parking.leave")){
+        result = actionLeave(payload, &ok, &error);
+    } else if (action == QStringLiteral("reservation.create")){
+        result = actionReservationCreate(payload, &ok, &error);
+    } else if (action == QStringLiteral("reservation.cancel")){
+        result = actionReservationCancel(payload, &ok, &error);
+    } else if (action == QStringLiteral("reservation.checkin")){
+        result = actionReservationCheckIn(payload, &ok, &error);
+    } else if (action == QStringLiteral("analytics.report")){
+        result = actionAnalyticsReport(payload, &ok, &error);
+    } else{
+        error = QStringLiteral("未知 action: %1").arg(action);
+    }
+    respond(session, id, ok, result, error);
+}
+
+void SmartParkTcpServer::send(Session &session, const QJsonObject &message){
+    session.socket->write(protocol::encodeFrame(message));
+}
+
+void SmartParkTcpServer::respond(Session &session, const QString &id, bool ok,
+                                 const QJsonObject &payload, const QString &error){
+    send(session, protocol::makeResponse(id, ok, payload, error));
+}
+
+void SmartParkTcpServer::broadcastEvent(const QString &event,
+                                        const QJsonObject &payload){
+    const QByteArray frame = protocol::encodeFrame(
+        protocol::makeEvent(event, payload));
+    for (auto it = sessions_.begin(); it != sessions_.end(); ++it){
+        if (it.value().authenticated){
+            it.key()->write(frame);
+        }
+    }
+}
+
+void SmartParkTcpServer::kickIdleSessions(){
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QList<QTcpSocket *> stale;
+    for (auto it = sessions_.begin(); it != sessions_.end(); ++it){
+        if (now - it.value().lastSeenMs > options_.heartbeatTimeoutMs){
+            stale.append(it.key());
+        }
+    }
+    for (QTcpSocket *socket : stale){
+        if (audit_ != nullptr){
+            audit_->record("tcp", "heartbeat_timeout");
+        }
+        socket->disconnectFromHost();
+    }
+}
+
+// ---- 动作实现 ----
+
+QJsonObject SmartParkTcpServer::actionLogin(Session &session,
+                                            const QJsonObject &payload,
+                                            bool *ok, QString *error){
+    const QString user = payload.value(QStringLiteral("user")).toString();
+    const QString pass = payload.value(QStringLiteral("pass")).toString();
+    const auto loginResult = users_->verifyLogin(user, pass);
+    if (loginResult != UserStore::LoginResult::Success){
+        ++session.loginFails;
+        if (audit_ != nullptr){
+            audit_->record(user.toStdString(), "tcp_login_failed");
+        }
+        if (session.loginFails >= options_.maxLoginFails){
+            session.socket->disconnectFromHost();
+        }
+        *ok = false;
+        *error = UserStore::loginErrorText(loginResult);
+        return {};
+    }
+    session.authenticated = true;
+    session.user = user;
+    session.token = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    if (audit_ != nullptr){
+        audit_->record(user.toStdString(), "tcp_login_success");
+    }
+    QJsonObject result;
+    result.insert(QStringLiteral("token"), session.token);
+    result.insert(QStringLiteral("user"), user);
+    *ok = true;
+    return result;
+}
+
+QJsonObject SmartParkTcpServer::actionStatus(const QJsonObject &, bool *ok,
+                                             QString *error){
+    QJsonObject result;
+    result.insert(QStringLiteral("capacity"), static_cast<int>(service_->spots().size()));
+    result.insert(QStringLiteral("occupied"), service_->occupiedSpots());
+    result.insert(QStringLiteral("available"), service_->remainingSpots());
+    result.insert(QStringLiteral("reserved"), service_->reservedSpots());
+    QJsonArray zones;
+    std::map<std::string, std::pair<int, int>> zoneStats;
+    for (const ParkingSpot &spot : service_->spots()){
+        auto &stat = zoneStats[spot.zone()];
+        stat.first += 1;
+        if (spot.status() == SpotStatus::Occupied){
+            stat.second += 1;
+        }
+    }
+    for (const auto &entry : zoneStats){
+        QJsonObject zone;
+        zone.insert(QStringLiteral("zone"), QString::fromStdString(entry.first));
+        zone.insert(QStringLiteral("total"), entry.second.first);
+        zone.insert(QStringLiteral("occupied"), entry.second.second);
+        zones.append(zone);
+    }
+    result.insert(QStringLiteral("zones"), zones);
+    *ok = true;
+    return result;
+}
+
+QJsonObject SmartParkTcpServer::actionSpotList(const QJsonObject &, bool *ok,
+                                               QString *error){
+    QJsonArray spots;
+    for (const ParkingSpot &spot : service_->spots()){
+        QJsonObject item;
+        item.insert(QStringLiteral("spotId"), QString::fromStdString(spot.identifier()));
+        item.insert(QStringLiteral("zone"), QString::fromStdString(spot.zone()));
+        item.insert(QStringLiteral("type"), QLatin1String(toString(spot.type())));
+        item.insert(QStringLiteral("status"), static_cast<int>(spot.status()));
+        if (spot.parkedVehicle()){
+            item.insert(QStringLiteral("plate"),
+                        QString::fromStdString(spot.parkedVehicle()->plateNumber()));
+        }
+        spots.append(item);
+    }
+    QJsonObject result;
+    result.insert(QStringLiteral("spots"), spots);
+    *ok = true;
+    return result;
+}
+
+QJsonObject SmartParkTcpServer::actionEnter(const QJsonObject &payload,
+                                            bool *ok, QString *error){
+    const QString plate = payload.value(QStringLiteral("plate")).toString().trimmed();
+    const auto type = vehicleTypeFromString(
+        payload.value(QStringLiteral("vehicleType")).toString(QStringLiteral("car")));
+    if (plate.isEmpty() || !type.has_value()){
+        *error = QStringLiteral("车牌或车辆类型无效");
+        return {};
+    }
+    const auto result = service_->enter({plate.toStdString(), *type});
+    if (!result){
+        *error = QStringLiteral("入场失败：车辆已在场内或无可用车位");
+        return {};
+    }
+    QJsonObject response = allocationToPayload(*result);
+    QJsonObject eventPayload;
+    eventPayload.insert(QStringLiteral("plate"), plate);
+    eventPayload.insert(QStringLiteral("spotId"), QString::fromStdString(result->spotId));
+    eventPayload.insert(QStringLiteral("entryTime"),
+                        QDateTime::currentMSecsSinceEpoch());
+    broadcastEvent(QStringLiteral("parking.entered"), eventPayload);
+    *ok = true;
+    return response;
+}
+
+QJsonObject SmartParkTcpServer::actionLeave(const QJsonObject &payload,
+                                            bool *ok, QString *error){
+    const QString plate = payload.value(QStringLiteral("plate")).toString().trimmed();
+    const auto closed = service_->leave(plate.toStdString());
+    if (!closed){
+        *error = QStringLiteral("离场失败：车辆不在场内");
+        return {};
+    }
+    QJsonObject response;
+    response.insert(QStringLiteral("plate"), plate);
+    response.insert(QStringLiteral("spotId"), QString::fromStdString(closed->spotId()));
+    response.insert(QStringLiteral("fee"), closed->fee());
+    response.insert(QStringLiteral("durationMin"),
+                    static_cast<double>(std::chrono::duration_cast<
+                        std::chrono::minutes>(closed->duration()).count()));
+    QJsonObject eventPayload;
+    eventPayload.insert(QStringLiteral("plate"), plate);
+    eventPayload.insert(QStringLiteral("spotId"), QString::fromStdString(closed->spotId()));
+    eventPayload.insert(QStringLiteral("fee"), closed->fee());
+    broadcastEvent(QStringLiteral("parking.exited"), eventPayload);
+    *ok = true;
+    return response;
+}
+
+QJsonObject SmartParkTcpServer::actionReservationCreate(const QJsonObject &payload,
+                                                        bool *ok, QString *error){
+    const QString plate = payload.value(QStringLiteral("plate")).toString().trimmed();
+    const auto type = vehicleTypeFromString(
+        payload.value(QStringLiteral("vehicleType")).toString(QStringLiteral("car")));
+    const qint64 startMs = payload.value(QStringLiteral("startMs")).toInteger();
+    const int durationMin = payload.value(QStringLiteral("durationMin")).toInt(120);
+    const bool accessible = payload.value(QStringLiteral("accessible")).toBool();
+    if (plate.isEmpty() || !type.has_value()){
+        *error = QStringLiteral("车牌或车辆类型无效");
+        return {};
+    }
+    const auto start = msToTime(startMs);
+    const auto end = start + std::chrono::minutes(durationMin);
+    const auto created = service_->reservations().create(
+        {plate.toStdString(), *type}, start, end, Clock::now(), accessible);
+    if (!created){
+        *error = QString::fromStdString(service_->reservations().lastError());
+        return {};
+    }
+    QJsonObject response;
+    response.insert(QStringLiteral("reservationId"),
+                    QString::fromStdString(created->reservation.id()));
+    response.insert(QStringLiteral("spotId"),
+                    QString::fromStdString(created->reservation.spotId()));
+    response.insert(QStringLiteral("deposit"), created->reservation.deposit());
+    response.insert(QStringLiteral("accessible"), created->reservation.isAccessible());
+    response.insert(QStringLiteral("startMs"),
+                    static_cast<qint64>(std::chrono::duration_cast<
+                        std::chrono::milliseconds>(
+                            created->reservation.startTime().time_since_epoch())
+                            .count()));
+    QJsonObject eventPayload;
+    eventPayload.insert(QStringLiteral("plate"), plate);
+    eventPayload.insert(QStringLiteral("spotId"),
+                        QString::fromStdString(created->reservation.spotId()));
+    eventPayload.insert(QStringLiteral("accessible"), accessible);
+    broadcastEvent(QStringLiteral("reservation.created"), eventPayload);
+    *ok = true;
+    return response;
+}
+
+QJsonObject SmartParkTcpServer::actionReservationCancel(const QJsonObject &payload,
+                                                        bool *ok, QString *error){
+    const QString plate = payload.value(QStringLiteral("plate")).toString().trimmed();
+    if (!service_->reservations().cancel(plate.toStdString(), Clock::now())){
+        *error = QString::fromStdString(service_->reservations().lastError());
+        return {};
+    }
+    broadcastEvent(QStringLiteral("reservation.cancelled"),
+                   QJsonObject{{QStringLiteral("plate"), plate}});
+    *ok = true;
+    return {};
+}
+
+QJsonObject SmartParkTcpServer::actionReservationCheckIn(const QJsonObject &payload,
+                                                         bool *ok, QString *error){
+    const QString plate = payload.value(QStringLiteral("plate")).toString().trimmed();
+    const auto arrived = service_->reservations().checkIn(plate.toStdString(),
+                                                          Clock::now());
+    if (!arrived){
+        *error = QString::fromStdString(service_->reservations().lastError());
+        return {};
+    }
+    QJsonObject response;
+    response.insert(QStringLiteral("spotId"), QString::fromStdString(arrived->spotId));
+    broadcastEvent(QStringLiteral("reservation.checkin"),
+                   QJsonObject{{QStringLiteral("plate"), plate},
+                               {QStringLiteral("spotId"),
+                                QString::fromStdString(arrived->spotId)}});
+    *ok = true;
+    return response;
+}
+
+QJsonObject SmartParkTcpServer::actionAnalyticsReport(const QJsonObject &,
+                                                      bool *ok, QString *error){
+    AnalyticsEngine engine(*service_);
+    const auto report = engine.analyze();
+    QJsonObject result;
+    result.insert(QStringLiteral("model"), QString::fromStdString(report.model));
+    result.insert(QStringLiteral("summary"), QString::fromStdString(report.summary));
+    QJsonArray findings;
+    for (const AnalysisFinding &finding : report.findings){
+        QJsonObject item;
+        item.insert(QStringLiteral("category"),
+                    QString::fromLatin1(AnalysisReport::categoryText(finding.category)));
+        item.insert(QStringLiteral("title"), QString::fromStdString(finding.title));
+        item.insert(QStringLiteral("detail"), QString::fromStdString(finding.detail));
+        findings.append(item);
+    }
+    result.insert(QStringLiteral("findings"), findings);
+    QJsonArray recommendations;
+    for (const std::string &recommendation : report.recommendations){
+        recommendations.append(QString::fromStdString(recommendation));
+    }
+    result.insert(QStringLiteral("recommendations"), recommendations);
+    *ok = true;
+    return result;
+}
+
+} // namespace smartpark

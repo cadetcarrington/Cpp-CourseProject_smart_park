@@ -22,7 +22,7 @@ constexpr int kMaxFailedAttempts = 5;
 constexpr int kLockdownSeconds = 30;
 }
 
-LoginDialog::LoginDialog(smartpark_ui::UserStore &userStore, QWidget *parent)
+LoginDialog::LoginDialog(smartpark::UserStore &userStore, QWidget *parent)
     : QDialog(parent)
     , userStore_(userStore){
     setWindowTitle(tr("登录 SmartPark 管理后台"));
@@ -274,7 +274,7 @@ void LoginDialog::attemptLogin(){
     }
 
     const auto result = userStore_.verifyLogin(userName, password);
-    if (result == smartpark_ui::UserStore::LoginResult::Success){
+    if (result == smartpark::UserStore::LoginResult::Success){
         QSettings settings;
         settings.setValue(QStringLiteral("Session/rememberUser"),
                           rememberUserCheck_->isChecked());
@@ -288,7 +288,7 @@ void LoginDialog::attemptLogin(){
     }
 
     ++failedAttempts_;
-    if (result == smartpark_ui::UserStore::LoginResult::WrongPassword){
+    if (result == smartpark::UserStore::LoginResult::WrongPassword){
         markInvalid(passwordInput_, true);
         passwordInput_->selectAll();
         if (failedAttempts_ >= kMaxFailedAttempts){
@@ -297,15 +297,15 @@ void LoginDialog::attemptLogin(){
             setLockdown(true);
             return;
         }
-        setError(smartpark_ui::UserStore::loginErrorText(result)
+        setError(smartpark::UserStore::loginErrorText(result)
                      + tr("（还可尝试 %1 次）").arg(kMaxFailedAttempts - failedAttempts_),
                  passwordInput_);
         return;
     }
-    if (result == smartpark_ui::UserStore::LoginResult::UnknownUser){
+    if (result == smartpark::UserStore::LoginResult::UnknownUser){
         markInvalid(userNameInput_, true);
-        setError(smartpark_ui::UserStore::loginErrorText(result), userNameInput_);
+        setError(smartpark::UserStore::loginErrorText(result), userNameInput_);
         return;
     }
-    setError(smartpark_ui::UserStore::loginErrorText(result), nullptr);
+    setError(smartpark::UserStore::loginErrorText(result), nullptr);
 }
