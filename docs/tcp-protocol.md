@@ -45,7 +45,8 @@ DB4403/T 313 智慧停车业务数据与接口规范、北京 DB11/T 3001 ETC �
 - 终端应每 20 秒发送一次 `heartbeat`；服务端每 15 秒扫描一次，
   **超过 60 秒无任何帧**的连接被判定掉线并关闭。
 - 登录失败连续 5 次断开连接；登录成功/失败写入审计哈希链。
-- 断线补报（Gate 离线事件缓存重传）属于 Gate 侧职责，见 §6 路线。
+- 断线补报由 Gate 把 JSONL 队列分批（每次最多 500 条）提交至 `gate.replay`；
+  只在全部事件获确认后移除已确认前缀，超时重试依原车牌与事件时间戳去重。
 
 ## 4. 动作清单（v1）
 
@@ -57,12 +58,18 @@ DB4403/T 313 智慧停车业务数据与接口规范、北京 DB11/T 3001 ETC �
 | `spot.list` | `{}` | `{spots:[{spotId, zone, type, status, plate}]}` | 全量车位 |
 | `parking.enter` | `{plate, vehicleType}` | 同 CLI 分配结果（spotId、entryRoute、exitRoute、score） | 入场；广播 `parking.entered` |
 | `parking.leave` | `{plate}` | `{plate, spotId, durationMin, fee}` | 离场计费；广播 `parking.exited` |
-| `reservation.create` | `{plate, vehicleType, startMs, durationMin, accessible}` | 预约信息 + 预期路线 | 时段预约；广播 `reservation.created` |
+| `reservation.create` | `{plate, vehicleType, startMs, durationMin, accessible}` | `{reservationId, spotId, deposit, accessible, startMs, entranceIndex, exitIndex, entryDistance, exitDistance, entryTurns, exitTurns, entryPoints:[{x,y}]}` | 时段预约；广播 `reservation.created` |
 | `reservation.cancel` | `{plate}` | `{}` | 取消退定金；广播 `reservation.cancelled` |
-| `reservation.checkin` | `{plate}` | `{spotId}` | 到场核销；广播 `reservation.checkin` |
-| `analytics.report` | `{}` | `{summary, findings, recommendations, forecast}` | 本地分析结论 |
+| `reservation.checkin` | `{plate}` | `{spotId}` | 到场核销；广播 `reservation.checkin`；Gate 普通入场直接用 `parking.enter`，自动核销匹配预约 |
+| `gate.replay` | `{events:[{kind, plate, vehicleType?, ts}]}` | `{applied, duplicate, skipped, results:[{plate, kind, ok, duplicate?, error?, spotId?, fee?}]}` | Gate 账号补报；`kind=enter|exit`，`ts` 为事件发生时 epoch 毫秒 |
+| `analytics.report` | `{}` | `{model, summary, findings, recommendations}` | 本地分析结论 |
 
-`vehicleType` 取值：`car | motorcycle | truck | electric`。
+`vehicleType` 取值：`car | motorcycle | truck | electric`。补报按数组顺序处理，
+仅接受过去 30 天至未来 5 分钟内的时间戳，每批 1–500 条。`ok=true` 表示
+这一批请求被处理，不代表每条都成功；`skipped>0` 时 Gate 保留本地队列。
+重复事件以停车记录中的车牌、事件类型和毫秒时间戳匹配，成功去重计入
+`duplicate`。跨设备重复识别但时间戳不同、或历史记录被清理后的补报不在
+这一简化去重保证内；演示部署须保护本地队列文件。
 
 ## 5. 事件清单
 
@@ -73,7 +80,8 @@ DB4403/T 313 智慧停车业务数据与接口规范、北京 DB11/T 3001 ETC �
 | `reservation.created` | 时段预约创建 | `{plate, spotId, startMs, endMs, accessible}` |
 | `reservation.cancelled` | 取消 | `{plate}` |
 | `reservation.checkin` | 到场核销 | `{plate, spotId}` |
-| `reservation.noshow` | 爽约判定 | `{plate, spotId}` |
+| `reservation.noshow` | 爽约判定 | `{plate, spotId}`（预留，当前版本不广播） |
+| `gate.replayed` | 一批补报处理结束 | `{applied, duplicate, skipped}` |
 
 ## 6. 错误码约定
 

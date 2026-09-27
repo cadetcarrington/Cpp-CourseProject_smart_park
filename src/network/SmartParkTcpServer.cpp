@@ -192,6 +192,12 @@ void SmartParkTcpServer::dispatch(Session &session, const QString &id,
         result = actionReservationCheckIn(payload, &ok, &error);
     } else if (action == QStringLiteral("analytics.report")){
         result = actionAnalyticsReport(payload, &ok, &error);
+    } else if (action == QStringLiteral("gate.replay")){
+        if (session.user == QStringLiteral("gate")){
+            result = actionGateReplay(payload, &ok, &error);
+        } else{
+            error = QStringLiteral("仅 Gate 终端可补报");
+        }
     } else{
         error = QStringLiteral("未知 action: %1").arg(action);
     }
@@ -395,8 +401,20 @@ QJsonObject SmartParkTcpServer::actionReservationCreate(const QJsonObject &paylo
     response.insert(QStringLiteral("startMs"),
                     static_cast<qint64>(std::chrono::duration_cast<
                         std::chrono::milliseconds>(
-                            created->reservation.startTime().time_since_epoch())
-                            .count()));
+                            created->reservation.startTime().time_since_epoch()).count()));
+    const ExpectedRoute &route = created->reservation.expectedRoute();
+    response.insert(QStringLiteral("entranceIndex"), static_cast<int>(route.entranceIndex));
+    response.insert(QStringLiteral("exitIndex"), static_cast<int>(route.exitIndex));
+    response.insert(QStringLiteral("entryDistance"), route.entryRoute.distance);
+    response.insert(QStringLiteral("exitDistance"), route.exitRoute.distance);
+    response.insert(QStringLiteral("entryTurns"), route.entryRoute.turnCount);
+    response.insert(QStringLiteral("exitTurns"), route.exitRoute.turnCount);
+    QJsonArray entryPoints;
+    for (const Point &point : route.entryRoute.points){
+        entryPoints.append(QJsonObject{{QStringLiteral("x"), point.x},
+                                       {QStringLiteral("y"), point.y}});
+    }
+    response.insert(QStringLiteral("entryPoints"), entryPoints);
     QJsonObject eventPayload;
     eventPayload.insert(QStringLiteral("plate"), plate);
     eventPayload.insert(QStringLiteral("spotId"),
@@ -435,6 +453,93 @@ QJsonObject SmartParkTcpServer::actionReservationCheckIn(const QJsonObject &payl
                    QJsonObject{{QStringLiteral("plate"), plate},
                                {QStringLiteral("spotId"),
                                 QString::fromStdString(arrived->spotId)}});
+    *ok = true;
+    return response;
+}
+
+QJsonObject SmartParkTcpServer::actionGateReplay(const QJsonObject &payload,
+                                                 bool *ok, QString *error){
+    // Gate 断线补报：events = [{kind:"enter"|"exit", plate, vehicleType?, ts}]
+    // 按原始时间戳追溯应用（ParkingService 支持注入进出场时间），
+    // 返回逐条结果；任一失败不影响其余补报。
+    const QJsonArray events = payload.value(QStringLiteral("events")).toArray();
+    if (events.isEmpty() || events.size() > 500){
+        *error = QStringLiteral("补报事件数量必须在 1 到 500 之间");
+        return {};
+    }
+    QJsonArray results;
+    int applied = 0;
+    int duplicate = 0;
+    int skipped = 0;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (const QJsonValue &item : events){
+        const QJsonObject event = item.toObject();
+        const QString kind = event.value(QStringLiteral("kind")).toString();
+        const QString plate = event.value(QStringLiteral("plate")).toString().trimmed();
+        const qint64 ts = event.value(QStringLiteral("ts")).toInteger();
+        QJsonObject itemResult{{QStringLiteral("plate"), plate},
+                               {QStringLiteral("kind"), kind}};
+        QString failure;
+        if (plate.isEmpty() || !event.value(QStringLiteral("ts")).isDouble()
+            || ts <= 0 || ts > now + 5 * 60 * 1000LL
+            || ts < now - 30LL * 24 * 60 * 60 * 1000){
+            failure = QStringLiteral("车牌或时间戳无效（仅接收过去 30 天事件）");
+        } else if (kind != QStringLiteral("enter") && kind != QStringLiteral("exit")){
+            failure = QStringLiteral("未知事件类型");
+        } else{
+            const auto plateText = plate.toStdString();
+            const auto time = msToTime(ts);
+            const auto sameRecord = [&](const ParkingRecord &record){
+                if (record.plateNumber() != plateText) return false;
+                const auto stamp = kind == QStringLiteral("enter")
+                    ? std::optional<TimePoint>(record.entryTime()) : record.exitTime();
+                return stamp && std::chrono::duration_cast<std::chrono::milliseconds>(
+                    stamp->time_since_epoch()).count() == ts;
+            };
+            const auto &records = service_->records();
+            if (std::any_of(records.begin(), records.end(), sameRecord)){
+                itemResult.insert(QStringLiteral("duplicate"), true);
+                ++duplicate;
+            } else if (kind == QStringLiteral("enter")){
+                const auto type = vehicleTypeFromString(event.value(
+                    QStringLiteral("vehicleType")).toString(QStringLiteral("car")));
+                const auto result = type ? service_->enter({plateText, *type}, time)
+                                         : std::nullopt;
+                if (result){
+                    itemResult.insert(QStringLiteral("spotId"),
+                                      QString::fromStdString(result->spotId));
+                    ++applied;
+                } else{
+                    failure = QStringLiteral("追溯入场失败（可能已在场或无车位）");
+                }
+            } else{
+                const auto closed = service_->leave(plateText, time);
+                if (closed){
+                    itemResult.insert(QStringLiteral("spotId"),
+                                      QString::fromStdString(closed->spotId()));
+                    itemResult.insert(QStringLiteral("fee"), closed->fee());
+                    ++applied;
+                } else{
+                    failure = QStringLiteral("追溯离场失败（可能不在场或时间早于入场）");
+                }
+            }
+        }
+        itemResult.insert(QStringLiteral("ok"), failure.isEmpty());
+        if (!failure.isEmpty()){
+            itemResult.insert(QStringLiteral("error"), failure);
+            ++skipped;
+        }
+        results.append(itemResult);
+    }
+    QJsonObject response;
+    response.insert(QStringLiteral("applied"), applied);
+    response.insert(QStringLiteral("duplicate"), duplicate);
+    response.insert(QStringLiteral("skipped"), skipped);
+    response.insert(QStringLiteral("results"), results);
+    broadcastEvent(QStringLiteral("gate.replayed"),
+                   QJsonObject{{QStringLiteral("applied"), applied},
+                               {QStringLiteral("duplicate"), duplicate},
+                               {QStringLiteral("skipped"), skipped}});
     *ok = true;
     return response;
 }

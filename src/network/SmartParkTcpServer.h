@@ -73,6 +73,8 @@ private:
     QJsonObject actionReservationCancel(const QJsonObject &payload, bool *ok, QString *error);
     QJsonObject actionReservationCheckIn(const QJsonObject &payload, bool *ok, QString *error);
     QJsonObject actionAnalyticsReport(const QJsonObject &payload, bool *ok, QString *error);
+    // Gate 断线补报：按原始时间戳追溯应用离线期间的入场/离场事件。
+    QJsonObject actionGateReplay(const QJsonObject &payload, bool *ok, QString *error);
 
     ParkingService *service_;
     AuditLogService *audit_;

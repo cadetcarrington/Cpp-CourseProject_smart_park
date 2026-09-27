@@ -6,7 +6,7 @@ project(SmartPark
     LANGUAGES CXX
 )
 
-find_package(Qt6 6.2 REQUIRED COMPONENTS Sql)
+find_package(Qt6 6.2 REQUIRED COMPONENTS Sql Network)
 
 include(CTest)
 
@@ -29,6 +29,8 @@ add_subdirectory(src/core)
 add_subdirectory(src/network)
 add_subdirectory(apps/cli)
 add_subdirectory(apps/server)
+add_subdirectory(apps/gate)
+add_subdirectory(apps/user)
 
 if(SMARTPARK_BUILD_ADMIN)
     find_package(Qt6 6.2 REQUIRED COMPONENTS Widgets)
@@ -38,6 +40,3 @@ endif()
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
-
-# gate 终端在 P2 阶段实现。
-# add_subdirectory(apps/gate)

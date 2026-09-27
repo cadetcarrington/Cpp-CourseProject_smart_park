@@ -13,6 +13,11 @@ bool TcpClient::connectToHost(const QString &host, quint16 port, int timeoutMs){
     if (socket_ == nullptr){
         socket_ = new QTcpSocket(this);
         connect(socket_, &QTcpSocket::readyRead, this, &TcpClient::onReadyRead);
+        connect(socket_, &QTcpSocket::disconnected, this, [this]{
+            token_.clear();
+            buffer_.clear();
+            responses_.clear();
+        });
     }
     lastError_.clear();
     socket_->connectToHost(host, port);
