@@ -2,11 +2,19 @@
 
 给下一个 Codex / 终端会话用。先读本文件，再动代码。
 
+## 当前进度（2026-09-27，P2）
+
+- P1 服务端和 P2 Gate/用户端已实现；P2 尚在本地工作区，未 commit/push。当前 `build/qt` 构建和 CTest 6/6 通过，服务端自测新增真正的长驻子进程监听/登录/查询断言。跨进程实测 Gate 先离线缓存，3 秒后服务端启动，5 秒重连时自动补报，SQLite `parking_records` 有原时间戳入场记录；在线入口/余位查询/出口也已跑通。
+- 长驻服务端生命周期已修复：`ParkingService`/`SmartParkTcpServer` 覆盖 `app.exec()`；Gate `parking.enter` 自动核销预约，不再先调用 `reservation.checkin` 再重复入场。
+- `apps/gate/` 手输车牌模拟 LPR、入口/出口双模式、定时道闸状态机、故障/防砸、离线 JSONL 队列；重连每 5 秒、心跳每 20 秒。队列按 500 条批次读取，只有收到全批次确认才用 `QSaveFile` 移除已确认前缀。补报错误会保留待人工检查。
+- `apps/user/` 查询余位、时段预约/取消，打印预期路线摘要；`src/network/SmartParkTcpServer.cpp` 的 `gate.replay` 按历史记录的车牌+事件类型+毫秒时间戳去重，限制过去 30 天和未来 5 分钟事件；非 gate 账号拒绝。服务端自测覆盖首次补报、重复回放、非法时间戳、权限；Gate 自测覆盖未确认队列跨实例恢复和前缀确认。
+- P3 待做真实摄像头/LPR；Admin GUI 仍直接使用本地服务，尚未转为 TCP 客户端。TCP v1 明文，限内网/隧道。已有用户数据库不自动播种 gate/user；演示推荐独立新库。参见 README 的三个终端启动命令及 `docs/tcp-protocol.md`。
+
 ## 一句话进度
 
-SmartPark 0.7 远程时间段预约核心（`Reservation`）已完成并全部测试通过；管理端完成登录/注册重做（UserStore + RegisterDialog）与两轮界面迭代——最终主题为**浅色企业风**（白/浅灰底 + 低饱和蓝 #1E5AA8，按 FlashParking/Chase/JustPark 等真实产品调研重做），分区压力算法重写为等效步行米数（连续 30 辆分布 A13/B10/C7）。**改动都在 Mac 本地工作区，未 commit、未 push**（见「仓库状态」）。
+以下为 2026-09-25 的历史快照：当时 Reservation 核心与界面改动在工作区，后续 P1/P2 状态以本文件顶部“当前进度”和 README 为准。
 
-## 仓库状态（重要）
+## 历史仓库状态（2026-09-25；当前以 `git status` 为准）
 
 - 本地 Mac：`/Users/Zhuanz/Documents/ChatGPT/c++课设/smartpark`，`main` 领先 `origin/main` 两个提交：
   - `ac95d52` 2026-09-23 界面重构、智能决策与分区压力均衡（上一轮，已 commit 未 push）
@@ -152,7 +160,7 @@ QT_PREFIX=/Users/Zhuanz/Qt/6.8.3/macos scripts/run-admin.sh --db /tmp/smartpark-
 - 不要为「更像真实支付」接外部服务；支付失败路径只走测试钩子
 - 不要跳过 TCP 去做 LPR
 
-## 下一轮建议
+## 历史建议（2026-09-25；P1/P2 已完成）
 
 1. **先 commit/push 并在 s1 同步验证**（需用户确认；本地领先 2 个提交）。
 2. **P1 — TCP 协议与服务端**：先写 `docs/tcp-protocol.md`（登录/心跳/预约查询/创建/取消/入场/离场事件，参考 DB4403/T 313 与北京 DB11/T 3001 的请求应答+重传模式），再用 `QTcpServer` 实现 `apps/server`，把 `ReservationService` 的 API 暴露为协议方法。
@@ -175,6 +183,6 @@ QT_PREFIX=/Users/Zhuanz/Qt/6.8.3/macos scripts/run-admin.sh --db /tmp/smartpark-
 ⑪ 用户端 / 可视化统计               图表/洞察已有（09-23），用户端未开始
 ```
 
-## 给下一个 agent 的第一句
+## 历史交接语句（2026-09-25；不代表当前进度）
 
 「继续 SmartPark。先读 `smartpark/handoff.md`。Reservation 时段预约核心 + 界面换装（石墨+金、原生毛玻璃、登录/注册重做）都已完成、4/4 测试通过，但改动未 commit（本地领先 origin 两个提交）。先和用户确认界面效果（毛玻璃真机效果没人眼验收过）与提交/推送，然后按 README P1 做 `docs/tcp-protocol.md` + QTcpServer。不要改 CLI 默认 60 车位，不要动 model/。」

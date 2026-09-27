@@ -70,20 +70,26 @@ void UserStore::ensureSeedAccount(){
     if (!countQuery.next() || countQuery.value(0).toInt() > 0){
         return;
     }
-    QByteArray salt(16, 0);
-    QRandomGenerator::system()->fillRange(reinterpret_cast<quint32 *>(salt.data()), 4);
-    QSqlQuery insert(database_);
-    insert.prepare(QStringLiteral(
-        "INSERT INTO users(username, salt, password_hash, created_at_ms)"
-        " VALUES(:userName, :salt, :digest, :createdAt)"));
-    insert.bindValue(QStringLiteral(":userName"), QString::fromLatin1(kSeedUserName));
-    insert.bindValue(QStringLiteral(":salt"), QString::fromLatin1(salt.toBase64()));
-    insert.bindValue(QStringLiteral(":digest"),
-                     hashPassword(QString::fromLatin1(kSeedPassword), salt));
-    insert.bindValue(QStringLiteral(":createdAt"),
-                     QDateTime::currentMSecsSinceEpoch());
-    if (!insert.exec()){
-        lastError_ = insert.lastError().text();
+    // 播种三个内置终端账号：管理员 / Gate 出入口 / 用户端（口令同为 smartpark）。
+    const std::vector<std::pair<const char *, const char *>> seeds = {
+        {kSeedUserName, kSeedPassword}, {"gate", "smartpark"}, {"user", "smartpark"}};
+    for (const auto &seed : seeds){
+        QByteArray salt(16, 0);
+        QRandomGenerator::system()->fillRange(reinterpret_cast<quint32 *>(salt.data()), 4);
+        QSqlQuery insert(database_);
+        insert.prepare(QStringLiteral(
+            "INSERT INTO users(username, salt, password_hash, created_at_ms)"
+            " VALUES(:userName, :salt, :digest, :createdAt)"));
+        insert.bindValue(QStringLiteral(":userName"),
+                         QString::fromLatin1(seed.first));
+        insert.bindValue(QStringLiteral(":salt"), QString::fromLatin1(salt.toBase64()));
+        insert.bindValue(QStringLiteral(":digest"),
+                         hashPassword(QString::fromLatin1(seed.second), salt));
+        insert.bindValue(QStringLiteral(":createdAt"),
+                         QDateTime::currentMSecsSinceEpoch());
+        if (!insert.exec()){
+            lastError_ = insert.lastError().text();
+        }
     }
 }
 

@@ -45,9 +45,7 @@ SmartPark 是一个基于 C++ 和 Qt 的智能停车场管理系统课程项目�
 
 CLI 启动时打印默认计费规则，批量演示入场/离场并汇总累计停车费；同时演示预约流程（远程预约返回预期路线、到场确认、爽约没收定金）与时段预约流程（创建收定金、延迟锁位、到场转预付、离场抵扣、爽约没收），并汇总待结算与爽约没收定金。
 
-下一步优先实现 SmartPark 0.7 的 TCP 协议与服务端（先写 `docs/tcp-protocol.md`，再用 `QTcpServer` 实现登录、心跳、预约查询/创建/取消和入场/离场事件），随后接入用户端与 Gate 终端；之后把 `BillingRule` / `ReservationRule` 扩展为 GUI 可配置、可持久化。
-
-尚未接入 TCP 通信、真实 LPR、多线程、用户端或统计图表。调研来源与明确不做的方案见 `docs/research-sources.md`。
+SmartPark 0.7 已接入 TCP v1 服务端、终端用户端与 Gate 模拟终端。Gate 用手输车牌模拟识别，具备模拟道闸状态机和 JSONL 断线补报；真实摄像头与 LPR 尚未接入。下一阶段为 P3 真实识别基线和自训练模型评测，计费/预约规则配置化另列 P4。调研来源见 `docs/research-sources.md`。
 
 ## 计费规则
 
@@ -163,7 +161,7 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
 
 ## 当前进度
 
-截至 2026-09-26，项目处于 **SmartPark 0.7**：预约体系（`Booking` + `Reservation`）、数据分析层与管理端 GUI（登录注册/毛玻璃主题/原生能力）均已落地，TCP 服务端尚未开始：
+截至 2026-09-27，项目处于 **SmartPark 0.7**：预约体系、管理端 GUI、P1 TCP 服务端和 P2 Gate/用户终端均可运行；Gate 识别仍为手输模拟：
 
 - 已完成核心模型、60 车位自动分配、自定义多矩形布局（含南北向车位与机房障碍）、栅格 A* / Dijkstra 路线、拥堵边权、预留 TTL、CLI 与 Qt GUI。
 - SQLite 持久化已接入 CLI 与 Admin GUI，支持跨重启恢复车位状态、预约和停车记录。
@@ -179,7 +177,7 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
   - macOS 原生：菜单栏余位图标、通知中心、中文语音播报、PDF 报告导出、NSURLSession 远程分析传输（`MacSystemBridge`）。
   - 算法：分区均衡升级为负载水位填充（跨分区低负载无条件优先，同档内按距离/拥堵/类型），车库布局 38 辆实测 13 分区负载 25%~62% 均衡。
 
-尚未完成：TCP Server 与协议文档、Gate Terminal、用户端、真实 LPR；`ReservationRule`/计费规则配置化与真实支付在后续阶段接入。
+尚未完成：真实 LPR、Admin GUI 远程服务端接线、预约查询接口与账号角色体系、`ReservationRule`/计费规则配置化及真实支付。当前 TCP v1 使用内网明文传输，不能直接暴露公网。
 
 ## 后续发展路线
 
@@ -187,7 +185,7 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
 
 1. **P0 — 预约领域核心**：在第一版 `Booking` 基础上补齐完整语义——预约模型、未来 7 天时间校验、时间段冲突、定金模拟支付、取消/到场/爽约状态机、SQLite 事务与单元测试。
 2. **P1 — TCP 协议与服务端**：先写 `docs/tcp-protocol.md`，再用 `QTcpServer` 实现登录、心跳、远程预约查询/创建/取消和入场/离场事件。
-3. **P2 — User Client + Gate Terminal + Fake LPR**：用户端展示预约与预期路线；Gate 先以假识别打通预约核销和出入口，再补齐断线缓存和补报。
+3. **P2 — User Client + Gate Terminal + Fake LPR（已实现演示链路）**：用户端查询余位、创建/取消预约并显示预期路线摘要；Gate 手输车牌入离场、模拟道闸、离线 JSONL 缓存及重连补报。
 4. **P3 — 双路线真实 LPR**：先接入 HyperLPR3 作为可运行基线，再训练 `YOLO11m + PP-OCRv5` 中国车牌专用模型；使用 CCPD 与 SmartPark 场景数据做统一评测。
 5. **P4 — 规则配置化、真实支付与图表**：预约核心只使用模拟支付；真实支付、`BillingRule` / `ReservationRule` 配置化和统计图表在网络链路稳定后实现。
 
@@ -221,8 +219,9 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
 │   │   ├── NativeEffects.*              # macOS 原生毛玻璃（实验路径）
 │   │   └── MacSystemBridge.*            # macOS 原生桥接：菜单栏/通知/语音/PDF/HTTP
 │   ├── cli/         # 终端程序：自动演示、预约/时段预约/分析/应急/寻车/审计命令
-│   ├── server/      # SmartPark 服务端入口（预留，P1 TCP）
-│   └── gate/        # 出入口终端入口（预留）
+│   ├── server/      # TCP 服务端与进程内自测
+│   ├── gate/        # 入口/出口终端、道闸状态机和离线事件队列
+│   └── user/        # 余位、预约和取消命令行终端
 ├── docs/            # 调研来源与路线说明
 ├── data/            # 示例布局（garage-6f.txt 6 层车库 75 位图纸）
 ├── src/
@@ -236,7 +235,7 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
 │   │   │                 # ParkingInsightEngine
 │   │   └── util/         # TimeUtil 时间范围与安全转换
 │   ├── database/    # 数据库连接与仓储层（预留目录）
-│   ├── network/     # TCP 协议与通信实现（预留，P1）
+│   ├── network/     # TCP 帧协议、服务端会话与客户端通信
 │   └── lpr/         # 车牌识别统一接口及两种后端实现（预留）
 ├── scripts/         # 构建/运行脚本（build-admin、run-admin 等）
 ├── resources/       # 图标/样式/图片资源
@@ -260,10 +259,27 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
 7. ✅ 预约系统（第一版 `Booking`）：远程预约、近一周时间窗、预付定金、爽约扣定金与预期路线。
 8. ✅ 预约完整版核心（`Reservation`）：未来 7 天时间段预约、时间段冲突检查、定金模拟支付、延迟锁位与定金抵扣（GUI 面板与 TCP 接口随后续里程碑接入）。
 9. ✅ 服务端：TCP 协议 v1 + `QTcpServer` 服务端（登录/心跳/状态/入场/离场/预约/分析接口 + 事件广播）；Gate 与用户端接入在里程碑 10。
-10. ⬜ 用户端与出入口终端：用户端提交预约并查看路线；Gate 手动输入车牌并通过服务端核销预约。
+10. ✅ 用户端与出入口终端：用户端查询余位、预约/取消并显示路线摘要；Gate 手输车牌模拟 LPR、入离场、道闸状态机、断线队列和补报。
 11. ⬜ 车牌识别：实现 HyperLPR3 基线，并完成 YOLO11m + PP-OCRv5 中国车牌专用模型训练、评测与 C++ 部署。
 
 ## 最近工作记录
+
+2026-09-27 P2：Gate 与用户端演示链路：
+
+- `apps/gate/` 提供入口/出口双模式，手输车牌模拟 LPR；状态机包括抬杆、保持、落闸、防砸反转及故障复位。离线事件先写 JSONL，连接恢复后每批最多 500 条补报，全部确认才移除已确认前缀。
+- `apps/user/` 支持余位查询、创建/取消时段预约，显示预期入口、车位、距离和转向；两终端每 5 秒重连、每 20 秒心跳。已有数据库不会自动添加新播种账号，演示请用新数据库或自行注册账号。
+- `gate.replay` 仅允许 `gate` 账号，按原始时间入账，重复事件按停车记录车牌、种类、毫秒时间戳去重；无效/失败事件逐条反馈且保留本地队列。跨设备时间不同的重复扫描不保证去重，明文 TCP 限内网/隧道使用。
+- 修复长驻服务端对象在事件循环前析构导致无监听的问题；进程间实测离线缓存→服务端启动→Gate 自动补报→SQLite 停车记录恢复，另实测在线入口→用户端余位查询→出口结算。服务端自测另起长驻子进程验证 TCP 监听生命周期。`cmake --build build/qt --parallel 6`、`ctest --test-dir build/qt --output-on-failure` 均通过，6/6。
+
+演示使用三个终端（从仓库根目录启动，数据库和队列路径按需调整）：
+
+```sh
+./build/qt/apps/server/smartpark_server --port 9527 --db /tmp/smartpark-p2-demo.db
+./build/qt/apps/gate/smartpark_gate --mode entrance --port 9527 --queue /tmp/smartpark-entrance.jsonl
+./build/qt/apps/user/smartpark_user --port 9527
+```
+
+新数据库演示账号 `admin`、`gate`、`user` 的密码均为 `smartpark`。Gate 输入车牌直接入场（服务端自动核销匹配且处于到场窗口的预约），可输入 `status`、`fault on|off`、`reset`、`pass`、`quit`；用户端输入 `status`、`reserve <车牌> [偏移分钟 时长分钟]`、`cancel <车牌>`。出口另开一个 Gate 进程并设置 `--mode exit` 和独立队列文件。离线仅为模拟放行，重连补报可能因车位冲突被拒，失败事件继续保留供人工处理。
 
 2026-09-27 P1：TCP 协议与服务端落地（里程碑 9 完成）：
 

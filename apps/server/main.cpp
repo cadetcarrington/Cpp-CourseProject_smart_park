@@ -11,6 +11,8 @@
 #include <QDebug>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QProcess>
+#include <QRegularExpression>
 #include <QTimer>
 #include <QTemporaryDir>
 
@@ -100,8 +102,10 @@ int runSelftest(){
                     {QStringLiteral("vehicleType"), QStringLiteral("car")},
                     {QStringLiteral("startMs"), startMs},
                     {QStringLiteral("durationMin"), 120}});
-    check(reserved.has_value() && reserved->value(QStringLiteral("ok")).toBool(),
-          "reservation.create succeeds", reserved.value_or(QJsonObject()));
+    check(reserved.has_value() && reserved->value(QStringLiteral("ok")).toBool()
+              && reserved->value(QStringLiteral("payload")).toObject()
+                     .value(QStringLiteral("entryPoints")).isArray(),
+          "reservation.create returns expected route", reserved.value_or(QJsonObject()));
 
     // 5. 到场核销：预约 60 分钟后才开始，立即到场应被到场窗口校验拒绝
     //    （正常到场链路由核心测试以注入时间覆盖）。
@@ -167,11 +171,96 @@ int runSelftest(){
     check(rejected.has_value() && !rejected->value(QStringLiteral("ok")).toBool(),
           "unauthenticated request is rejected");
 
+    // 10. 离线历史事件按原始时间入账；丢失确认后的重放不得重复计费。
+    smartpark::TcpClient gate;
+    check(gate.connectToHost(QStringLiteral("127.0.0.1"), port),
+          "gate client connects");
+    const auto gateLogin = gate.request(QStringLiteral("login"),
+        QJsonObject{{QStringLiteral("user"), QStringLiteral("gate")},
+                    {QStringLiteral("pass"), QStringLiteral("smartpark")}});
+    check(gateLogin && gateLogin->value(QStringLiteral("ok")).toBool(),
+          "gate login succeeds");
+    gate.setToken(gateLogin
+        ? gateLogin->value(QStringLiteral("payload")).toObject()
+              .value(QStringLiteral("token")).toString() : QString());
+    const qint64 offlineEntry = QDateTime::currentMSecsSinceEpoch() - 3 * 60 * 60 * 1000LL;
+    const qint64 offlineExit = offlineEntry + 2 * 60 * 60 * 1000LL;
+    const QJsonArray history{
+        QJsonObject{{QStringLiteral("kind"), QStringLiteral("enter")},
+                    {QStringLiteral("plate"), QStringLiteral("晋G00009")},
+                    {QStringLiteral("vehicleType"), QStringLiteral("car")},
+                    {QStringLiteral("ts"), offlineEntry}},
+        QJsonObject{{QStringLiteral("kind"), QStringLiteral("exit")},
+                    {QStringLiteral("plate"), QStringLiteral("晋G00009")},
+                    {QStringLiteral("ts"), offlineExit}}};
+    const QJsonObject replayPayload{{QStringLiteral("events"), history}};
+    const auto replay = gate.request(QStringLiteral("gate.replay"), replayPayload);
+    const QJsonObject firstReplay = replay
+        ? replay->value(QStringLiteral("payload")).toObject() : QJsonObject{};
+    check(replay && replay->value(QStringLiteral("ok")).toBool()
+              && firstReplay.value(QStringLiteral("applied")).toInt() == 2
+              && firstReplay.value(QStringLiteral("skipped")).toInt() == 0,
+          "offline entry and exit applied", replay.value_or(QJsonObject()));
+    const auto repeated = gate.request(QStringLiteral("gate.replay"), replayPayload);
+    const QJsonObject secondReplay = repeated
+        ? repeated->value(QStringLiteral("payload")).toObject() : QJsonObject{};
+    check(repeated && secondReplay.value(QStringLiteral("duplicate")).toInt() == 2
+              && secondReplay.value(QStringLiteral("applied")).toInt() == 0,
+          "repeated replay is idempotent", repeated.value_or(QJsonObject()));
+    const auto invalid = gate.request(QStringLiteral("gate.replay"),
+        QJsonObject{{QStringLiteral("events"), QJsonArray{
+            QJsonObject{{QStringLiteral("kind"), QStringLiteral("enter")},
+                        {QStringLiteral("plate"), QStringLiteral("晋G00010")},
+                        {QStringLiteral("ts"), qint64(0)}}}}});
+    check(invalid && invalid->value(QStringLiteral("payload")).toObject()
+                     .value(QStringLiteral("skipped")).toInt() == 1
+              && !service.activeRecord("晋G00010"),
+          "invalid offline timestamp rejected", invalid.value_or(QJsonObject()));
+    const auto forbidden = client.request(QStringLiteral("gate.replay"), replayPayload);
+    check(forbidden && !forbidden->value(QStringLiteral("ok")).toBool(),
+          "non-gate account cannot replay", forbidden.value_or(QJsonObject()));
+
+    // 长驻入口必须在事件循环运行期间持续持有监听对象。
+    QProcess daemon;
+    daemon.start(QCoreApplication::applicationFilePath(),
+                 {QStringLiteral("--port"), QStringLiteral("0"),
+                  QStringLiteral("--db"), directory.filePath(QStringLiteral("daemon.db"))});
+    check(daemon.waitForStarted(5000), "daemon process starts");
+    const bool announced = daemon.waitForReadyRead(5000);
+    const QString banner = QString::fromUtf8(daemon.readAllStandardOutput());
+    const QRegularExpression portPattern(QStringLiteral("listening on port (\\d+)"));
+    const auto match = portPattern.match(banner);
+    check(announced && match.hasMatch(), "daemon announces listening port");
+    smartpark::TcpClient daemonClient;
+    if (match.hasMatch()){
+        check(daemonClient.connectToHost(QStringLiteral("127.0.0.1"),
+                                         static_cast<quint16>(match.captured(1).toUShort())),
+              "daemon accepts cross-process TCP connection");
+        const auto loginResponse = daemonClient.request(QStringLiteral("login"),
+            QJsonObject{{QStringLiteral("user"), QStringLiteral("admin")},
+                        {QStringLiteral("pass"), QStringLiteral("smartpark")}});
+        check(loginResponse && loginResponse->value(QStringLiteral("ok")).toBool(),
+              "daemon authenticates cross-process client");
+        daemonClient.setToken(loginResponse
+            ? loginResponse->value(QStringLiteral("payload")).toObject()
+                  .value(QStringLiteral("token")).toString() : QString());
+        const auto daemonStatus = daemonClient.request(QStringLiteral("parking.status"), {});
+        check(daemonStatus && daemonStatus->value(QStringLiteral("ok")).toBool(),
+              "daemon serves request during event loop");
+        daemonClient.disconnectFromHost();
+    }
+    daemon.terminate();
+    if (!daemon.waitForFinished(3000)){
+        daemon.kill();
+        daemon.waitForFinished(3000);
+    }
+
     // 审计链完整性
     const auto auditResult = audit.verifyChain();
     check(auditResult.ok, "audit hash chain stays consistent");
 
     client.disconnectFromHost();
+    gate.disconnectFromHost();
     monitor.disconnectFromHost();
     anonymous.disconnectFromHost();
 
@@ -180,26 +269,18 @@ int runSelftest(){
     return failures == 0 ? 0 : 1;
 }
 
-// 长驻模式：对象生存期需覆盖 main 里的 app.exec()，存放于文件级 unique_ptr，
-// 在 main 返回前显式释放（早于 QCoreApplication 析构，避免 QSqlDatabase 退出告警）。
-std::unique_ptr<smartpark::Persistence> g_persistence;
-std::unique_ptr<smartpark::AuditLogService> g_audit;
-std::unique_ptr<smartpark::UserStore> g_users;
-
-int runServer(quint16 port, const QString &databasePath){
-    g_persistence = std::make_unique<smartpark::Persistence>(databasePath);
-    g_audit = std::make_unique<smartpark::AuditLogService>(
-        g_persistence->databaseManager().database());
-    g_users = std::make_unique<smartpark::UserStore>(databasePath);
+int runServer(QCoreApplication &app, quint16 port, const QString &databasePath){
+    smartpark::Persistence persistence(databasePath);
+    smartpark::AuditLogService audit(persistence.databaseManager().database());
+    smartpark::UserStore users(databasePath);
     smartpark::ParkingService service(smartpark::ParkingLayout::defaultLayout(),
                                       smartpark::AllocationStrategy::WeightedCost,
-                                      &g_persistence->repository());
-    service.setAuditLog(g_audit.get());
+                                      &persistence.repository());
+    service.setAuditLog(&audit);
 
     smartpark::SmartParkTcpServer::Options options;
     options.port = port;
-    smartpark::SmartParkTcpServer server(service, g_audit.get(),
-                                         g_users.get(), options);
+    smartpark::SmartParkTcpServer server(service, &audit, &users, options);
     if (!server.listen()){
         std::cerr << "server listen failed: "
                   << server.lastError().toStdString() << '\n';
@@ -207,8 +288,8 @@ int runServer(quint16 port, const QString &databasePath){
     }
     std::cout << "SmartPark server listening on port " << server.port()
               << " | db: " << databasePath.toStdString()
-              << " | spots: " << service.spots().size() << '\n';
-    return 0;   // 进入事件循环由 exec() 完成
+              << " | spots: " << service.spots().size() << '\n' << std::flush;
+    return app.exec();
 }
 } // namespace
 
@@ -250,14 +331,5 @@ int main(int argc, char **argv){
         : smartpark::Persistence::defaultDatabasePath();
     quint16 port = static_cast<quint16>(parser.value(portOption).toUShort());
 
-    int startResult = runServer(port, databasePath);
-    if (startResult != 0){
-        return startResult;
-    }
-    const int exitCode = app.exec();
-    // 先于 QCoreApplication 析构释放数据库对象，避免退出告警。
-    g_users.reset();
-    g_audit.reset();
-    g_persistence.reset();
-    return exitCode;
+    return runServer(app, port, databasePath);
 }
