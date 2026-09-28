@@ -2,7 +2,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${BUILD_DIR:-$ROOT/build/qt}"
+# 构建目录：优先 build/qt（预设），其次直接 cmake -B build 的目录。
+if [[ -n "${BUILD_DIR:-}" ]]; then
+    :
+elif [[ -x "$ROOT/build/qt/apps/admin/smartpark_admin.app/Contents/MacOS/smartpark_admin" \
+    || -x "$ROOT/build/qt/apps/admin/smartpark_admin" ]]; then
+    BUILD_DIR="$ROOT/build/qt"
+elif [[ -x "$ROOT/build/apps/admin/smartpark_admin.app/Contents/MacOS/smartpark_admin" \
+    || -x "$ROOT/build/apps/admin/smartpark_admin" ]]; then
+    BUILD_DIR="$ROOT/build"
+else
+    BUILD_DIR="$ROOT/build/qt"
+fi
 
 # 车牌识别（选图审阅）默认环境：uv 建立在 ~/.smartpark/{lpr,ocr}。
 # 已显式导出 SMARTPARK_LPR_PY / SMARTPARK_OCR_PY 时以用户为准。
