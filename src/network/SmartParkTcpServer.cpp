@@ -1,4 +1,5 @@
 #include "network/SmartParkTcpServer.h"
+#include "core/model/ParkingLayout.h"
 #include "core/service/AnalyticsEngine.h"
 #include "core/service/AuditLogService.h"
 #include "core/service/ParkingService.h"
@@ -12,6 +13,9 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QUuid>
+
+#include <cmath>
+#include <map>
 
 namespace smartpark{
 namespace{
@@ -197,6 +201,12 @@ void SmartParkTcpServer::dispatch(Session &session, const QString &id,
             result = actionGateReplay(payload, &ok, &error);
         } else{
             error = QStringLiteral("仅 Gate 终端可补报");
+        }
+    } else if (action == QStringLiteral("admin.snapshot")){
+        if (session.user == QStringLiteral("admin")){
+            result = actionAdminSnapshot(payload, &ok, &error);
+        } else{
+            error = QStringLiteral("仅管理员可获取快照");
         }
     } else{
         error = QStringLiteral("未知 action: %1").arg(action);
@@ -566,6 +576,112 @@ QJsonObject SmartParkTcpServer::actionAnalyticsReport(const QJsonObject &,
         recommendations.append(QString::fromStdString(recommendation));
     }
     result.insert(QStringLiteral("recommendations"), recommendations);
+    *ok = true;
+    return result;
+}
+
+QJsonObject SmartParkTcpServer::actionAdminSnapshot(const QJsonObject &,
+                                                    bool *ok, QString *){
+    // 管理端远程模式一次性快照：布局几何 + 车位明细 + 概览计数 + 分区统计。
+    // 管理端据此绘制车位图与表格，无需本地第二个 ParkingService。
+    const ParkingLayout &layout = service_->layout();
+
+    QJsonObject layoutJson;
+    layoutJson.insert(QStringLiteral("siteWidth"), layout.siteWidth());
+    layoutJson.insert(QStringLiteral("siteHeight"), layout.siteHeight());
+    // 与 Admin 本地 isGarageFloorplan 一致：58.0 x 42.4 视为 6 层车库平面图。
+    layoutJson.insert(QStringLiteral("plan"),
+                      std::abs(layout.siteWidth() - 58.0) < 0.25
+                          && std::abs(layout.siteHeight() - 42.4) < 0.25
+                          ? QStringLiteral("garage") : QStringLiteral("grid"));
+    const auto pointJson = [](const Point &point){
+        return QJsonObject{{QStringLiteral("x"), point.x},
+                           {QStringLiteral("y"), point.y}};
+    };
+    QJsonArray entrances;
+    for (const Point &point : layout.entrances()){
+        entrances.append(pointJson(point));
+    }
+    layoutJson.insert(QStringLiteral("entrances"), entrances);
+    QJsonArray exits;
+    for (const Point &point : layout.exits()){
+        exits.append(pointJson(point));
+    }
+    layoutJson.insert(QStringLiteral("exits"), exits);
+    QJsonArray obstacles;
+    for (const LayoutObstacle &obstacle : layout.obstacles()){
+        obstacles.append(QJsonObject{
+            {QStringLiteral("name"), QString::fromStdString(obstacle.name)},
+            {QStringLiteral("x"), obstacle.bounds.origin.x},
+            {QStringLiteral("y"), obstacle.bounds.origin.y},
+            {QStringLiteral("w"), obstacle.bounds.width},
+            {QStringLiteral("h"), obstacle.bounds.height}});
+    }
+    layoutJson.insert(QStringLiteral("obstacles"), obstacles);
+    QJsonArray regions;
+    for (const Rectangle &region : layout.regions()){
+        regions.append(QJsonObject{
+            {QStringLiteral("x"), region.origin.x},
+            {QStringLiteral("y"), region.origin.y},
+            {QStringLiteral("w"), region.width},
+            {QStringLiteral("h"), region.height}});
+    }
+    layoutJson.insert(QStringLiteral("regions"), regions);
+
+    QJsonArray spots;
+    std::map<std::string, std::pair<int, int>> zoneStats;
+    int occupied = 0;
+    int reserved = 0;
+    for (const ParkingSpot &spot : service_->spots()){
+        auto &stat = zoneStats[spot.zone()];
+        stat.first += 1;
+        QJsonObject item;
+        item.insert(QStringLiteral("spotId"),
+                    QString::fromStdString(spot.identifier()));
+        item.insert(QStringLiteral("zone"), QString::fromStdString(spot.zone()));
+        item.insert(QStringLiteral("type"), QLatin1String(toString(spot.type())));
+        item.insert(QStringLiteral("status"), static_cast<int>(spot.status()));
+        if (spot.status() == SpotStatus::Occupied){
+            ++occupied;
+            stat.second += 1;
+        } else if (spot.status() == SpotStatus::Reserved){
+            ++reserved;
+        }
+        const auto &bounds = spot.bounds();
+        item.insert(QStringLiteral("x"), bounds.origin.x);
+        item.insert(QStringLiteral("y"), bounds.origin.y);
+        item.insert(QStringLiteral("w"), bounds.width);
+        item.insert(QStringLiteral("h"), bounds.height);
+        if (spot.parkedVehicle()){
+            item.insert(QStringLiteral("plate"),
+                        QString::fromStdString(
+                            spot.parkedVehicle()->plateNumber()));
+            item.insert(QStringLiteral("vehicleType"),
+                        vehicleTypeToString(spot.parkedVehicle()->type()));
+        }
+        spots.append(item);
+    }
+
+    QJsonArray zones;
+    for (const auto &entry : zoneStats){
+        zones.append(QJsonObject{{QStringLiteral("zone"),
+                                  QString::fromStdString(entry.first)},
+                                 {QStringLiteral("total"), entry.second.first},
+                                 {QStringLiteral("occupied"), entry.second.second}});
+    }
+
+    QJsonObject result;
+    result.insert(QStringLiteral("layout"), layoutJson);
+    result.insert(QStringLiteral("spots"), spots);
+    result.insert(QStringLiteral("zones"), zones);
+    result.insert(QStringLiteral("capacity"),
+                  static_cast<int>(service_->spots().size()));
+    result.insert(QStringLiteral("occupied"), occupied);
+    result.insert(QStringLiteral("reserved"), reserved);
+    result.insert(QStringLiteral("available"),
+                  static_cast<int>(service_->spots().size()) - occupied - reserved);
+    result.insert(QStringLiteral("generatedAtMs"),
+                  QDateTime::currentMSecsSinceEpoch());
     *ok = true;
     return result;
 }

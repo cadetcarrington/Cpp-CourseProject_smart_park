@@ -9,6 +9,7 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QDebug>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QProcess>
@@ -269,18 +270,49 @@ int runSelftest(){
     return failures == 0 ? 0 : 1;
 }
 
-int runServer(QCoreApplication &app, quint16 port, const QString &databasePath){
+int runServer(QCoreApplication &app, quint16 port, const QString &databasePath,
+              const QString &layoutPath){
     smartpark::Persistence persistence(databasePath);
     smartpark::AuditLogService audit(persistence.databaseManager().database());
     smartpark::UserStore users(databasePath);
-    smartpark::ParkingService service(smartpark::ParkingLayout::defaultLayout(),
-                                      smartpark::AllocationStrategy::WeightedCost,
-                                      &persistence.repository());
-    service.setAuditLog(&audit);
+
+    // --layout 真正生效：缺省仍是内置 60 位布局（CLI/Gate 演示口径不变）。
+    // 布局文件解析失败或与已持久化数据不兼容时直接报错退出，绝不自动清库。
+    smartpark::ParkingLayout layout = smartpark::ParkingLayout::defaultLayout();
+    if (!layoutPath.isEmpty()){
+        QFile file(layoutPath);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)){
+            std::cerr << "cannot open layout file: "
+                      << layoutPath.toStdString() << '\n';
+            return 1;
+        }
+        const QByteArray description = file.readAll();
+        try{
+            layout = smartpark::ParkingLayout::fromDescription(
+                QString::fromUtf8(description).toStdString());
+        } catch (const std::exception &error){
+            std::cerr << "invalid layout file: " << error.what() << '\n';
+            return 1;
+        }
+    }
+
+    std::unique_ptr<smartpark::ParkingService> service;
+    try{
+        service = std::make_unique<smartpark::ParkingService>(
+            layout, smartpark::AllocationStrategy::WeightedCost,
+            &persistence.repository());
+    } catch (const std::exception &error){
+        std::cerr << "parking service init failed (layout incompatible with "
+                     "persisted data?): " << error.what() << '\n'
+                  << "refusing to auto-reset the database; choose a matching "
+                     "--layout or remove the database manually.\n";
+        return 1;
+    }
+    service->setAuditLog(&audit);
 
     smartpark::SmartParkTcpServer::Options options;
     options.port = port;
-    smartpark::SmartParkTcpServer server(service, &audit, &users, options);
+    smartpark::SmartParkTcpServer server(*service, &audit, &users, options);
     if (!server.listen()){
         std::cerr << "server listen failed: "
                   << server.lastError().toStdString() << '\n';
@@ -288,7 +320,7 @@ int runServer(QCoreApplication &app, quint16 port, const QString &databasePath){
     }
     std::cout << "SmartPark server listening on port " << server.port()
               << " | db: " << databasePath.toStdString()
-              << " | spots: " << service.spots().size() << '\n' << std::flush;
+              << " | spots: " << service->spots().size() << '\n' << std::flush;
     return app.exec();
 }
 } // namespace
@@ -330,6 +362,9 @@ int main(int argc, char **argv){
         ? parser.value(dbOption)
         : smartpark::Persistence::defaultDatabasePath();
     quint16 port = static_cast<quint16>(parser.value(portOption).toUShort());
+    const QString layoutPath = parser.isSet(layoutOption)
+        ? parser.value(layoutOption)
+        : QString();
 
-    return runServer(app, port, databasePath);
+    return runServer(app, port, databasePath, layoutPath);
 }

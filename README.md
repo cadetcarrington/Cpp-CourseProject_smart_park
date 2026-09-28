@@ -276,6 +276,14 @@ $SMARTPARK_LPR_PY scripts/recognize_plate.py /path/to/vehicle.jpg --ocr-python "
 
 ## 最近工作记录
 
+2026-09-28 识别分支合入 + Admin 接入服务端状态：
+
+- 合入 `feature/lpr-samples-models`（保留 main 侧 P1/P2 内容与训练脚本安全修复，仅 README 需手工合并）：管理端本地选图识别审阅、40 张授权样例、两份最佳权重经 Git LFS 分发（约 121 MB + 215 MB，克隆需 `git lfs`；训练机 `s1` 的实体已校验 SHA-256 一致）。
+- 服务端 `--layout` 真正生效：`smartpark_server --layout data/garage-6f.txt` 即以 75 位车库平面运行（缺省仍为内置 60 位）；布局与持久化数据不匹配时拒绝启动并明确报错，绝不自动清库。
+- 新增 `admin.snapshot`（仅 `admin` 账号）：一次性下发布局几何 + 车位明细 + 计数 + 分区统计，Admin 远程模式不再本地维护第二个 `ParkingService`。
+- Admin 默认改为远程服务端模式：`ServerSession` 异步会话（20s 心跳、1s→15s 退避重连、事件驱动去抖刷新、断线禁写不重试），登录走服务端会话（`LoginDialog` 注入远程认证器，注册入口隐藏）；`--local`/`--smoke-test` 保留完整本地路径。无服务端数据合同的页面（预约/记录/配置、历史曲线、车型更正、策略、应急、布局编辑）远程模式下隐藏或禁用。
+- 测试：新增 `smartpark_admin_remote_tests`（5 用例：会话快照与权限、窗口镜像服务端状态含 Gate 事件驱动、本端入离场、服务端重启重连）；全量 CTest 8/8 通过；跨进程实测 75 位布局启动与布局不匹配拒绝。
+
 2026-09-27 P2：Gate 与用户端演示链路：
 
 - `apps/gate/` 提供入口/出口双模式，手输车牌模拟 LPR；状态机包括抬杆、保持、落闸、防砸反转及故障复位。离线事件先写 JSONL，连接恢复后每批最多 500 条补报，全部确认才移除已确认前缀。
@@ -917,6 +925,31 @@ CLI 默认把车位与停车记录持久化到 SQLite：未指定 `--db` 时使�
 运行流程：系统启动 `smartpark_cli` → 解析布局 → 构建障碍栅格 → `SpotAllocator` 按策略为候选车位计算路线和评分 → 选择最优车位并占用或预留 → 输出路线和状态 → 检查结果并返回退出码。
 
 ## Admin GUI 跨平台构建与运行
+
+### Admin 远程服务端模式（2026-09-28 起为默认）
+
+Admin 默认作为 TCP 客户端连接服务端，与 Gate 出入终端共享**同一权威停车状态**：
+地图、车位表、KPI 与分区压力全部来自服务端 `admin.snapshot` 快照，
+Gate/预约产生的广播事件触发去抖刷新（250 ms 合并），断线后按
+1s→2s→4s…（上限 15s）自动重连并重新登录，重新上线即拉全量快照。
+
+```bash
+# 1) 启动服务端：--layout 现在真正生效（示例为 75 位车库平面）；
+#    缺省仍是内置 60 位布局。布局与已持久化数据不匹配时服务端拒绝启动，绝不自动清库。
+smartpark_server --layout data/garage-6f.txt --port 9527
+# 2) 启动管理端：默认连接 127.0.0.1:9527，登录账号在服务端校验（演示 admin/smartpark）。
+smartpark_admin
+smartpark_admin --server 192.168.1.10:9527   # 指向其他部署
+smartpark_admin --local                      # 旧的本地数据模式（行为同 0.7）
+```
+
+远程模式界面范围：总览（快照 KPI + 构成/类型/分区压力 + 服务端 `analytics.report`）、
+实时车位（快照几何绘制）、车辆作业（入场/离场直发服务端 `parking.enter/leave`；
+图片识别审阅仅作车牌候选输入，最终入离场仍由服务端裁决）、当前车位。
+预约管理、停车记录、设施配置与历史曲线/预测等需要停车记录数据合同的页面
+在远程模式隐藏，不再展示本地模拟统计；车型更正、策略切换、应急通道与
+布局编辑在服务端具备对应接口前明确禁用。本地模式（`--local`、`--smoke-test`）
+保持 SmartPark 0.7 的完整功能与测试路径。
 
 `smartpark_admin` 现在支持 Windows、macOS 与 Linux。跨平台差异被封装在 CMake 和构建脚本中：
 

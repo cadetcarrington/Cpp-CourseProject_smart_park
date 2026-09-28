@@ -20,6 +20,7 @@ if(TARGET smartpark_admin)
     qt_add_executable(smartpark_admin_tests
         admin_main_window_tests.cpp
         ${CMAKE_SOURCE_DIR}/apps/admin/MainWindow.cpp
+        ${CMAKE_SOURCE_DIR}/apps/admin/ServerSession.cpp
         ${CMAKE_SOURCE_DIR}/apps/admin/PlateReviewDialog.cpp
         ${CMAKE_SOURCE_DIR}/apps/admin/LoginDialog.cpp
         ${CMAKE_SOURCE_DIR}/apps/admin/RegisterDialog.cpp
@@ -34,10 +35,39 @@ if(TARGET smartpark_admin)
             Qt6::Test
             Qt6::Widgets
             smartpark_core
+            smartpark_network
     )
     set_target_properties(smartpark_admin_tests PROPERTIES AUTOMOC ON)
     add_test(NAME smartpark_admin_tests COMMAND smartpark_admin_tests)
     set_tests_properties(smartpark_admin_tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
+    # 远程模式集成测试：进程内 TCP 服务端 + ServerSession + 远程 MainWindow。
+    qt_add_executable(smartpark_admin_remote_tests
+        admin_remote_tests.cpp
+        ${CMAKE_SOURCE_DIR}/apps/admin/MainWindow.cpp
+        ${CMAKE_SOURCE_DIR}/apps/admin/ServerSession.cpp
+        ${CMAKE_SOURCE_DIR}/apps/admin/PlateReviewDialog.cpp
+        ${CMAKE_SOURCE_DIR}/apps/admin/LoginDialog.cpp
+        ${CMAKE_SOURCE_DIR}/apps/admin/RegisterDialog.cpp
+    )
+    target_include_directories(smartpark_admin_remote_tests
+        PRIVATE ${CMAKE_SOURCE_DIR}/apps/admin
+    )
+    target_compile_definitions(smartpark_admin_remote_tests PRIVATE
+        SMARTPARK_LPR_SCRIPT_PATH="${CMAKE_SOURCE_DIR}/scripts/recognize_plate.py")
+    target_link_libraries(smartpark_admin_remote_tests
+        PRIVATE
+            Qt6::Test
+            Qt6::Widgets
+            smartpark_core
+            smartpark_network
+    )
+    set_target_properties(smartpark_admin_remote_tests PROPERTIES AUTOMOC ON)
+    add_test(NAME smartpark_admin_remote_tests
+        COMMAND smartpark_admin_remote_tests)
+    set_tests_properties(smartpark_admin_remote_tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;SMARTPARK_NO_MENU_BAR=1"
     )
 endif()

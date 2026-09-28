@@ -2,6 +2,8 @@ set(ADMIN_SOURCES
     main.cpp
     MainWindow.h
     MainWindow.cpp
+    ServerSession.h
+    ServerSession.cpp
     PlateReviewDialog.h
     PlateReviewDialog.cpp
     LoginDialog.h
@@ -41,6 +43,7 @@ target_link_libraries(smartpark_admin
     PRIVATE
         Qt6::Widgets
         smartpark_core
+        smartpark_network
 )
 
 target_compile_features(smartpark_admin PRIVATE cxx_std_17)

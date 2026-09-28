@@ -189,6 +189,13 @@ QString LoginDialog::userName() const{
     return userNameInput_->text().trimmed();
 }
 
+void LoginDialog::setRemoteAuthenticator(RemoteAuthenticator authenticator){
+    remoteAuthenticator_ = std::move(authenticator);
+    if (registerLink_ != nullptr){
+        registerLink_->setVisible(remoteAuthenticator_ == nullptr);
+    }
+}
+
 void LoginDialog::paintEvent(QPaintEvent *event){
     if (vibrancyActive_) {
         return;  // macOS 原生毛玻璃负责背景
@@ -274,6 +281,35 @@ void LoginDialog::attemptLogin(){
     if (password.isEmpty()){
         markInvalid(passwordInput_, true);
         setError(tr("请输入密码。"), passwordInput_);
+        return;
+    }
+
+    // 远程模式：认证由服务端完成（同步等待一次性登录应答，登录阶段
+    // 界面尚未建立主窗口，短暂阻塞可接受）。空返回值表示成功。
+    if (remoteAuthenticator_){
+        QString error;
+        if (!remoteAuthenticator_(userName, password, &error)){
+            ++failedAttempts_;
+            markInvalid(passwordInput_, true);
+            if (failedAttempts_ >= kMaxFailedAttempts){
+                setError(tr("连续 %1 次登录失败，已临时锁定登录。")
+                             .arg(failedAttempts_), nullptr);
+                setLockdown(true);
+                return;
+            }
+            setError(error.isEmpty()
+                         ? tr("服务端登录失败。") : error, passwordInput_);
+            return;
+        }
+        QSettings settings;
+        settings.setValue(QStringLiteral("Session/rememberUser"),
+                          rememberUserCheck_->isChecked());
+        if (rememberUserCheck_->isChecked()){
+            settings.setValue(QStringLiteral("Session/lastUser"), userName);
+        } else{
+            settings.remove(QStringLiteral("Session/lastUser"));
+        }
+        accept();
         return;
     }
 
