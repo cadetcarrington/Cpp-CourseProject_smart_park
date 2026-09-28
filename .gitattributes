@@ -1,0 +1,2 @@
+model/weights/smartpark_plate_ppocrv5_best.pdparams filter=lfs diff=lfs merge=lfs -text
+model/weights/smartpark_plate_yolo11m_best.pt filter=lfs diff=lfs merge=lfs -text

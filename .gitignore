@@ -25,7 +25,12 @@ Makefile
 Thumbs.db
 
 # Machine learning assets and training outputs
-/model/
+/model/*
+!/model/weights/
+/model/weights/*
+!/model/weights/smartpark_plate_yolo11m_best.pt
+!/model/weights/smartpark_plate_ppocrv5_best.pdparams
+!/model/weights/smartpark_plate_ppocrv5_config.yml
 /runs/
 /weights/
 scripts/__pycache__/
