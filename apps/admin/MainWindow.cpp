@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "PlateReviewDialog.h"
+#include "ServerSession.h"
 #include "Theme.h"
 #include "NativeEffects.h"
 
@@ -28,6 +29,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
@@ -335,7 +337,41 @@ MainWindow::MainWindow(QString databasePath, QString currentUser, QWidget *paren
     }
 }
 
-MainWindow::~MainWindow() = default;
+MainWindow::MainWindow(QString serverHost, quint16 serverPort,
+                       QString currentUser, QString serverPassword,
+                       QWidget *parent)
+    : QMainWindow(parent)
+    , currentUser_(std::move(currentUser))
+    , remoteMode_(true)
+    , serverHost_(std::move(serverHost))
+    , serverPort_(serverPort){
+    // 远程模式不创建本地 Persistence / ParkingService：
+    // 停车状态以 TCP 服务端为唯一权威，界面数据全部来自服务端快照。
+    buildUi();
+
+    QSettings settings;
+    if (settings.contains(QStringLiteral("MainWindow/geometry"))){
+        restoreGeometry(settings.value(QStringLiteral("MainWindow/geometry")).toByteArray());
+    }
+    if (settings.contains(QStringLiteral("MainWindow/splitter"))){
+        shellSplitter_->restoreState(settings.value(QStringLiteral("MainWindow/splitter")).toByteArray());
+    }
+    navigation_->setCurrentRow(0);
+
+    snapshotDebounceTimer_.setSingleShot(true);
+    snapshotDebounceTimer_.setInterval(250);
+    connect(&snapshotDebounceTimer_, &QTimer::timeout, this,
+            &MainWindow::requestSnapshot);
+    startRemoteSession(std::move(serverPassword));
+}
+
+MainWindow::~MainWindow(){
+    if (session_ != nullptr){
+        session_->stop();
+        session_->deleteLater();
+        session_ = nullptr;
+    }
+}
 
 void MainWindow::paintEvent(QPaintEvent *){
     // 毛玻璃模式的整窗背景：低饱和蓝灰色光斑经高斯模糊后铺满窗口，
@@ -421,16 +457,21 @@ void MainWindow::buildUi(){
     navigation_->setFrameShape(QFrame::NoFrame);
     navigation_->setSpacing(1);
     navigation_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    // 远程模式只暴露有服务端数据合同的业务页；预约/记录/配置仍走本地
+    // 合同，隐藏以免展示与服务器不一致的本地模拟数据。
     const std::vector<std::pair<QString, QString>> pages = {
         {tr("总览"), tr("实时运营概况")},
         {tr("实时车位"), tr("车库建筑图、车位与路线")},
         {tr("车辆作业"), tr("入库、出库与车型更正")},
         {tr("当前车位"), tr("全量车位与现场状态")},
-        {tr("预约管理"), tr("预约、到场确认与取消")},
-        {tr("停车记录"), tr("记录查询与收费汇总")},
-        {tr("设施配置"), tr("停车场布局与计费规则")},
+        remoteMode_ ? std::pair<QString, QString>{} : std::make_pair(tr("预约管理"), tr("预约、到场确认与取消")),
+        remoteMode_ ? std::pair<QString, QString>{} : std::make_pair(tr("停车记录"), tr("记录查询与收费汇总")),
+        remoteMode_ ? std::pair<QString, QString>{} : std::make_pair(tr("设施配置"), tr("停车场布局与计费规则")),
     };
     for (const auto &page : pages){
+        if (page.first.isEmpty()){
+            continue;
+        }
         auto *item = new QListWidgetItem(page.first, navigation_);
         item->setData(Qt::UserRole, page.first);
         item->setData(Qt::UserRole + 1, page.second);
@@ -438,7 +479,11 @@ void MainWindow::buildUi(){
     }
     sideLayout->addWidget(navigation_, 1);
     sideLayout->addSpacing(8);
-    auto *sideBarCaption = new QLabel(tr("本地数据模式 · 数据自动持久化"), sideBar);
+    auto *sideBarCaption = new QLabel(
+        remoteMode_
+            ? tr("远程服务端模式 · 数据来自 TCP 快照")
+            : tr("本地数据模式 · 数据自动持久化"),
+        sideBar);
     sideBarCaption->setObjectName("sideBarCaption");
     sideBarCaption->setWordWrap(true);
     sideLayout->addWidget(sideBarCaption);
@@ -463,7 +508,8 @@ void MainWindow::buildUi(){
     headerText->addWidget(pageTitleLabel_);
     headerText->addWidget(pageSubtitleLabel_);
     topHeaderLayout->addLayout(headerText, 1);
-    connectionLabel_ = new QLabel(tr("● 数据已连接"), topHeader);
+    connectionLabel_ = new QLabel(
+        remoteMode_ ? tr("● 连接服务端中…") : tr("● 数据已连接"), topHeader);
     connectionLabel_->setObjectName("connectionBadge");
     userLabel_ = new QLabel(tr("管理员：%1").arg(currentUser_), topHeader);
     userLabel_->setObjectName("userBadge");
@@ -556,6 +602,7 @@ void MainWindow::buildUi(){
     dashboardChartsTop->addWidget(typeCard, 1);
 
     auto *forecastCard = createCard(dashboardPage);
+    forecastCard_ = forecastCard;
     auto *forecastLayout = new QVBoxLayout(forecastCard);
     forecastLayout->setContentsMargins(20, 18, 20, 18);
     forecastLayout->setSpacing(6);
@@ -574,6 +621,7 @@ void MainWindow::buildUi(){
     dashboardChartsBottom->setSpacing(16);
 
     auto *flowCard = createCard(dashboardPage);
+    flowCard_ = flowCard;
     auto *flowLayout = new QVBoxLayout(flowCard);
     flowLayout->setContentsMargins(20, 18, 20, 18);
     flowLayout->setSpacing(6);
@@ -586,6 +634,7 @@ void MainWindow::buildUi(){
     dashboardChartsBottom->addWidget(flowCard, 1);
 
     auto *revenueCard = createCard(dashboardPage);
+    revenueCard_ = revenueCard;
     auto *revenueLayout = new QVBoxLayout(revenueCard);
     revenueLayout->setContentsMargins(20, 18, 20, 18);
     revenueLayout->setSpacing(6);
@@ -598,6 +647,7 @@ void MainWindow::buildUi(){
     dashboardChartsBottom->addWidget(revenueCard, 1);
 
     auto *flow7Card = createCard(dashboardPage);
+    flow7Card_ = flow7Card;
     auto *flow7Layout = new QVBoxLayout(flow7Card);
     flow7Layout->setContentsMargins(20, 18, 20, 18);
     flow7Layout->setSpacing(6);
@@ -625,6 +675,7 @@ void MainWindow::buildUi(){
     goOperationsButton->setProperty("variant", "primary");
     auto *goMapButton = new QPushButton(tr("查看实时车位图"), quickCard);
     auto *goBookingsButton = new QPushButton(tr("管理车辆预约"), quickCard);
+    goBookingsButton_ = goBookingsButton;
     auto *analysisReportButton = new QPushButton(tr("数据分析报告"), quickCard);
     quickLayout->addWidget(quickTitle);
     quickLayout->addWidget(quickHint);
@@ -893,7 +944,9 @@ void MainWindow::buildUi(){
     auto *bookingTableCard = createCard(bookingPage);
     auto *bookingTableLayout = new QVBoxLayout(bookingTableCard);
     bookingTableLayout->setContentsMargins(18, 14, 18, 18);
-    const smartpark::BookingPolicy bookingPolicy = service_->bookingPolicy();
+    // 远程模式 service_ 为空：页面不可达，仅以默认规则占位，避免解引用空指针。
+    const smartpark::BookingPolicy bookingPolicy = service_
+        ? service_->bookingPolicy() : smartpark::BookingPolicy{};
     auto *bookingPolicyLabel = new QLabel(
         tr("预约规则：定金 %1 元 | 最多提前 %2 天 | 到场宽限期 %3 分钟。")
             .arg(bookingPolicy.deposit, 0, 'f', 2)
@@ -1012,7 +1065,8 @@ void MainWindow::buildUi(){
     billingLabel_ = new QLabel(billingCard);
     billingLabel_->setObjectName("sectionHint");
     billingLabel_->setWordWrap(true);
-    const smartpark::BillingRule rule = service_->billing().rule();
+    const smartpark::BillingRule rule = service_
+        ? service_->billing().rule() : smartpark::BillingRule{};
     billingLabel_->setText(
         tr("免费 %1 分钟，之后每 %2 分钟计费一次；首单元 %3 元，后续每单元 %4 元，单次封顶 %5 元。")
             .arg(rule.freeDuration.count())
@@ -1047,6 +1101,13 @@ void MainWindow::buildUi(){
 
     connect(navigation_, &QListWidget::currentRowChanged, this, &MainWindow::changePage);
     connect(refreshDataAction, &QAction::triggered, this, [this]{
+        if (remoteMode_){
+            // 远程模式以服务端为准：重新拉取快照与分析报告。
+            requestSnapshot();
+            requestAnalytics();
+            statusLabel_->setText(tr("已请求服务端最新快照。"));
+            return;
+        }
         refreshScene();
         refreshBookings();
         refreshRecords();
@@ -1063,6 +1124,45 @@ void MainWindow::buildUi(){
     connect(goMapButton, &QPushButton::clicked, this, [this]{ navigation_->setCurrentRow(1); });
     connect(goBookingsButton, &QPushButton::clicked, this, [this]{ navigation_->setCurrentRow(4); });
     connect(analysisReportButton, &QPushButton::clicked, this, [this]{
+        if (remoteMode_){
+            // 远程模式：展示服务端 analytics.report 的最新结论。
+            if (analyticsReport_.isEmpty()){
+                QMessageBox::information(this, QStringLiteral("数据分析报告"),
+                    QStringLiteral("尚未取得服务端分析报告，已重新请求；请稍后再次点击。"));
+                requestAnalytics();
+                return;
+            }
+            QString text = analyticsReport_.value(QStringLiteral("summary")).toString()
+                + QStringLiteral("\n\n发现：\n");
+            for (const QJsonValue &item :
+                 analyticsReport_.value(QStringLiteral("findings")).toArray()){
+                const QJsonObject finding = item.toObject();
+                text += QStringLiteral("  · [%1] %2：%3\n")
+                            .arg(finding.value(QStringLiteral("category")).toString(),
+                                 finding.value(QStringLiteral("title")).toString(),
+                                 finding.value(QStringLiteral("detail")).toString());
+            }
+            text += QStringLiteral("\n建议：\n");
+            int index = 1;
+            for (const QJsonValue &item :
+                 analyticsReport_.value(QStringLiteral("recommendations")).toArray()){
+                text += QStringLiteral("  %1. %2\n").arg(index++)
+                            .arg(item.toString());
+            }
+            QDialog dialog(this);
+            dialog.setWindowTitle(tr("SmartPark 数据分析报告（服务端）"));
+            dialog.resize(620, 480);
+            auto *layout = new QVBoxLayout(&dialog);
+            auto *textEdit = new QTextEdit(&dialog);
+            textEdit->setReadOnly(true);
+            textEdit->setPlainText(text);
+            layout->addWidget(textEdit);
+            auto *closeButton = new QPushButton(tr("关闭"), &dialog);
+            connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+            layout->addWidget(closeButton);
+            dialog.exec();
+            return;
+        }
         if (!service_){
             return;
         }
@@ -1196,6 +1296,9 @@ void MainWindow::buildUi(){
     connect(strategyInput_, qOverload<int>(&QComboBox::currentIndexChanged),
             this, &MainWindow::updateStrategy);
     connect(emergencyButton_, &QPushButton::clicked, this, [this]{
+        if (remoteMode_ || service_ == nullptr){
+            return;  // 远程模式应急通道由服务端合同覆盖后再开放
+        }
         const QString plate = plateInput_->text().trimmed();
         if (plate.isEmpty()){
             QMessageBox::information(this, QStringLiteral("请输入车牌"),
@@ -1224,6 +1327,24 @@ void MainWindow::buildUi(){
                 QStringLiteral("应急入场失败：车辆已在场内且无可让位车位，请人工处置。"));
         }
     });
+
+    if (remoteMode_){
+        // 历史曲线 / 流量 / 预测需要停车记录数据合同，远程快照不提供：
+        // 隐藏对应卡片，保留 KPI、构成 / 类型 / 分区压力等快照可算的图表。
+        forecastCard_->setVisible(false);
+        flowCard_->setVisible(false);
+        revenueCard_->setVisible(false);
+        flow7Card_->setVisible(false);
+        goBookingsButton_->setVisible(false);
+        strategyInput_->setEnabled(false);
+        strategyInput_->setToolTip(tr("远程模式下分配策略由服务端统一配置。"));
+        updateVehicleTypeButton_->setEnabled(false);
+        updateVehicleTypeButton_->setToolTip(tr("远程模式暂不支持车型更正。"));
+        emergencyButton_->setEnabled(false);
+        emergencyButton_->setToolTip(tr("远程模式暂不支持应急生命通道。"));
+        layoutButton_->setEnabled(false);
+        layoutButton_->setToolTip(tr("远程模式下布局由服务端 --layout 配置。"));
+    }
 }
 
 void MainWindow::showEvent(QShowEvent *event){
@@ -1366,6 +1487,10 @@ bool MainWindow::resetDatabase(){
 }
 
 void MainWindow::refreshDashboard(){
+    if (remoteMode_){
+        refreshDashboardFromSnapshot();
+        return;
+    }
     if (!service_){
         return;
     }
@@ -1406,7 +1531,7 @@ void MainWindow::refreshDashboard(){
 }
 
 smartpark::ParkingInsights MainWindow::computeInsights() const{
-    if (!service_){
+    if (remoteMode_ || !service_){
         return smartpark::ParkingInsights{};
     }
     return smartpark::ParkingInsightEngine::analyze(
@@ -1414,6 +1539,10 @@ smartpark::ParkingInsights MainWindow::computeInsights() const{
 }
 
 void MainWindow::refreshInsights(){
+    if (remoteMode_){
+        applyRemoteInsights();
+        return;
+    }
     if (!service_){
         return;
     }
@@ -1687,6 +1816,10 @@ void MainWindow::refreshInsights(){
 }
 
 void MainWindow::refreshScene(){
+    if (remoteMode_){
+        renderMapFromSnapshot();
+        return;
+    }
     scene_->clear();
     const smartpark::ParkingLayout &layout = service_->layout();
     const double width = layout.siteWidth();
@@ -1820,6 +1953,11 @@ void MainWindow::refreshScene(){
 }
 
 void MainWindow::editLayout(){
+    if (remoteMode_){
+        QMessageBox::information(this, QStringLiteral("远程模式"),
+            QStringLiteral("远程模式下布局由服务端 --layout 配置，管理端不修改。"));
+        return;
+    }
     QDialog dialog(this);
     dialog.setWindowTitle("自定义停车场布局");
     dialog.resize(620, 520);
@@ -1883,6 +2021,9 @@ bool MainWindow::applyLayout(){
 }
 
 void MainWindow::updateStrategy(){
+    if (remoteMode_){
+        return;  // 分配策略由服务端统一配置
+    }
     if (service_){
         service_->setStrategy(currentStrategy());
     }
@@ -1906,6 +2047,10 @@ void MainWindow::recognizePlateImage(){
 }
 
 void MainWindow::allocateVehicle(){
+    if (remoteMode_){
+        allocateVehicleRemote();
+        return;
+    }
     const QString plate = plateInput_->text().trimmed();
     if (plate.isEmpty()){
         QMessageBox::information(this, "请输入车牌", "自动分配前请输入车辆车牌。");
@@ -1974,6 +2119,11 @@ void MainWindow::allocateVehicle(){
 }
 
 void MainWindow::updateVehicleType(){
+    if (remoteMode_){
+        QMessageBox::information(this, QStringLiteral("远程模式"),
+            QStringLiteral("远程模式暂不支持车型更正：请由服务端或 Gate 修正。"));
+        return;
+    }
     const QString plate = plateInput_->text().trimmed();
     if (plate.isEmpty()){
         QMessageBox::information(this, "请输入车牌",
@@ -2021,6 +2171,10 @@ void MainWindow::updateVehicleType(){
 }
 
 void MainWindow::releaseVehicle(){
+    if (remoteMode_){
+        releaseVehicleRemote();
+        return;
+    }
     QString typedPlate = plateInput_->text().trimmed();
     if (typedPlate.isEmpty() && occupancyTable_ != nullptr){
         const int selectedRow = occupancyTable_->currentRow();
@@ -2064,6 +2218,9 @@ void MainWindow::releaseVehicle(){
 }
 
 void MainWindow::refreshBookings(){
+    if (remoteMode_){
+        return;  // 预约管理页在远程模式隐藏
+    }
     const auto &bookings = service_->bookings();
     bookingsTable_->setRowCount(static_cast<int>(bookings.size()));
     int row = 0;
@@ -2093,6 +2250,10 @@ void MainWindow::refreshBookings(){
 }
 
 void MainWindow::refreshOccupancy(){
+    if (remoteMode_){
+        refreshOccupancyFromSnapshot();
+        return;
+    }
     const auto &spots = service_->spots();
     occupancyTable_->setRowCount(static_cast<int>(spots.size()));
     int row = 0;
@@ -2121,6 +2282,9 @@ void MainWindow::refreshOccupancy(){
 }
 
 void MainWindow::refreshRecords(){
+    if (remoteMode_){
+        return;  // 停车记录页在远程模式隐藏
+    }
     const auto &records = service_->records();
     const auto from = fromDateTime(recordFromInput_->dateTime());
     const auto to = fromDateTime(recordToInput_->dateTime());
@@ -2177,6 +2341,9 @@ void MainWindow::refreshRecords(){
 }
 
 void MainWindow::queryRecords(){
+    if (remoteMode_){
+        return;
+    }
     if (recordFromInput_->dateTime() > recordToInput_->dateTime()){
         QMessageBox::information(this, "时间范围无效", "起始时间不能晚于结束时间。");
         return;
@@ -2186,6 +2353,9 @@ void MainWindow::queryRecords(){
 }
 
 void MainWindow::resetRecordFilter(){
+    if (remoteMode_){
+        return;
+    }
     recordsFilterActive_ = false;
     recordFromInput_->setDateTime(QDateTime::currentDateTime().addDays(-7));
     recordToInput_->setDateTime(QDateTime::currentDateTime().addDays(1));
@@ -2200,6 +2370,9 @@ QString MainWindow::activeBookingPlate() const{
 }
 
 void MainWindow::bookVehicle(){
+    if (remoteMode_){
+        return;
+    }
     const QString plate = activeBookingPlate();
     if (plate.isEmpty()){
         QMessageBox::information(this, tr("请输入车牌"), tr("预约前请在预约管理页输入车辆车牌。"));
@@ -2242,6 +2415,9 @@ void MainWindow::bookVehicle(){
 }
 
 void MainWindow::checkInBooking(){
+    if (remoteMode_){
+        return;
+    }
     const QString plate = activeBookingPlate();
     if (plate.isEmpty()){
         QMessageBox::information(this, tr("请输入车牌"), tr("到场确认前请输入预约时使用的车牌。"));
@@ -2267,6 +2443,9 @@ void MainWindow::checkInBooking(){
 }
 
 void MainWindow::cancelActiveBooking(){
+    if (remoteMode_){
+        return;
+    }
     const QString plate = activeBookingPlate();
     if (plate.isEmpty()){
         QMessageBox::information(this, tr("请输入车牌"), tr("取消预约前请输入预约时使用的车牌。"));
@@ -2283,4 +2462,583 @@ void MainWindow::cancelActiveBooking(){
     refreshOccupancy();
     statusLabel_->setText(
         QString("取消成功：%1 预约已取消，定金退回，车位已释放。").arg(plate));
+}
+
+// ==================== 远程服务端模式 ====================
+
+namespace{
+QString remoteStatusText(int status){
+    switch (status){
+    case 1: return QStringLiteral("占用");
+    case 2: return QStringLiteral("预订");
+    case 3: return QStringLiteral("停用");
+    case 0:
+    default: return QStringLiteral("空闲");
+    }
+}
+
+QColor remoteStatusFillColor(int status, const QString &type){
+    switch (status){
+    case 2: return QColor(181, 71, 8);
+    case 1: return QColor(180, 35, 24);
+    case 3: return QColor(102, 112, 133);
+    case 0:
+    default: break;
+    }
+    if (type == QStringLiteral("accessible")) return QColor(79, 70, 229);
+    if (type == QStringLiteral("charging")) return QColor(2, 106, 162);
+    if (type == QStringLiteral("vip")) return QColor(124, 58, 237);
+    return QColor(15, 118, 110);
+}
+
+QString remoteVehicleTypeText(const QString &type){
+    if (type == QStringLiteral("motorcycle")) return QStringLiteral("摩托车");
+    if (type == QStringLiteral("truck")) return QStringLiteral("卡车");
+    if (type == QStringLiteral("electric")) return QStringLiteral("电动车");
+    return QStringLiteral("轿车");
+}
+
+QString remoteSpotTypeText(const QString &type){
+    if (type == QStringLiteral("accessible")) return QStringLiteral("无障碍");
+    if (type == QStringLiteral("charging")) return QStringLiteral("充电");
+    if (type == QStringLiteral("vip")) return QStringLiteral("VIP");
+    return QStringLiteral("普通");
+}
+} // namespace
+
+void MainWindow::startRemoteSession(const QString &password){
+    session_ = new smartpark::ServerSession(this);
+    connect(session_, &smartpark::ServerSession::stateChanged, this,
+            [this](smartpark::ServerSession::State){
+        updateConnectionBadge();
+        const bool online = session_->state()
+            == smartpark::ServerSession::State::Online;
+        setRemoteActionsEnabled(online);
+        if (online){
+            statusLabel_->setText(tr("已连接服务端 %1:%2，正在同步快照。")
+                                      .arg(serverHost_).arg(serverPort_));
+            requestSnapshot();
+            requestAnalytics();
+        } else{
+            statusLabel_->setText(tr("与服务端 %1:%2 的连接已断开，正在自动重连。")
+                                      .arg(serverHost_).arg(serverPort_));
+        }
+    });
+    connect(session_, &smartpark::ServerSession::authFailed, this,
+            [this](const QString &error){
+        QMessageBox::critical(this, tr("服务端登录失败"),
+            tr("服务端拒绝登录：%1\n请退出后重新输入账号。").arg(error));
+    });
+    connect(session_, &smartpark::ServerSession::eventReceived, this,
+            [this](const QString &event, const QJsonObject &payload){
+        // 任何服务端事件（入场/离场/预约/补报）都触发去抖快照刷新：
+        // 连续事件合并为一次请求，避免请求风暴。
+        Q_UNUSED(event);
+        Q_UNUSED(payload);
+        snapshotDebounceTimer_.start();
+    });
+    session_->start(serverHost_, serverPort_, currentUser_, password);
+}
+
+void MainWindow::updateConnectionBadge(){
+    if (session_ == nullptr){
+        return;
+    }
+    using State = smartpark::ServerSession::State;
+    switch (session_->state()){
+    case State::Online:
+        connectionLabel_->setText(tr("● 服务端 %1:%2 已连接")
+                                      .arg(serverHost_).arg(serverPort_));
+        break;
+    case State::LoggingIn:
+        connectionLabel_->setText(tr("● 服务端登录中…"));
+        break;
+    case State::Connecting:
+        connectionLabel_->setText(tr("● 连接服务端 %1:%2 …")
+                                      .arg(serverHost_).arg(serverPort_));
+        break;
+    case State::Disconnected:
+        connectionLabel_->setText(tr("● 服务端连接断开"));
+        break;
+    }
+    // 快照存在但又有在途请求时提示数据正在刷新。
+    if (session_->state() == State::Online && !snapshot_.isEmpty()
+        && session_->hasPendingRequests()){
+        connectionLabel_->setText(connectionLabel_->text()
+                                  + tr("（数据刷新中）"));
+    }
+}
+
+void MainWindow::setRemoteActionsEnabled(bool enabled){
+    allocateButton_->setEnabled(enabled);
+    releaseButton_->setEnabled(enabled);
+    recognizePlateButton_->setEnabled(enabled);
+    plateInput_->setEnabled(enabled);
+    vehicleTypeInput_->setEnabled(enabled);
+}
+
+void MainWindow::requestSnapshot(){
+    if (session_ == nullptr
+        || session_->state() != smartpark::ServerSession::State::Online){
+        return;
+    }
+    session_->request(QStringLiteral("admin.snapshot"), {},
+                      [this](bool ok, const QString &error,
+                             const QJsonObject &payload){
+        if (!ok){
+            statusLabel_->setText(
+                tr("快照获取失败：%1").arg(error));
+            return;
+        }
+        snapshot_ = payload;
+        applySnapshot();
+        updateConnectionBadge();
+    });
+    updateConnectionBadge();
+}
+
+void MainWindow::requestAnalytics(){
+    if (session_ == nullptr
+        || session_->state() != smartpark::ServerSession::State::Online){
+        return;
+    }
+    session_->request(QStringLiteral("analytics.report"), {},
+                      [this](bool ok, const QString &,
+                             const QJsonObject &payload){
+        if (ok){
+            analyticsReport_ = payload;
+            applyRemoteInsights();
+        }
+    });
+}
+
+void MainWindow::applySnapshot(){
+    renderMapFromSnapshot();
+    refreshOccupancyFromSnapshot();
+    refreshDashboardFromSnapshot();
+}
+
+void MainWindow::renderMapFromSnapshot(){
+    if (snapshot_.isEmpty() || scene_ == nullptr){
+        return;
+    }
+    scene_->clear();
+    const QJsonObject layout = snapshot_.value(QStringLiteral("layout")).toObject();
+    const double width = layout.value(QStringLiteral("siteWidth")).toDouble();
+    const double height = layout.value(QStringLiteral("siteHeight")).toDouble();
+    const bool garage = layout.value(QStringLiteral("plan")).toString()
+        == QStringLiteral("garage");
+    scene_->setSceneRect(-4.2, -3.2, width + 7.2, height + 6.0);
+    scene_->addRect(0.0, 0.0, width, height, Qt::NoPen,
+                    QBrush(QColor(232, 234, 229)));
+
+    if (garage){
+        const double xAxes[] = {0.0, 9.0, 18.0, 27.0, 36.0, 45.0, 54.0, 58.0};
+        const char *xLabels[] = {"6-1", "6-2", "6-3", "6-4", "6-5", "6-6", "6-7", "6-8"};
+        const double yAxes[] = {0.0, 12.2, 24.4, 33.4, 42.4};
+        const char *yLabels[] = {"6-E", "6-D", "6-C", "6-B", "6-A"};
+        const QPen gridPen(QColor(186, 190, 184), 0.06, Qt::DashLine);
+        for (double x : xAxes){
+            scene_->addLine(x, 0.0, x, height, gridPen);
+        }
+        for (double y : yAxes){
+            scene_->addLine(0.0, y, width, y, gridPen);
+        }
+        for (int i = 0; i < 8; ++i){
+            addFittedText(scene_, QRectF(xAxes[i] - 1.8, -2.4, 3.6, 1.6),
+                          QString::fromUtf8(xLabels[i]), QColor(86, 90, 88), false);
+        }
+        for (int i = 0; i < 5; ++i){
+            addFittedText(scene_, QRectF(-3.8, yAxes[i] - 0.8, 3.2, 1.6),
+                          QString::fromUtf8(yLabels[i]), QColor(86, 90, 88), false);
+        }
+    } else{
+        const QPen gridPen(QColor(198, 204, 210), 0.05, Qt::DotLine);
+        for (double x = 5.0; x < width; x += 5.0){
+            scene_->addLine(x, 0.0, x, height, gridPen);
+        }
+        for (double y = 5.0; y < height; y += 5.0){
+            scene_->addLine(0.0, y, width, y, gridPen);
+        }
+    }
+
+    const auto pointsFrom = [](const QJsonValue &value){
+        std::vector<QPointF> points;
+        for (const QJsonValue &item : value.toArray()){
+            const QJsonObject point = item.toObject();
+            points.emplace_back(point.value(QStringLiteral("x")).toDouble(),
+                                point.value(QStringLiteral("y")).toDouble());
+        }
+        return points;
+    };
+    for (const QPointF &entrance : pointsFrom(layout.value(QStringLiteral("entrances")))){
+        if (entrance.y() <= 0.6){
+            scene_->addRect(entrance.x() - 3.2, 0.05, 6.4, 2.4,
+                            QPen(QColor(160, 164, 158), 0.06),
+                            QBrush(QColor(176, 178, 172), Qt::BDiagPattern));
+        }
+    }
+    for (const QPointF &exit : pointsFrom(layout.value(QStringLiteral("exits")))){
+        if (exit.y() <= 0.6){
+            scene_->addRect(exit.x() - 2.6, 0.05, 5.2, 2.2,
+                            QPen(QColor(160, 164, 158), 0.06),
+                            QBrush(QColor(176, 178, 172), Qt::FDiagPattern));
+        }
+    }
+
+    if (!garage){
+        for (const QJsonValue &item : layout.value(QStringLiteral("regions")).toArray()){
+            const QJsonObject region = item.toObject();
+            scene_->addRect(region.value(QStringLiteral("x")).toDouble(),
+                            region.value(QStringLiteral("y")).toDouble(),
+                            region.value(QStringLiteral("w")).toDouble(),
+                            region.value(QStringLiteral("h")).toDouble(),
+                            QPen(QColor(170, 178, 188), 0.08, Qt::DashLine),
+                            QBrush(QColor(226, 230, 235, 40)));
+        }
+    }
+    for (const QJsonValue &item : layout.value(QStringLiteral("obstacles")).toArray()){
+        const QJsonObject obstacle = item.toObject();
+        const QRectF bounds(obstacle.value(QStringLiteral("x")).toDouble(),
+                            obstacle.value(QStringLiteral("y")).toDouble(),
+                            obstacle.value(QStringLiteral("w")).toDouble(),
+                            obstacle.value(QStringLiteral("h")).toDouble());
+        scene_->addRect(bounds, QPen(QColor(92, 96, 102), 0.22),
+                        QBrush(QColor(210, 214, 218)));
+        scene_->addRect(bounds.adjusted(0.18, 0.18, -0.18, -0.18),
+                        QPen(QColor(120, 124, 128), 0.08),
+                        QBrush(QColor(168, 172, 176), Qt::BDiagPattern));
+        addFittedText(scene_, bounds.adjusted(0.4, 0.4, -0.4, -0.4),
+                      obstacle.value(QStringLiteral("name")).toString(),
+                      QColor(62, 66, 70), false);
+    }
+
+    for (const QJsonValue &item : snapshot_.value(QStringLiteral("spots")).toArray()){
+        const QJsonObject spot = item.toObject();
+        const QRectF bounds(spot.value(QStringLiteral("x")).toDouble(),
+                            spot.value(QStringLiteral("y")).toDouble(),
+                            spot.value(QStringLiteral("w")).toDouble(),
+                            spot.value(QStringLiteral("h")).toDouble());
+        const int status = spot.value(QStringLiteral("status")).toInt();
+        const QString type = spot.value(QStringLiteral("type")).toString();
+        const QString plate = spot.value(QStringLiteral("plate")).toString();
+        auto *rect = scene_->addRect(bounds, QPen(QColor(48, 52, 56), 0.1),
+                                     QBrush(remoteStatusFillColor(status, type)));
+        const QString vehicle = spot.value(QStringLiteral("vehicleType")).toString();
+        rect->setToolTip(QString("%1 | %2 | %3 | %4 | %5")
+                             .arg(spot.value(QStringLiteral("spotId")).toString())
+                             .arg(remoteSpotTypeText(type))
+                             .arg(remoteStatusText(status))
+                             .arg(plate.isEmpty() ? QStringLiteral("-") : plate)
+                             .arg(plate.isEmpty() ? QStringLiteral("-")
+                                                  : remoteVehicleTypeText(vehicle)));
+        QString label = spot.value(QStringLiteral("spotId")).toString();
+        if (!plate.isEmpty()){
+            label += QLatin1Char('\n') + plate;
+        } else if (type != QStringLiteral("normal") && status == 0){
+            label += QLatin1Char('\n') + remoteSpotTypeText(type);
+        }
+        addFittedText(scene_, bounds.adjusted(0.08, 0.08, -0.08, -0.08),
+                      label, status == 1 ? Qt::white : Qt::black);
+    }
+
+    std::vector<smartpark::Point> gatePoints;
+    const auto collectGates = [&gatePoints](const QJsonValue &value){
+        for (const QJsonValue &item : value.toArray()){
+            const QJsonObject point = item.toObject();
+            gatePoints.push_back({point.value(QStringLiteral("x")).toDouble(),
+                                  point.value(QStringLiteral("y")).toDouble()});
+        }
+    };
+    collectGates(layout.value(QStringLiteral("entrances")));
+    collectGates(layout.value(QStringLiteral("exits")));
+    const QPen wallPen(QColor(46, 50, 54), 0.42);
+    addWallWithGaps(scene_, QPointF(0.0, 0.0), QPointF(width, 0.0), gatePoints, 4.6, wallPen);
+    addWallWithGaps(scene_, QPointF(0.0, height), QPointF(width, height), gatePoints, 4.6, wallPen);
+    addWallWithGaps(scene_, QPointF(0.0, 0.0), QPointF(0.0, height), gatePoints, 4.6, wallPen);
+    addWallWithGaps(scene_, QPointF(width, 0.0), QPointF(width, height), gatePoints, 4.6, wallPen);
+
+    for (const QPointF &entrance : pointsFrom(layout.value(QStringLiteral("entrances")))){
+        addFittedText(scene_, QRectF(entrance.x() - 2.4, -1.15, 4.8, 1.1),
+                      QStringLiteral("入口"), QColor(36, 72, 160), false);
+    }
+    for (const QPointF &exit : pointsFrom(layout.value(QStringLiteral("exits")))){
+        addFittedText(scene_, QRectF(exit.x() - 2.4, -1.15, 4.8, 1.1),
+                      QStringLiteral("出口"), QColor(176, 84, 24), false);
+    }
+
+    statusLabel_->setText(QString("总车位：%1 / 空闲：%2 / 占用：%3 / 预留：%4")
+                              .arg(snapshot_.value(QStringLiteral("capacity")).toInt())
+                              .arg(snapshot_.value(QStringLiteral("available")).toInt())
+                              .arg(snapshot_.value(QStringLiteral("occupied")).toInt())
+                              .arg(snapshot_.value(QStringLiteral("reserved")).toInt()));
+    fitMapView();
+}
+
+void MainWindow::refreshOccupancyFromSnapshot(){
+    if (snapshot_.isEmpty() || occupancyTable_ == nullptr){
+        return;
+    }
+    const QJsonArray spots = snapshot_.value(QStringLiteral("spots")).toArray();
+    occupancyTable_->setRowCount(spots.size());
+    int row = 0;
+    for (const QJsonValue &item : spots){
+        const QJsonObject spot = item.toObject();
+        const int status = spot.value(QStringLiteral("status")).toInt();
+        const QString plate = spot.value(QStringLiteral("plate")).toString();
+        const QString cells[] = {
+            spot.value(QStringLiteral("spotId")).toString(),
+            remoteSpotTypeText(spot.value(QStringLiteral("type")).toString()),
+            remoteStatusText(status),
+            plate.isEmpty() ? QStringLiteral("-") : plate,
+            plate.isEmpty()
+                ? QStringLiteral("-")
+                : remoteVehicleTypeText(
+                    spot.value(QStringLiteral("vehicleType")).toString()),
+        };
+        for (int column = 0; column < 5; ++column){
+            auto *cell = new QTableWidgetItem(cells[column]);
+            cell->setFlags(cell->flags() & ~Qt::ItemIsEditable);
+            occupancyTable_->setItem(row, column, cell);
+        }
+        ++row;
+    }
+}
+
+void MainWindow::refreshDashboardFromSnapshot(){
+    if (snapshot_.isEmpty()){
+        return;
+    }
+    const int total = snapshot_.value(QStringLiteral("capacity")).toInt();
+    const int available = snapshot_.value(QStringLiteral("available")).toInt();
+    const int occupied = snapshot_.value(QStringLiteral("occupied")).toInt();
+    const int reserved = snapshot_.value(QStringLiteral("reserved")).toInt();
+    if (!qEnvironmentVariableIsSet("SMARTPARK_NO_MENU_BAR")){
+        macbridge::setMenuBarStatus(
+            QStringLiteral("SmartPark 余位 %1").arg(available));
+    }
+    if (kpiTotalLabel_ != nullptr){
+        kpiTotalLabel_->setText(QString::number(total));
+        kpiAvailableLabel_->setText(QString::number(available));
+        kpiOccupiedLabel_->setText(QString::number(occupied));
+        kpiReservedLabel_->setText(QString::number(reserved));
+    }
+    const double occupancyRate = total == 0 ? 0.0 : occupied * 100.0 / total;
+    if (mapSummaryLabel_ != nullptr){
+        mapSummaryLabel_->setText(
+            tr("共 %1 个车位 · 空闲 %2 · 占用 %3 · 预留 %4 · 占用率 %5%")
+                .arg(total).arg(available).arg(occupied).arg(reserved)
+                .arg(occupancyRate, 0, 'f', 1));
+    }
+    if (dashboardActivityLabel_ != nullptr){
+        dashboardActivityLabel_->setText(
+            tr("远程服务端快照（%1）：%2 / %3 车位被占用，占用率 %4%。")
+                .arg(QDateTime::fromMSecsSinceEpoch(
+                         snapshot_.value(QStringLiteral("generatedAtMs"))
+                             .toInteger())
+                         .toString("HH:mm:ss"))
+                .arg(occupied).arg(total)
+                .arg(occupancyRate, 0, 'f', 1));
+    }
+
+    int disabled = 0;
+    int typeNormal = 0;
+    int typeAccessible = 0;
+    int typeCharging = 0;
+    int typeVip = 0;
+    for (const QJsonValue &item : snapshot_.value(QStringLiteral("spots")).toArray()){
+        const QJsonObject spot = item.toObject();
+        if (spot.value(QStringLiteral("status")).toInt() == 3){
+            ++disabled;
+        }
+        const QString type = spot.value(QStringLiteral("type")).toString();
+        if (type == QStringLiteral("accessible")) ++typeAccessible;
+        else if (type == QStringLiteral("charging")) ++typeCharging;
+        else if (type == QStringLiteral("vip")) ++typeVip;
+        else ++typeNormal;
+    }
+    if (compositionChart_ != nullptr){
+        QVector<DonutSlice> slices;
+        slices.push_back({tr("占用"), static_cast<double>(occupied), QColor(180, 35, 24)});
+        slices.push_back({tr("预留"), static_cast<double>(reserved), QColor(181, 71, 8)});
+        slices.push_back({tr("空闲"), static_cast<double>(available), QColor(15, 118, 110)});
+        slices.push_back({tr("停用"), static_cast<double>(disabled), QColor(102, 112, 133)});
+        compositionChart_->setCenterTitle(tr("总车位"));
+        compositionChart_->setCenterValue(QString::number(total));
+        compositionChart_->setSlices(slices);
+    }
+    if (typeChart_ != nullptr){
+        QVector<DonutSlice> slices;
+        slices.push_back({tr("普通"), static_cast<double>(typeNormal), QColor(15, 118, 110)});
+        slices.push_back({tr("充电"), static_cast<double>(typeCharging), QColor(2, 106, 162)});
+        slices.push_back({tr("无障碍"), static_cast<double>(typeAccessible), QColor(79, 70, 229)});
+        slices.push_back({tr("VIP"), static_cast<double>(typeVip), QColor(124, 58, 237)});
+        typeChart_->setCenterTitle(tr("车位类型"));
+        typeChart_->setCenterValue(QString::number(total));
+        typeChart_->setSlices(slices);
+    }
+    if (zonePressureChart_ != nullptr){
+        QVector<BarSlice> bars;
+        for (const QJsonValue &item : snapshot_.value(QStringLiteral("zones")).toArray()){
+            const QJsonObject zone = item.toObject();
+            const int zoneTotal = zone.value(QStringLiteral("total")).toInt();
+            const int zoneOccupied = zone.value(QStringLiteral("occupied")).toInt();
+            const double percent = zoneTotal == 0
+                ? 0.0 : zoneOccupied * 100.0 / zoneTotal;
+            QColor color(15, 118, 110);
+            if (percent >= 90.0){
+                color = QColor(180, 35, 24);
+            } else if (percent >= 80.0){
+                color = QColor(181, 71, 8);
+            }
+            BarSlice slice;
+            slice.label = zone.value(QStringLiteral("zone")).toString();
+            slice.value = percent;
+            slice.color = color;
+            slice.valueText = QString::number(percent, 'f', 0) + QStringLiteral("%");
+            bars.push_back(slice);
+        }
+        zonePressureChart_->setBars(bars);
+    }
+    applyRemoteInsights();
+}
+
+void MainWindow::applyRemoteInsights(){
+    if (dashboardInsightLabel_ != nullptr){
+        if (analyticsReport_.isEmpty()){
+            dashboardInsightLabel_->setText(
+                tr("分析报告：等待服务端 analytics.report…"));
+        } else{
+            QStringList findings;
+            for (const QJsonValue &item :
+                 analyticsReport_.value(QStringLiteral("findings")).toArray()){
+                findings << item.toObject().value(QStringLiteral("title")).toString();
+            }
+            QStringList lines;
+            lines << tr("服务端分析：%1")
+                         .arg(analyticsReport_.value(QStringLiteral("summary")).toString());
+            if (!findings.isEmpty()){
+                lines << tr("发现：%1").arg(findings.join(QStringLiteral("；")));
+            }
+            dashboardInsightLabel_->setText(lines.join(QStringLiteral("\n")));
+        }
+    }
+    if (zoneInsightLabel_ != nullptr){
+        QString highestZone = QStringLiteral("-");
+        double highestPressure = 0.0;
+        QStringList topZones;
+        for (const QJsonValue &item : snapshot_.value(QStringLiteral("zones")).toArray()){
+            const QJsonObject zone = item.toObject();
+            const int zoneTotal = zone.value(QStringLiteral("total")).toInt();
+            const double percent = zoneTotal == 0
+                ? 0.0 : zone.value(QStringLiteral("occupied")).toInt() * 100.0 / zoneTotal;
+            topZones << QStringLiteral("%1 %2%")
+                            .arg(zone.value(QStringLiteral("zone")).toString())
+                            .arg(percent, 0, 'f', 0);
+            if (percent > highestPressure){
+                highestPressure = percent;
+                highestZone = zone.value(QStringLiteral("zone")).toString();
+            }
+        }
+        zoneInsightLabel_->setText(
+            tr("分区压力：%1 ｜ 压力最高：%2 ｜ 建议优先把新入场车辆引导至压力较低的分区。")
+                .arg(topZones.join(QStringLiteral(" · ")))
+                .arg(highestZone));
+    }
+    if (bookingImpactLabel_ != nullptr){
+        bookingImpactLabel_->setText(
+            tr("预约与历史趋势：远程模式暂不展示（需服务端记录数据合同）。"));
+    }
+    if (recordsTrendLabel_ != nullptr){
+        recordsTrendLabel_->setText(QString());
+    }
+}
+
+void MainWindow::allocateVehicleRemote(){
+    const QString plate = plateInput_->text().trimmed();
+    if (plate.isEmpty()){
+        QMessageBox::information(this, QStringLiteral("请输入车牌"),
+                                 QStringLiteral("自动分配前请输入车辆车牌。"));
+        return;
+    }
+    if (session_ == nullptr
+        || session_->state() != smartpark::ServerSession::State::Online){
+        QMessageBox::warning(this, QStringLiteral("未连接"),
+                             QStringLiteral("与服务端的连接尚未建立，请稍候重试。"));
+        return;
+    }
+    setRemoteActionsEnabled(false);
+    const QString vehicleType = vehicleTypeInput_->currentIndex() == 1
+        ? QStringLiteral("motorcycle")
+        : vehicleTypeInput_->currentIndex() == 2
+            ? QStringLiteral("truck")
+            : vehicleTypeInput_->currentIndex() == 3
+                ? QStringLiteral("electric")
+                : QStringLiteral("car");
+    session_->request(QStringLiteral("parking.enter"),
+                      QJsonObject{{QStringLiteral("plate"), plate},
+                                  {QStringLiteral("vehicleType"), vehicleType}},
+                      [this, plate](bool ok, const QString &error,
+                                    const QJsonObject &payload){
+        setRemoteActionsEnabled(true);
+        if (!ok){
+            QMessageBox::warning(this, QStringLiteral("入场失败"),
+                                 QStringLiteral("%1 入场被服务端拒绝：%2").arg(plate, error));
+            return;
+        }
+        const QString spotId = payload.value(QStringLiteral("spotId")).toString();
+        recommendationLabel_->setText(
+            tr("服务端分配：车位 %1 ｜ 入场 %2 m ｜ 离场 %3 m ｜ 评分 %4")
+                .arg(spotId)
+                .arg(payload.value(QStringLiteral("entryDistance")).toDouble(), 0, 'f', 1)
+                .arg(payload.value(QStringLiteral("exitDistance")).toDouble(), 0, 'f', 1)
+                .arg(payload.value(QStringLiteral("score")).toDouble(), 0, 'f', 1));
+        statusLabel_->setText(
+            tr("入场成功：%1 → 车位 %2（服务端已记账）。").arg(plate, spotId));
+        // 服务端会广播 parking.entered，去抖刷新会拉新快照；这里立即拉一次
+        // 让本端操作即时反馈。
+        requestSnapshot();
+    });
+}
+
+void MainWindow::releaseVehicleRemote(){
+    QString typedPlate = plateInput_->text().trimmed();
+    if (typedPlate.isEmpty() && occupancyTable_ != nullptr){
+        const int selectedRow = occupancyTable_->currentRow();
+        if (selectedRow >= 0 && occupancyTable_->item(selectedRow, 2)
+            && occupancyTable_->item(selectedRow, 2)->text() == QStringLiteral("占用")
+            && occupancyTable_->item(selectedRow, 3)){
+            typedPlate = occupancyTable_->item(selectedRow, 3)->text().trimmed();
+        }
+    }
+    if (typedPlate.isEmpty()){
+        QMessageBox::information(this, QStringLiteral("没有可离场车辆"),
+                                 QStringLiteral("请输入在场车辆车牌，或在当前车位表选中占用车辆。"));
+        return;
+    }
+    if (session_ == nullptr
+        || session_->state() != smartpark::ServerSession::State::Online){
+        QMessageBox::warning(this, QStringLiteral("未连接"),
+                             QStringLiteral("与服务端的连接尚未建立，请稍候重试。"));
+        return;
+    }
+    setRemoteActionsEnabled(false);
+    session_->request(QStringLiteral("parking.leave"),
+                      QJsonObject{{QStringLiteral("plate"), typedPlate}},
+                      [this, typedPlate](bool ok, const QString &error,
+                                         const QJsonObject &payload){
+        setRemoteActionsEnabled(true);
+        if (!ok){
+            QMessageBox::warning(this, QStringLiteral("离场失败"),
+                                 QStringLiteral("%1 离场被服务端拒绝：%2").arg(typedPlate, error));
+            return;
+        }
+        statusLabel_->setText(
+            tr("离场完成：%1 ｜ 车位：%2 ｜ 时长：%3 分钟 ｜ 本次费用：%4 元（服务端结算）。")
+                .arg(typedPlate)
+                .arg(payload.value(QStringLiteral("spotId")).toString())
+                .arg(payload.value(QStringLiteral("durationMin")).toDouble(), 0, 'f', 0)
+                .arg(payload.value(QStringLiteral("fee")).toDouble(), 0, 'f', 2));
+        requestSnapshot();
+    });
 }

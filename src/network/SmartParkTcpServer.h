@@ -75,6 +75,8 @@ private:
     QJsonObject actionAnalyticsReport(const QJsonObject &payload, bool *ok, QString *error);
     // Gate 断线补报：按原始时间戳追溯应用离线期间的入场/离场事件。
     QJsonObject actionGateReplay(const QJsonObject &payload, bool *ok, QString *error);
+    // 管理端专用全量快照：布局几何 + 车位明细 + 计数，仅 admin 账号可调用。
+    QJsonObject actionAdminSnapshot(const QJsonObject &payload, bool *ok, QString *error);
 
     ParkingService *service_;
     AuditLogService *audit_;

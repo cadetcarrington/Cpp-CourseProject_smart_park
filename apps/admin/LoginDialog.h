@@ -6,6 +6,9 @@
 
 #include "core/service/UserStore.h"
 
+#include <functional>
+#include <utility>
+
 class QCheckBox;
 class QLabel;
 class QLineEdit;
@@ -15,14 +18,20 @@ class QPushButton;
 // 登录逻辑包含空字段校验、账号不存在 / 密码错误分别提示、
 // 连续失败 5 次锁定 30 秒、密码可见切换、记住账号与注册入口。
 // QSettings 只保存"记住账号"的账号文本，不保存密码。
+// 远程服务端模式通过 setRemoteAuthenticator 注入服务端认证：
+// 回调返回 false 时 errText 给出原因；此时不提供仅写本地库的注册入口。
 class LoginDialog : public QDialog{
     Q_OBJECT
 
 public:
+    using RemoteAuthenticator =
+        std::function<bool(const QString &userName, const QString &password,
+                           QString *errText)>;
     explicit LoginDialog(smartpark::UserStore &userStore,
                          QWidget *parent = nullptr);
 
     QString userName() const;
+    void setRemoteAuthenticator(RemoteAuthenticator authenticator);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -39,6 +48,7 @@ private:
     void setLockdown(bool locked);
 
     smartpark::UserStore &userStore_;
+    RemoteAuthenticator remoteAuthenticator_;
     QLineEdit *userNameInput_{nullptr};
     QLineEdit *passwordInput_{nullptr};
     QCheckBox *rememberUserCheck_{nullptr};
