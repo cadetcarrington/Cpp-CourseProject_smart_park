@@ -1,6 +1,7 @@
 #include "PlateReviewDialog.h"
 
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -125,6 +126,24 @@ void PlateReviewDialog::updatePreview(){
         640, 360, Qt::KeepAspectRatio, Qt::SmoothTransformation));
 }
 
+namespace{
+// 环境变量未设置时回退到 uv 默认环境（scripts/run-admin.sh 也会导出同一路径），
+// 让从 Finder 直接启动 .app 时识别功能同样可用。
+QString resolveRecognitionPython(const char *environmentVariable,
+                                 const char *defaultSubdirectory){
+    QString value = qEnvironmentVariable(environmentVariable);
+    if (value.isEmpty()){
+        const QString fallback = QDir::homePath()
+            + QStringLiteral("/.smartpark/") + QString::fromLatin1(defaultSubdirectory)
+            + QStringLiteral("/bin/python");
+        if (QFileInfo::exists(fallback)){
+            value = fallback;
+        }
+    }
+    return value;
+}
+} // namespace
+
 void PlateReviewDialog::recognize(){
     stopRecognition();
     plate_->clear();
@@ -136,11 +155,14 @@ void PlateReviewDialog::recognize(){
         status_->setText(tr("图片无法读取，请更换图片。"));
         return;
     }
-    const QString detectorPython = qEnvironmentVariable("SMARTPARK_LPR_PY");
-    const QString ocrPython = qEnvironmentVariable("SMARTPARK_OCR_PY");
+    const QString detectorPython = resolveRecognitionPython(
+        "SMARTPARK_LPR_PY", "lpr");
+    const QString ocrPython = resolveRecognitionPython(
+        "SMARTPARK_OCR_PY", "ocr");
     const QString script = qEnvironmentVariable(
         "SMARTPARK_LPR_SCRIPT", QStringLiteral(SMARTPARK_LPR_SCRIPT_PATH));
-    if (!QFileInfo::exists(detectorPython) || !QFileInfo::exists(ocrPython)
+    if (detectorPython.isEmpty() || ocrPython.isEmpty()
+        || !QFileInfo::exists(detectorPython) || !QFileInfo::exists(ocrPython)
         || !QFileInfo::exists(script)){
         status_->setText(tr("请配置 SMARTPARK_LPR_PY、SMARTPARK_OCR_PY 与识别脚本路径。"));
         return;
