@@ -2526,8 +2526,11 @@ void MainWindow::startRemoteSession(const QString &password){
     });
     connect(session_, &smartpark::ServerSession::authFailed, this,
             [this](const QString &error){
-        QMessageBox::critical(this, tr("服务端登录失败"),
-            tr("服务端拒绝登录：%1\n请退出后重新输入账号。").arg(error));
+        // 由套接字读回调触发：延迟到事件循环再弹模态框，避免重入。
+        QTimer::singleShot(0, this, [this, error]{
+            QMessageBox::critical(this, tr("服务端登录失败"),
+                tr("服务端拒绝登录：%1\n请退出后重新输入账号。").arg(error));
+        });
     });
     connect(session_, &smartpark::ServerSession::eventReceived, this,
             [this](const QString &event, const QJsonObject &payload){
@@ -2982,8 +2985,18 @@ void MainWindow::allocateVehicleRemote(){
                                     const QJsonObject &payload){
         setRemoteActionsEnabled(true);
         if (!ok){
-            QMessageBox::warning(this, QStringLiteral("入场失败"),
-                                 QStringLiteral("%1 入场被服务端拒绝：%2").arg(plate, error));
+            const bool transport = error.contains(QStringLiteral("连接"))
+                || error.contains(QStringLiteral("未连接"));
+            QTimer::singleShot(0, this, [this, plate, error, transport]{
+                if (transport){
+                    QMessageBox::warning(this, QStringLiteral("连接中断"),
+                        QStringLiteral("%1 的入场请求未送达（%2），请重连后重试。")
+                            .arg(plate, error));
+                } else{
+                    QMessageBox::warning(this, QStringLiteral("入场失败"),
+                        QStringLiteral("%1 入场被服务端拒绝：%2").arg(plate, error));
+                }
+            });
             return;
         }
         const QString spotId = payload.value(QStringLiteral("spotId")).toString();
@@ -3029,8 +3042,18 @@ void MainWindow::releaseVehicleRemote(){
                                          const QJsonObject &payload){
         setRemoteActionsEnabled(true);
         if (!ok){
-            QMessageBox::warning(this, QStringLiteral("离场失败"),
-                                 QStringLiteral("%1 离场被服务端拒绝：%2").arg(typedPlate, error));
+            const bool transport = error.contains(QStringLiteral("连接"))
+                || error.contains(QStringLiteral("未连接"));
+            QTimer::singleShot(0, this, [this, typedPlate, error, transport]{
+                if (transport){
+                    QMessageBox::warning(this, QStringLiteral("连接中断"),
+                        QStringLiteral("%1 的离场请求未送达（%2），请重连后重试。")
+                            .arg(typedPlate, error));
+                } else{
+                    QMessageBox::warning(this, QStringLiteral("离场失败"),
+                        QStringLiteral("%1 离场被服务端拒绝：%2").arg(typedPlate, error));
+                }
+            });
             return;
         }
         statusLabel_->setText(

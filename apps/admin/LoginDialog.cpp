@@ -22,7 +22,7 @@ constexpr int kMaxFailedAttempts = 5;
 constexpr int kLockdownSeconds = 30;
 }
 
-LoginDialog::LoginDialog(smartpark::UserStore &userStore, QWidget *parent)
+LoginDialog::LoginDialog(smartpark::UserStore *userStore, QWidget *parent)
     : QDialog(parent)
     , userStore_(userStore){
     setWindowTitle(tr("登录 智能停车系统 后台"));
@@ -215,7 +215,10 @@ void LoginDialog::togglePasswordVisible(){
 }
 
 void LoginDialog::openRegisterDialog(){
-    RegisterDialog dialog(userStore_, this);
+    if (userStore_ == nullptr){
+        return;  // 远程模式无本地注册入口
+    }
+    RegisterDialog dialog(*userStore_, this);
     if (dialog.exec() == QDialog::Accepted){
         userNameInput_->setText(dialog.registeredUserName());
         passwordInput_->setFocus();
@@ -313,7 +316,9 @@ void LoginDialog::attemptLogin(){
         return;
     }
 
-    const auto result = userStore_.verifyLogin(userName, password);
+    const auto result = userStore_ != nullptr
+        ? userStore_->verifyLogin(userName, password)
+        : smartpark::UserStore::LoginResult::StorageError;
     if (result == smartpark::UserStore::LoginResult::Success){
         QSettings settings;
         settings.setValue(QStringLiteral("Session/rememberUser"),

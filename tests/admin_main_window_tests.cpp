@@ -215,7 +215,7 @@ void AdminMainWindowTests::loginDialogValidatesAndAuthenticates(){
     QVERIFY(databaseDir.isValid());
     smartpark::UserStore store(databaseDir.filePath("users.db"));
     QVERIFY(store.lastError().isEmpty());
-    LoginDialog dialog(store);
+    LoginDialog dialog(&store);
     auto *userNameInput = dialog.findChild<QLineEdit *>("loginUserNameInput");
     auto *passwordInput = dialog.findChild<QLineEdit *>("loginPasswordInput");
     auto *loginButton = dialog.findChild<QPushButton *>("loginButton");

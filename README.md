@@ -178,7 +178,7 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
   - 算法：分区均衡升级为负载水位填充（跨分区低负载无条件优先，同档内按距离/拥堵/类型），车库布局 38 辆实测 13 分区负载 25%~62% 均衡。
 - 2026-09-28 增量：合入 `feature/lpr-samples-models`——管理端本地选图识别审阅（YOLO11m + PP-OCRv5 权重经 Git LFS 分发）、40 张授权样例与识别审阅对话框；macOS 原生毛玻璃接入登录页与主窗口；主界面移除顶部工具栏。
 
-尚未完成：Gate 侧真实摄像头 LPR、Admin GUI 远程服务端接线、预约查询接口与账号角色体系、`ReservationRule`/计费规则配置化及真实支付。当前 TCP v1 使用内网明文传输，不能直接暴露公网。
+尚未完成：Gate 侧真实摄像头 LPR、预约查询接口与账号角色体系、`ReservationRule`/计费规则配置化及真实支付。当前 TCP v1 使用内网明文传输，不能直接暴露公网。
 
 管理端提供本地选图识别审阅：`scripts/recognize_plate.py` 通过 PyTorch 与 Paddle 环境串联 YOLO11m 和 PP-OCRv5 最佳权重。在“车辆作业”点击“识别图片”，审阅原图、定位框、车牌裁剪图与置信度，可更换图片或重试；只有点击“使用车牌”才填入操作输入框，入场/出场始终另行人工操作。40 张整图样例及来源/授权说明见 [`examples/plates/`](examples/plates/)。此路径不是 Gate/Server 集成。两份最佳权重通过 Git LFS 跟踪；克隆时需要 Git LFS，运行时还需安装依赖并提供 PaddleOCR 源码及两个 Python 环境。
 

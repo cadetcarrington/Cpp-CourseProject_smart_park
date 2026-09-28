@@ -204,6 +204,9 @@ void SmartParkTcpServer::dispatch(Session &session, const QString &id,
         }
     } else if (action == QStringLiteral("admin.snapshot")){
         if (session.user == QStringLiteral("admin")){
+            if (audit_ != nullptr){
+                audit_->record(session.user.toStdString(), "admin_snapshot");
+            }
             result = actionAdminSnapshot(payload, &ok, &error);
         } else{
             error = QStringLiteral("仅管理员可获取快照");
@@ -632,6 +635,7 @@ QJsonObject SmartParkTcpServer::actionAdminSnapshot(const QJsonObject &,
     std::map<std::string, std::pair<int, int>> zoneStats;
     int occupied = 0;
     int reserved = 0;
+    int disabled = 0;
     for (const ParkingSpot &spot : service_->spots()){
         auto &stat = zoneStats[spot.zone()];
         stat.first += 1;
@@ -646,6 +650,8 @@ QJsonObject SmartParkTcpServer::actionAdminSnapshot(const QJsonObject &,
             stat.second += 1;
         } else if (spot.status() == SpotStatus::Reserved){
             ++reserved;
+        } else if (spot.status() == SpotStatus::Disabled){
+            ++disabled;
         }
         const auto &bounds = spot.bounds();
         item.insert(QStringLiteral("x"), bounds.origin.x);
@@ -678,8 +684,11 @@ QJsonObject SmartParkTcpServer::actionAdminSnapshot(const QJsonObject &,
                   static_cast<int>(service_->spots().size()));
     result.insert(QStringLiteral("occupied"), occupied);
     result.insert(QStringLiteral("reserved"), reserved);
+    result.insert(QStringLiteral("disabled"), disabled);
+    // 与 parking.status 的 remainingSpots 口径一致：空闲不把停用算进去。
     result.insert(QStringLiteral("available"),
-                  static_cast<int>(service_->spots().size()) - occupied - reserved);
+                  static_cast<int>(service_->spots().size()) - occupied
+                      - reserved - disabled);
     result.insert(QStringLiteral("generatedAtMs"),
                   QDateTime::currentMSecsSinceEpoch());
     *ok = true;
