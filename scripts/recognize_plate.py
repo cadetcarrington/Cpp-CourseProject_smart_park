@@ -86,7 +86,9 @@ def recognize(args: argparse.Namespace) -> dict:
     ocr_python = args.ocr_python or os.environ.get("SMARTPARK_OCR_PY")
     if not ocr_python:
         raise ValueError("Set SMARTPARK_OCR_PY or pass --ocr-python")
-    ocr_python = Path(ocr_python).expanduser().resolve()
+    # 只展开为绝对路径，不能 resolve()：uv/venv 的 bin/python 是指向底层
+    # CPython 的符号链接，resolve 后会绕过 pyvenv.cfg，丢失 venv 依赖。
+    ocr_python = Path(ocr_python).expanduser().absolute()
     dictionary = args.dictionary.expanduser().resolve()
     for path in (image, detector, recognizer, config, dictionary,
                  paddleocr / "tools/infer_rec.py", ocr_python):

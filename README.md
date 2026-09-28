@@ -183,11 +183,24 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
 管理端提供本地选图识别审阅：`scripts/recognize_plate.py` 通过 PyTorch 与 Paddle 环境串联 YOLO11m 和 PP-OCRv5 最佳权重。在“车辆作业”点击“识别图片”，审阅原图、定位框、车牌裁剪图与置信度，可更换图片或重试；只有点击“使用车牌”才填入操作输入框，入场/出场始终另行人工操作。40 张整图样例及来源/授权说明见 [`examples/plates/`](examples/plates/)。此路径不是 Gate/Server 集成。两份最佳权重通过 Git LFS 跟踪；克隆时需要 Git LFS，运行时还需安装依赖并提供 PaddleOCR 源码及两个 Python 环境。
 
 ```bash
-export SMARTPARK_LPR_PY=/path/to/smartpark-lpr/bin/python
-export SMARTPARK_OCR_PY=/path/to/smartpark-ocr/bin/python
-# 可选：SMARTPARK_LPR_SCRIPT=/path/to/recognize_plate.py
-$SMARTPARK_LPR_PY scripts/recognize_plate.py /path/to/vehicle.jpg --ocr-python "$SMARTPARK_OCR_PY"
+# uv 一键建立两个环境（本机已按此配置完成，端到端实测通过）：
+uv venv ~/.smartpark/lpr --python 3.12
+uv pip install --python ~/.smartpark/lpr/bin/python ultralytics opencv-python
+uv venv ~/.smartpark/ocr --python 3.12
+uv pip install --python ~/.smartpark/ocr/bin/python paddlepaddle opencv-python \
+    pillow pyyaml numpy shapely pyclipper scikit-image tqdm lmdb albumentations requests protobuf
+# PaddleOCR 源码放在 scripts/recognize_plate.py 期望的 third_party/PaddleOCR：
+git clone --depth 1 https://github.com/PaddlePaddle/PaddleOCR.git third_party/PaddleOCR
+# 验证（输出一行 JSON：车牌、置信度、边界框、格式检查）：
+~/.smartpark/lpr/bin/python scripts/recognize_plate.py examples/plates/blue-01.jpg \
+    --ocr-python ~/.smartpark/ocr/bin/python
 ```
+
+`scripts/run-admin.sh` 会自动导出 `SMARTPARK_LPR_PY` / `SMARTPARK_OCR_PY`
+（缺省指向 `~/.smartpark/{lpr,ocr}/bin/python`）；直接启动 .app 时对话框也会
+回退到同一默认路径。注意脚本对 OCR 解释器只做绝对路径展开而**不能**
+`resolve()`：uv/venv 的 `bin/python` 是符号链接，解析后会绕过 `pyvenv.cfg`
+丢失依赖。
 
 命令行输出一行 JSON（车牌、检测/识别置信度、边界框及基本格式检查）。默认在 CPU 上运行，首次载入两份权重可能较慢；识别器使用 `scripts/rec/ppocrv5_dict.txt`，它与训练时完整的 `ppocrv5_dict.txt` 保持一致，不能换成 `plate_dict.txt`。默认权重在 `model/weights/`，随 LFS 下载；配置文件 `smartpark_plate_ppocrv5_config.yml` 同时纳入版本控制，脚本会覆盖训练机的权重、字典与样例路径。PaddleOCR 源码与 Python 依赖仍需单独准备（`--paddleocr` 可指定位置）。当前 OCR 训练样本按标注四角透视矫正，而运行时使用检测框裁剪，正式部署前仍须评测困难场景与低置信度处理。Paddle 原生推理导出已在本机验证；YOLO ONNX 导出尚需 `onnx` 依赖，Paddle→ONNX 和 C++ 运行时尚未完成。
 
@@ -275,6 +288,12 @@ $SMARTPARK_LPR_PY scripts/recognize_plate.py /path/to/vehicle.jpg --ocr-python "
 11. ⬜ 车牌识别：实现 HyperLPR3 基线，并完成 YOLO11m + PP-OCRv5 中国车牌专用模型训练、评测与 C++ 部署。
 
 ## 最近工作记录
+
+2026-09-28（下午）选图识别在本机端到端可用：
+
+- 用 uv（Python 3.12）建立 `~/.smartpark/lpr`（ultralytics + OpenCV）与 `~/.smartpark/ocr`（paddlepaddle 3.3.1 + OpenCV/PIL/skimage 等）两套环境，PaddleOCR 源码克隆到 `third_party/PaddleOCR`（已 gitignore）。
+- 修复 `recognize_plate.py` 对 OCR 解释器的 `Path.resolve()`：uv/venv 的 `bin/python` 是符号链接，解析后脱离 `pyvenv.cfg` 导致子进程找不到依赖；改为仅绝对路径展开。
+- 实测样例 `examples/plates/blue-01.jpg` 输出 `{"plate": "皖AMJ570", "detection_confidence": 0.78, "recognition_confidence": 0.9999, "valid": true}`；`run-admin.sh` 自动导出环境变量，对话框在环境变量缺失时回退同一默认路径，从 Finder 直接启动 .app 也可识别。
 
 2026-09-28 识别分支合入 + Admin 接入服务端状态：
 
