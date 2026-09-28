@@ -19,8 +19,13 @@ constexpr quint16 kDefaultServerPort = 9527;
 
 // 远程登录：一次性同步 TCP 会话验证账号口令（登录阶段无主窗口），
 // 成功后 MainWindow 内的 ServerSession 用相同凭据建立长连接。
+// 远程管理端仅接受 admin 账号：服务端按动作鉴权，这里提前给出明确提示。
 bool remoteLogin(const QString &host, quint16 port,
                  const QString &user, const QString &pass, QString *error){
+    if (user != QStringLiteral("admin")){
+        *error = QStringLiteral("远程管理端需要 admin 账号（Gate/用户端账号无快照权限）。");
+        return false;
+    }
     smartpark::TcpClient client;
     if (!client.connectToHost(host, port, 4000)){
         *error = QStringLiteral("无法连接服务端 %1:%2（%3）")
@@ -122,8 +127,8 @@ int main(int argc, char *argv[]){
         }
     }
 
-    // 本地模式需要账号库；远程模式不创建本地 UserStore，
-    // 注册入口由 LoginDialog 的远程认证分支隐藏。
+    // 本地模式需要账号库；远程模式不创建本地 UserStore（避免把演示账号
+    // 播种进本地库），登录完全由服务端校验，注册入口同步隐藏。
     smartpark::UserStore userStore(databasePath);
     if (!remoteMode && !userStore.lastError().isEmpty()){
         QMessageBox::critical(
@@ -136,7 +141,7 @@ int main(int argc, char *argv[]){
     // session window and re-enters this loop, so users return to LoginDialog instead of quitting.
     // 登录/注册账号与停车数据同库存放（users 表）；空库会自动播种演示账号。
     while (true){
-        LoginDialog login(userStore);
+        LoginDialog login(remoteMode ? nullptr : &userStore);
         QString serverPassword;
         if (remoteMode){
             login.setRemoteAuthenticator(

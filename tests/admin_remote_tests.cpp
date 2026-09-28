@@ -18,6 +18,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QSignalSpy>
 #include <QTableWidget>
 #include <QTemporaryDir>
 
@@ -98,6 +99,8 @@ private slots:
 
     // ServerSession：登录、快照权限（仅 admin）、事件广播接收。
     void serverSessionSnapshotAndAuthorization();
+    // 错误口令：authFailed 恰好一次，且不进入重连循环。
+    void serverSessionWrongPasswordDoesNotReconnect();
     // MainWindow 远程模式：镜像服务端状态并响应 Gate 与本端操作。
     void adminWindowMirrorsServerState();
     // 服务端重启后自动重连并恢复快照。
@@ -160,6 +163,21 @@ void AdminRemoteTests::serverSessionSnapshotAndAuthorization(){
     });
     adminLoop.exec();
     QVERIFY(adminError.contains(QStringLiteral("仅 Gate")));
+}
+
+void AdminRemoteTests::serverSessionWrongPasswordDoesNotReconnect(){
+    smartpark::ServerSession session;
+    QSignalSpy authSpy(&session, &smartpark::ServerSession::authFailed);
+    session.start(QStringLiteral("127.0.0.1"), port_,
+                  QString::fromLatin1(kAdminUser), QStringLiteral("wrong-pass"));
+    QVERIFY(waitFor([&]{
+        return !authSpy.isEmpty();
+    }));
+    QVERIFY(!authSpy.first().first().toString().isEmpty());
+    // 超过首个重连周期后仍应保持 Disconnected：口令错误不重试。
+    QTest::qWait(1800);
+    QCOMPARE(authSpy.count(), 1);
+    QVERIFY(session.state() == smartpark::ServerSession::State::Disconnected);
 }
 
 void AdminRemoteTests::adminWindowMirrorsServerState(){
@@ -239,7 +257,13 @@ void AdminRemoteTests::adminWindowReconnectsAfterServerRestart(){
     QVERIFY(waitFor([&]{
         return connection->text().contains(QStringLiteral("已连接"));
     }, 15000));
-    // 重连后的快照必须重新生效：Gate 侧再入场一辆，占用应变为 1。
+    const auto metricValuesAfter = window.findChildren<QLabel *>("metricValue");
+    QVERIFY(metricValuesAfter.size() >= 4);
+    // 重启后快照恢复持久化状态：重启前的京Z00001 仍占用（先等恢复，
+    // 避免"恰好还是旧值"的空洞断言），再入场一辆断言占用增长。
+    QVERIFY(waitFor([&]{
+        return metricValuesAfter.at(2)->text() == QStringLiteral("1");
+    }));
     smartpark::TcpClient *gate = loginClient(QString::fromLatin1(kGateUser),
                                              QString::fromLatin1(kGatePass),
                                              port_);
@@ -249,11 +273,8 @@ void AdminRemoteTests::adminWindowReconnectsAfterServerRestart(){
                     {QStringLiteral("vehicleType"), QStringLiteral("car")}});
     QVERIFY(enter.has_value() && enter->value(QStringLiteral("ok")).toBool());
     delete gate;
-    QVERIFY(waitFor([&]{ return kpiTotal->text() == QStringLiteral("60"); }));
-    const auto metricValuesAfter = window.findChildren<QLabel *>("metricValue");
-    QVERIFY(metricValuesAfter.size() >= 4);
     QVERIFY(waitFor([&]{
-        return metricValuesAfter.at(2)->text() == QStringLiteral("1");
+        return metricValuesAfter.at(2)->text() == QStringLiteral("2");
     }));
 }
 

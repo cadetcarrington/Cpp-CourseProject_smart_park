@@ -63,7 +63,7 @@ DB4403/T 313 智慧停车业务数据与接口规范、北京 DB11/T 3001 ETC �
 | `reservation.checkin` | `{plate}` | `{spotId}` | 到场核销；广播 `reservation.checkin`；Gate 普通入场直接用 `parking.enter`，自动核销匹配预约 |
 | `gate.replay` | `{events:[{kind, plate, vehicleType?, ts}]}` | `{applied, duplicate, skipped, results:[{plate, kind, ok, duplicate?, error?, spotId?, fee?}]}` | Gate 账号补报；`kind=enter|exit`，`ts` 为事件发生时 epoch 毫秒 |
 | `analytics.report` | `{}` | `{model, summary, findings, recommendations}` | 本地分析结论 |
-| `admin.snapshot` | `{}` | `{layout, spots, zones, capacity, occupied, available, reserved, generatedAtMs}` | **仅 `admin` 账号**。管理端远程模式一次性全量快照，见下方说明 |
+| `admin.snapshot` | `{}` | `{layout, spots, zones, capacity, occupied, available, reserved, disabled, generatedAtMs}` | **仅 `admin` 账号**。管理端远程模式一次性全量快照，见下方说明 |
 
 `admin.snapshot` 应答细节：`layout = {siteWidth, siteHeight, plan, entrances:[{x,y}],
 exits:[{x,y}], obstacles:[{name,x,y,w,h}], regions:[{x,y,w,h}]}`，其中 `plan`

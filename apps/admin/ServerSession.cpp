@@ -10,9 +10,26 @@ ServerSession::ServerSession(QObject *parent)
     heartbeatTimer_.setInterval(std::chrono::seconds(20));
     reconnectTimer_.setSingleShot(true);
     connect(&heartbeatTimer_, &QTimer::timeout, this, [this]{
-        if (state_ == State::Online){
-            request(QStringLiteral("heartbeat"), {}, {});
+        if (state_ != State::Online){
+            return;
         }
+        // 死连接看门狗：连接假死（无 FIN 断网）时心跳永远无应答，
+        // 连续 3 次未回即主动断开，交给退避重连恢复。
+        if (missedHeartbeats_ >= 2){
+            missedHeartbeats_ = 0;
+            if (socket_ != nullptr){
+                socket_->abort();
+            }
+            return;
+        }
+        ++missedHeartbeats_;
+        request(QStringLiteral("heartbeat"), {}, [this](bool ok,
+                                                        const QString &,
+                                                        const QJsonObject &){
+            if (ok){
+                missedHeartbeats_ = 0;
+            }
+        });
     });
     connect(&reconnectTimer_, &QTimer::timeout, this, [this]{
         if (!intentionalStop_){
@@ -92,6 +109,7 @@ void ServerSession::establishConnection(){
     }
     buffer_.clear();
     token_.clear();
+    missedHeartbeats_ = 0;
     setState(State::Connecting);
     socket_->connectToHost(host_, port_);
 }
@@ -101,10 +119,14 @@ void ServerSession::authenticate(){
     const QString id = QStringLiteral("a%1").arg(++requestCounter_);
     pending_.insert(id, PendingRequest{[this](bool ok, const QString &error,
                                               const QJsonObject &payload){
+        // failPending（传输中断）也会走到这里：只有服务端真实应答的
+        // ok=false 才算认证失败；断连交由重连逻辑处理。
+        if (failingForTransport_){
+            return;
+        }
         if (!ok){
             token_.clear();
             heartbeatTimer_.stop();
-            failPending(QStringLiteral("登录未完成：%1").arg(error));
             setState(State::Disconnected);
             emit authFailed(error);
             // 口令错误重试无意义；只保留断线重连语义。
@@ -113,6 +135,7 @@ void ServerSession::authenticate(){
         }
         token_ = payload.value(QStringLiteral("token")).toString();
         reconnectDelayMs_ = 1000;
+        missedHeartbeats_ = 0;
         setState(State::Online);
         heartbeatTimer_.start();
     }});
@@ -133,11 +156,13 @@ void ServerSession::sendFrame(const QJsonObject &message){
 void ServerSession::failPending(const QString &reason){
     const auto pending = pending_;
     pending_.clear();
+    failingForTransport_ = true;
     for (auto it = pending.begin(); it != pending.end(); ++it){
         if (it.value().handler){
             it.value().handler(false, reason, {});
         }
     }
+    failingForTransport_ = false;
 }
 
 void ServerSession::scheduleReconnect(){

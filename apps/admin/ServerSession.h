@@ -86,7 +86,10 @@ private:
     QString token_;
     State state_{State::Disconnected};
     int reconnectDelayMs_{1000};
+    int missedHeartbeats_{0};
     bool intentionalStop_{false};
+    // failPending 重入标记：区分"传输失败回调"与"服务端业务错误应答"。
+    bool failingForTransport_{false};
     quint64 requestCounter_{0};
 };
 
