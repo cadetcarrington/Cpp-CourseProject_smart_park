@@ -20,9 +20,12 @@ RegisterDialog::RegisterDialog(smartpark::UserStore &userStore, QWidget *parent)
 #ifdef Q_OS_MAC
 
     // 与 LoginDialog 相同：默认自绘光斑，SMARTPARK_NATIVE_BLUR=1 才走原生毛玻璃。
-    if (qEnvironmentVariableIsSet("SMARTPARK_NATIVE_BLUR")){
+//    if (qEnvironmentVariableIsSet("SMARTPARK_NATIVE_BLUR")){
+    if(true) {
         setAttribute(Qt::WA_TranslucentBackground);
         vibrancyActive_ = smartpark_ui::applyNativeVibrancy(this, false);
+        setAttribute(Qt::WA_NoSystemBackground, true);
+        setAutoFillBackground(false);
     }
 #endif
     setStyleSheet(theme::authDialogStyleSheet(vibrancyActive_));

@@ -17,16 +17,43 @@ bool applyNativeVibrancy(QWidget *window, bool darkAppearance){
     nsWindow.opaque = NO;
     nsWindow.backgroundColor = [NSColor clearColor];
 
-    NSVisualEffectView *vibrancy = [[NSVisualEffectView alloc]
-        initWithFrame:view.bounds];
-    vibrancy.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    vibrancy.material = darkAppearance
-        ? NSVisualEffectMaterialHUDWindow
-        : NSVisualEffectMaterialUnderWindowBackground;
-    vibrancy.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-    vibrancy.state = NSVisualEffectStateActive;
-    [view addSubview:vibrancy positioned:NSWindowBelow relativeTo:nil];
-    [vibrancy release];
+    nsWindow.styleMask |= NSWindowStyleMaskFullSizeContentView;
+    // nsWindow.styleMask &= ~NSWindowStyleMaskTitled;
+
+    nsWindow.titlebarAppearsTransparent = YES;
+    nsWindow.titleVisibility = NSWindowTitleHidden;
+
+    NSView *hostView = view.superview;
+
+    if (hostView == nil) {
+        return false;
+    }
+
+    NSVisualEffectView * blur = [[NSVisualEffectView alloc] initWithFrame:view.bounds];
+
+    blur.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+    blur.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+
+    blur.material = NSVisualEffectMaterialHUDWindow;
+    //blur.material = NSVisualEffectMaterialSidebar;
+    //blur.material = NSVisualEffectMaterialUnderWindowBackground;
+
+    blur.state = NSVisualEffectStateActive;
+
+    //blur.alphaValue = 0.85;
+
+    [hostView addSubview:blur  positioned:NSWindowBelow  relativeTo:view];
+    // NSVisualEffectView *vibrancy = [[NSVisualEffectView alloc]
+    //     initWithFrame:view.bounds];
+    // vibrancy.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    // vibrancy.material = darkAppearance
+    //     ? NSVisualEffectMaterialHUDWindow
+    //     : NSVisualEffectMaterialUnderWindowBackground;
+    // vibrancy.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+    // vibrancy.state = NSVisualEffectStateActive;
+    // [view addSubview:vibrancy positioned:NSWindowBelow relativeTo:nil];
+    // [vibrancy release];
     return true;
 }
 } // namespace smartpark_ui

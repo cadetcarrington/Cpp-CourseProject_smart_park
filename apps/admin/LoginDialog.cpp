@@ -25,7 +25,7 @@ constexpr int kLockdownSeconds = 30;
 LoginDialog::LoginDialog(smartpark::UserStore &userStore, QWidget *parent)
     : QDialog(parent)
     , userStore_(userStore){
-    setWindowTitle(tr("登录 SmartPark 管理后台"));
+    setWindowTitle(tr("登录 智能停车系统 后台"));
     setModal(true);
     setFixedSize(460, 620);
     setWindowFlag(Qt::WindowContextHelpButtonHint, false);
@@ -33,10 +33,14 @@ LoginDialog::LoginDialog(smartpark::UserStore &userStore, QWidget *parent)
 #ifdef Q_OS_MAC
     // 原生毛玻璃在 Qt 6.8 半透明窗口下会盖住控件层（实机复现），
     // 默认自绘光斑背景；SMARTPARK_NATIVE_BLUR=1 时作为实验路径启用。
-    if (qEnvironmentVariableIsSet("SMARTPARK_NATIVE_BLUR")){
-        setAttribute(Qt::WA_TranslucentBackground);
+    //if (qEnvironmentVariableIsSet("SMARTPARK_NATIVE_BLUR")){
+    if(true) {
+    setAttribute(Qt::WA_TranslucentBackground);
         vibrancyActive_ = smartpark_ui::applyNativeVibrancy(this, false);
+        setAttribute(Qt::WA_NoSystemBackground, true);
+        setAutoFillBackground(false);
     }
+    
 #endif
     setStyleSheet(theme::authDialogStyleSheet(vibrancyActive_));
 
@@ -44,12 +48,12 @@ LoginDialog::LoginDialog(smartpark::UserStore &userStore, QWidget *parent)
     root->setContentsMargins(34, 32, 34, 26);
     root->setSpacing(0);
 
-    auto *brandMark = new QLabel(QStringLiteral("SP"), this);
+    auto *brandMark = new QLabel(QStringLiteral("停"), this);
     brandMark->setObjectName("loginBrandMark");
     brandMark->setAlignment(Qt::AlignCenter);
     brandMark->setFixedSize(52, 52);
 
-    auto *title = new QLabel(tr("SmartPark"), this);
+    auto *title = new QLabel(tr("智能停车系统"), this);
     title->setObjectName("loginTitle");
     QFont titleFont = title->font();
     titleFont.setPointSize(25);
@@ -77,7 +81,7 @@ LoginDialog::LoginDialog(smartpark::UserStore &userStore, QWidget *parent)
     cardLayout->setContentsMargins(24, 22, 24, 20);
     cardLayout->setSpacing(12);
 
-    auto *cardTitle = new QLabel(tr("管理员登录"), card);
+    auto *cardTitle = new QLabel(tr("管理端登录"), card);
     cardTitle->setObjectName("loginCardTitle");
     QFont cardTitleFont = cardTitle->font();
     cardTitleFont.setPointSize(15);
@@ -138,7 +142,7 @@ LoginDialog::LoginDialog(smartpark::UserStore &userStore, QWidget *parent)
     cardLayout->addWidget(registerLink_);
 
     auto *demoHint = new QLabel(
-        tr("演示账号：admin　密码：smartpark。也可注册新账号。"), card);
+        tr("账号：admin　密码：smartpark。可注册新账号。"), card);
     demoHint->setObjectName("demoAccountHint");
     demoHint->setWordWrap(true);
     cardLayout->addWidget(demoHint);
@@ -146,7 +150,7 @@ LoginDialog::LoginDialog(smartpark::UserStore &userStore, QWidget *parent)
     root->addWidget(card);
     root->addStretch(1);
 
-    auto *footer = new QLabel(tr("SmartPark Admin"), this);
+    auto *footer = new QLabel(tr("智能停车系统 管理员端"), this);
     footer->setObjectName("loginFooter");
     footer->setAlignment(Qt::AlignCenter);
     root->addWidget(footer);
@@ -185,15 +189,15 @@ QString LoginDialog::userName() const{
     return userNameInput_->text().trimmed();
 }
 
-void LoginDialog::paintEvent(QPaintEvent *){
-    if (vibrancyActive_){
+void LoginDialog::paintEvent(QPaintEvent *event){
+    if (vibrancyActive_) {
         return;  // macOS 原生毛玻璃负责背景
     }
-    if (backdrop_.isNull() || backdrop_.size() != size()){
-        backdrop_ = theme::auroraBackdrop(size());
-    }
-    QPainter painter(this);
-    painter.drawPixmap(0, 0, backdrop_);
+    // if (backdrop_.isNull() || backdrop_.size() != size()){
+    //     backdrop_ = theme::auroraBackdrop(size());
+    // }
+    // QPainter painter(this);
+    // painter.drawPixmap(0, 0, backdrop_);
 }
 
 void LoginDialog::togglePasswordVisible(){

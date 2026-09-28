@@ -70,14 +70,14 @@ inline QString applyPalette(QString text){
 // 主窗口样式表（纯色版，SMARTPARK_NO_GLASS=1 回退用）。
 inline QString solidMainWindowStyleSheet(){
     return applyPalette(QStringLiteral(R"(
-        QMainWindow { background: @window@; color: @text1@; }
-        QWidget#adminShell, QWidget#contentArea { background: @content@; }
+        QMainWindow { background:transparent; color: @text1@; }
+        QWidget#adminShell, QWidget#contentArea { background: transparent; }
         QFrame#sideBar {
             background: @surface@; border-right: 1px solid @border@;
             min-width: 206px; max-width: 260px;
         }
         QLabel#brandMark {
-            color: #FFFFFF; background: @primary@; border-radius: 4px;
+            color: #FFFFFF; background: @primary@; border-radius: 15px;
             font-size: 13pt; font-weight: 700;
         }
         QLabel#brandName { color: @text1@; font-size: 15pt; font-weight: 700; }
@@ -88,11 +88,11 @@ inline QString solidMainWindowStyleSheet(){
             padding: 4px 8px;
         }
         QListWidget#sideNavigation::item {
-            border-radius: 4px; min-height: 32px; padding: 5px 11px; margin: 1px 0;
+            border-radius: 15px; min-height: 32px; padding: 5px 11px; margin: 1px 0;
         }
         QListWidget#sideNavigation::item:hover { background: @primaryFaint@; color: @text1@; }
         QListWidget#sideNavigation::item:selected { background: @primarySoft@; color: @primary@; font-weight: 700; }
-        QFrame#topHeader { background: @surface@; border-bottom: 1px solid @border@; }
+        QFrame#topHeader { background: @surface@; border-bottom: 1px solid @border@; border-radius: 15px; }
         QLabel#pageTitle { color: @text1@; font-size: 16pt; font-weight: 700; }
         QLabel#pageSubtitle, QLabel#mutedText { color: @text3@; font-size: 10pt; }
         QLabel#connectionBadge {
@@ -179,7 +179,11 @@ inline QString glassMainWindowStyleSheet(){
             min-width: 206px; max-width: 260px;
         }
         QLabel#brandMark {
-            color: #FFFFFF; background: @primary@; border-radius: 4px;
+            background: rgba(255, 255, 255, 35);
+            border-right: 1px solid rgba(0, 0, 0, 25);
+            min-width: 206px;
+            max-width: 260px;
+            border-radius: 15px;
             font-size: 13pt; font-weight: 700;
         }
         QLabel#brandName { color: @text1@; font-size: 15pt; font-weight: 700; }
@@ -190,11 +194,11 @@ inline QString glassMainWindowStyleSheet(){
             padding: 4px 8px;
         }
         QListWidget#sideNavigation::item {
-            border-radius: 4px; min-height: 32px; padding: 5px 11px; margin: 1px 0;
+            border-radius: 15px; min-height: 32px; padding: 5px 11px; margin: 1px 0;
         }
         QListWidget#sideNavigation::item:hover { background: rgba(255, 255, 255, 120); color: @text1@; }
         QListWidget#sideNavigation::item:selected { background: @primarySoft@; color: @primary@; font-weight: 700; }
-        QFrame#topHeader { background: rgba(255, 255, 255, 165); border-bottom: 1px solid rgba(255, 255, 255, 150); }
+        QFrame#topHeader { background: rgba(255, 255, 255, 185); border-bottom: 1px solid rgba(255, 255, 255, 150); border-radius: 12px; }
         QLabel#pageTitle { color: @text1@; font-size: 16pt; font-weight: 700; }
         QLabel#pageSubtitle, QLabel#mutedText { color: @text3@; font-size: 10pt; }
         QLabel#connectionBadge {
@@ -208,11 +212,11 @@ inline QString glassMainWindowStyleSheet(){
         }
         QFrame#contentCard {
             background: rgba(255, 255, 255, 205); border: 1px solid rgba(255, 255, 255, 170);
-            border-radius: 8px;
+            border-radius: 15px;
         }
         QFrame#metricCard {
             background: rgba(255, 255, 255, 185); border: 1px solid rgba(255, 255, 255, 160);
-            border-radius: 8px; min-height: 96px;
+            border-radius: 15px; min-height: 96px;
         }
         QLabel#metricTitle { color: @text3@; font-size: 10pt; font-weight: 600; }
         QLabel#metricValue { color: @text1@; font-size: 21pt; font-weight: 700; }
@@ -223,7 +227,7 @@ inline QString glassMainWindowStyleSheet(){
         QLabel#sectionHint { color: @text3@; font-size: 10pt; }
         QLabel#statusInfo { color: @text2@; font-size: 10pt; }
         QLineEdit, QComboBox, QDateTimeEdit {
-            background: rgba(255, 255, 255, 235); border: 1px solid @inputBorder@; border-radius: 4px;
+            background: rgba(255, 255, 255, 235); border: 1px solid @inputBorder@; border-radius: 15px;
             min-height: 28px; padding: 0 8px; color: @text1@;
         }
         QLineEdit:focus, QComboBox:focus, QDateTimeEdit:focus {
@@ -231,7 +235,7 @@ inline QString glassMainWindowStyleSheet(){
         }
         QPushButton {
             color: @text2@; background: rgba(255, 255, 255, 200); border: 1px solid @inputBorder@;
-            border-radius: 4px; min-height: 30px; padding: 0 12px; font-weight: 600;
+            border-radius: 15px; min-height: 30px; padding: 0 12px; font-weight: 600;
         }
         QPushButton:hover { background: rgba(255, 255, 255, 240); border-color: @primary@; }
         QPushButton:focus { border: 1px solid @primary@; }
@@ -245,18 +249,18 @@ inline QString glassMainWindowStyleSheet(){
         QTableWidget {
             background: rgba(255, 255, 255, 235); alternate-background-color: @surfaceAlt@;
             selection-background-color: @primarySoft@; selection-color: @text1@;
-            border: 1px solid rgba(255, 255, 255, 170); border-radius: 4px; gridline-color: @gridLine@;
+            border: 1px solid rgba(255, 255, 255, 170); border-radius: 15px; gridline-color: @gridLine@;
         }
         QHeaderView::section {
             background: rgba(245, 246, 247, 220); color: @text2@; border: 0;
             border-bottom: 1px solid @border@; padding: 7px 8px; font-weight: 700;
         }
         QTableWidget::item { padding: 5px 6px; }
-        QGraphicsView { background: rgba(250, 251, 252, 225); border: 1px solid rgba(255, 255, 255, 160); border-radius: 4px; }
+        QGraphicsView { background: rgba(250, 251, 252, 225); border: 1px solid rgba(255, 255, 255, 160); border-radius: 15px; }
         QStatusBar { background: rgba(255, 255, 255, 150); color: @text3@; border-top: 1px solid rgba(255, 255, 255, 140); }
         QStatusBar::item { border: 0; }
         QToolBar { background: rgba(255, 255, 255, 165); border-bottom: 1px solid rgba(255, 255, 255, 150); spacing: 5px; padding: 4px 10px; }
-        QToolButton { color: @text2@; border-radius: 4px; padding: 5px 9px; }
+        QToolButton { color: @text2@; border-radius: 15px; padding: 5px 9px; }
         QToolButton:hover { background: rgba(255, 255, 255, 180); color: @text1@; }
         QMenuBar { background: rgba(255, 255, 255, 150); color: @text2@; border-bottom: 1px solid rgba(255, 255, 255, 140); }
         QMenuBar::item:selected { background: rgba(255, 255, 255, 160); }
@@ -273,7 +277,8 @@ inline QString authDialogStyleSheet(bool translucentBackground = false){
     return applyPalette(QStringLiteral(R"(
         LoginDialog, RegisterDialog { background: @authBg@; }
         QLabel#loginBrandMark {
-            color: #FFFFFF; background: @primary@; border-radius: 4px;
+            color: #FFFFFF; 
+            background: rgba(30, 90, 168, 190); border-radius: 15px;
             font-size: 16pt; font-weight: 700;
         }
         QLabel#loginTitle { color: @text1@; }
@@ -282,11 +287,13 @@ inline QString authDialogStyleSheet(bool translucentBackground = false){
             color: @text3@; font-size: 10pt;
         }
         QFrame#loginCard {
-            background: @surface@; border: 1px solid @border@; border-radius: 6px;
+            background: rgba(255, 255, 255, 170); 
+            border: 1px solid rgba(120, 130, 140, 80); 
+            border-radius: 15px;
         }
         QLabel#loginCardTitle { color: @text1@; }
         QLineEdit {
-            background: @surface@; border: 1px solid @inputBorder@; border-radius: 4px;
+            background: @surface@; border: 1px solid @inputBorder@; border-radius: 15px;
             min-height: 30px; padding: 0 9px; color: @text1@;
         }
         QLineEdit:focus { border: 2px solid @primary@; padding: 0 8px; }
@@ -294,17 +301,17 @@ inline QString authDialogStyleSheet(bool translucentBackground = false){
         QCheckBox { color: @text3@; }
         QLabel#loginErrorLabel { color: @danger@; font-weight: 600; }
         QPushButton#loginButton {
-            color: #FFFFFF; background: @primary@; border: 1px solid @primary@;
+            color: #FFFFFF; background: rgba(30, 90, 168, 180); border: 1px solid rgba(30, 90, 168, 180);
             border-radius: 4px; font-weight: 700; padding: 0 14px;
         }
-        QPushButton#loginButton:hover { background: @primaryDark@; }
+        QPushButton#loginButton:hover { background: rgba(30, 90, 168, 190); }
         QPushButton#loginButton:disabled { background: #E4E7EB; color: @text4@; border-color: transparent; }
         QPushButton#registerLink, QPushButton#backToLoginLink {
-            color: @primary@; background: transparent; border: 0; font-weight: 600;
+            color: rgba(30, 90, 168, 180); background: transparent; border: 0; font-weight: 600;
             min-height: 26px; padding: 2px 6px;
         }
         QPushButton#registerLink:hover, QPushButton#backToLoginLink:hover {
-            color: @primaryDark@; text-decoration: underline;
+            color: rgba(30, 90, 168, 190); text-decoration: underline;
         }
         QLabel#demoAccountHint {
             color: @text3@; background: @primaryFaint@; border: 1px solid @border@;
