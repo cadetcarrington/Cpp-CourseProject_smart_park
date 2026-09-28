@@ -85,6 +85,7 @@ private:
     std::unique_ptr<smartpark::AuditLogService> auditService_;
     QPixmap glassBackdrop_;
     bool glassMode_{false};
+    bool vibrancyActive_{false};
     QPushButton *emergencyButton_{nullptr};
     QLabel *emergencyBanner_{nullptr};
     std::unique_ptr<smartpark::ParkingService> service_;

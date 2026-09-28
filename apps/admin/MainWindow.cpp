@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "Theme.h"
+#include "NativeEffects.h"
 
 #include "core/service/AnalyticsEngine.h"
 #include "core/service/AuditLogService.h"
@@ -332,14 +333,17 @@ MainWindow::~MainWindow() = default;
 void MainWindow::paintEvent(QPaintEvent *){
     // 毛玻璃模式的整窗背景：低饱和蓝灰色光斑经高斯模糊后铺满窗口，
     // 侧边栏/顶栏/卡片以半透明材质覆盖其上。按尺寸缓存，仅在尺寸变化时重绘。
-    if (!glassMode_){
-        return;
+    if (vibrancyActive_){
+        return;  // macOS 原生毛玻璃负责背景
     }
-    if (glassBackdrop_.isNull() || glassBackdrop_.size() != size()){
-        glassBackdrop_ = theme::auroraBackdrop(size());
-    }
-    QPainter painter(this);
-    painter.drawPixmap(0, 0, glassBackdrop_);
+    // if (!glassMode_){
+    //     return;
+    // }
+    // if (glassBackdrop_.isNull() || glassBackdrop_.size() != size()){
+    //     glassBackdrop_ = theme::auroraBackdrop(size());
+    // }
+    // QPainter painter(this);
+    // painter.drawPixmap(0, 0, glassBackdrop_);
 }
 
 void MainWindow::buildUi(){
@@ -353,20 +357,21 @@ void MainWindow::buildUi(){
     setStyleSheet(glassMode_ ? theme::glassMainWindowStyleSheet()
                              : theme::solidMainWindowStyleSheet());
 
+#ifdef Q_OS_MAC
+    // 原生毛玻璃：让窗口透明，透出 AppKit NSVisualEffectView 的系统级模糊。
+    setAttribute(Qt::WA_TranslucentBackground);
+    vibrancyActive_ = smartpark_ui::applyNativeVibrancy(this, false);
+    setAttribute(Qt::WA_NoSystemBackground, true);
+    setAutoFillBackground(false);
+#endif
+
     auto *fileMenu = menuBar()->addMenu(tr("文件"));
     auto *logoutAction = fileMenu->addAction(tr("退出登录"));
     fileMenu->addSeparator();
     auto *quitAction = fileMenu->addAction(tr("退出程序"));
     auto *viewMenu = menuBar()->addMenu(tr("查看"));
     auto *fitMapAction = viewMenu->addAction(tr("适应车位图窗口"));
-
-    auto *toolBar = addToolBar(tr("常用操作"));
-    toolBar->setObjectName("mainToolBar");
-    toolBar->setMovable(false);
-    toolBar->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    auto *overviewAction = toolBar->addAction(tr("总览"));
-    auto *operationsAction = toolBar->addAction(tr("车辆作业"));
-    auto *refreshAction = toolBar->addAction(tr("刷新数据"));
+    auto *refreshDataAction = viewMenu->addAction(tr("刷新数据"));
 
     auto *centralWidget = new QWidget(this);
     centralWidget->setObjectName("adminShell");
@@ -1026,9 +1031,7 @@ void MainWindow::buildUi(){
     setStatusBar(status);
 
     connect(navigation_, &QListWidget::currentRowChanged, this, &MainWindow::changePage);
-    connect(overviewAction, &QAction::triggered, this, [this]{ navigation_->setCurrentRow(0); });
-    connect(operationsAction, &QAction::triggered, this, [this]{ navigation_->setCurrentRow(2); });
-    connect(refreshAction, &QAction::triggered, this, [this]{
+    connect(refreshDataAction, &QAction::triggered, this, [this]{
         refreshScene();
         refreshBookings();
         refreshRecords();
