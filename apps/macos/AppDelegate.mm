@@ -48,13 +48,21 @@
         [weakSelf showMainForUser:userName];
     };
 
+    // 高度随内容收缩：登录页去掉品牌图标后少了 66pt，保持底部留白不变。
     NSWindow *window = [[NSWindow alloc]
-        initWithContentRect:NSMakeRect(0, 0, 420, 560)
-                  styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
+        initWithContentRect:NSMakeRect(0, 0, 420, 494)
+                  styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                             NSWindowStyleMaskFullSizeContentView)
                     backing:NSBackingStoreBuffered
                       defer:NO];
     window.title = @"智能停车系统";
     window.titlebarAppearsTransparent = YES;
+    window.titleVisibility = NSWindowTitleHidden;
+    // 透明窗口 + 全尺寸内容视图：让登录页根部的 NSVisualEffectView
+    // 以 BehindWindow 混合模式透出桌面，实现 macOS 原生毛玻璃。
+    window.opaque = NO;
+    window.backgroundColor = [NSColor clearColor];
+    window.movableByWindowBackground = YES;
     window.contentViewController = login;
     [window center];
 
