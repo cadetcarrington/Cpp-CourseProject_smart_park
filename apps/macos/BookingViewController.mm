@@ -141,7 +141,10 @@
         ? [NSString stringWithFormat:@"预约成功：%@ → 车位 %@", plate,
             [NSString stringWithUTF8String:result->booking.spotId().c_str()]]
         : [NSString stringWithFormat:@"预约失败：车牌 %@ 无法预约。", plate];
-    [self refresh];
+    // 预约会占用/释放预留车位并产生定金，广播给所有页面统一刷新
+    // （通知总线会回调本页 refresh，无需再单独调用）。
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SmartParkDataChanged"
+                                                        object:nil];
 }
 
 - (void)checkIn:(id)sender{
@@ -155,7 +158,9 @@
         ? [NSString stringWithFormat:@"到场确认成功：%@ → 车位 %@", plate,
             [NSString stringWithUTF8String:result->spotId.c_str()]]
         : [NSString stringWithFormat:@"车牌 %@ 没有可确认的预约。", plate];
-    [self refresh];
+    // 到场确认会把预留车位转为占用并新建停车记录，必须让仪表盘/地图同步。
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SmartParkDataChanged"
+                                                        object:nil];
 }
 
 - (void)cancel:(id)sender{
@@ -168,7 +173,9 @@
     _statusLabel.stringValue = ok
         ? [NSString stringWithFormat:@"取消成功：%@ 预约已取消。", plate]
         : [NSString stringWithFormat:@"车牌 %@ 没有可取消的预约。", plate];
-    [self refresh];
+    // 取消会释放预留车位，同样需要广播。
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SmartParkDataChanged"
+                                                        object:nil];
 }
 
 - (void)refresh{

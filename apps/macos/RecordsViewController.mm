@@ -6,6 +6,19 @@
 
 #include <chrono>
 
+namespace{
+// 与 Qt 版 MainWindow.cpp 的 recordOverlapsRange 保持一致：在停记录以「当前
+// 时间」当作离场时间，因此跨越时间窗口的在停车辆也会被计入结果，而不是要求
+// 整段停放都发生在窗口内。
+bool recordOverlapsRange(const smartpark::ParkingRecord &record,
+                         const smartpark::ParkingRecord::TimePoint &from,
+                         const smartpark::ParkingRecord::TimePoint &to){
+    const auto exitTime = record.exitTime().value_or(
+        smartpark::ParkingRecord::Clock::now());
+    return record.entryTime() <= to && exitTime >= from;
+}
+} // namespace
+
 @implementation RecordsViewController{
     NSDatePicker *_fromPicker;
     NSDatePicker *_toPicker;
@@ -89,8 +102,39 @@
 }
 
 - (void)query:(id)sender{
+    // 与 Qt 版一致：先拒绝非法范围，而不是静默显示空表。
+    if ([_fromPicker.dateValue compare:_toPicker.dateValue] == NSOrderedDescending){
+        [self presentWarning:@"时间范围无效" detail:@"起始时间不能晚于结束时间。"];
+        return;
+    }
     _filterActive = YES;
     [self refresh];
+}
+
+- (void)presentWarning:(NSString *)title detail:(NSString *)detail{
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = title;
+    alert.informativeText = detail;
+    alert.alertStyle = NSAlertStyleWarning;
+    [alert addButtonWithTitle:@"好"];
+    NSWindow *window = self.view.window;
+    if (window != nil){
+        [alert beginSheetModalForWindow:window completionHandler:nil];
+        return;
+    }
+    [alert runModal];
+}
+
+- (NSString *)rangeText{
+    static NSDateFormatter *formatter = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        formatter = [[NSDateFormatter alloc] init];
+        formatter.dateFormat = @"yyyy-MM-dd HH:mm";
+    });
+    return [NSString stringWithFormat:@"%@ 至 %@",
+            [formatter stringFromDate:_fromPicker.dateValue],
+            [formatter stringFromDate:_toPicker.dateValue]];
 }
 
 - (void)reset:(id)sender{
@@ -114,17 +158,15 @@
     int parkedCount = 0;
     double feeSum = 0.0;
     for (const smartpark::ParkingRecord &record : records){
+        // 先筛后算：汇总的三个数字都必须来自可见行，否则表格与小结互相矛盾。
+        if (_filterActive && !recordOverlapsRange(record, from, to)){
+            continue;
+        }
         const bool closed = record.isClosed();
         if (!closed){
             ++parkedCount;
         }
         feeSum += record.fee();
-        const bool inRange = !_filterActive ||
-            (record.entryTime() <= to &&
-             (closed ? *record.exitTime() >= from : record.entryTime() >= from));
-        if (!inRange){
-            continue;
-        }
         auto duration = std::chrono::duration_cast<std::chrono::minutes>(record.duration());
         NSString *entry = [NSString stringWithUTF8String:smartpark_ui::formatTime(record.entryTime()).c_str()];
         NSString *exit = closed
@@ -142,9 +184,17 @@
         ]];
     }
     [_table setRows:rows];
-    _summaryLabel.stringValue = [NSString stringWithFormat:
-        @"共 %lu 条记录 ｜ 在停 %d 辆 ｜ 费用合计 %.2f 元",
-        (unsigned long)records.size(), parkedCount, feeSum];
+
+    if (_filterActive){
+        _summaryLabel.stringValue = [NSString stringWithFormat:
+            @"查询结果：%lu 条（全部 %lu 条） ｜ 在停 %d 辆 ｜ 费用合计 %.2f 元 ｜ 时间 %@",
+            (unsigned long)rows.count, (unsigned long)records.size(),
+            parkedCount, feeSum, [self rangeText]];
+    } else{
+        _summaryLabel.stringValue = [NSString stringWithFormat:
+            @"全部停车记录：%lu 条 ｜ 在停 %d 辆 ｜ 费用合计 %.2f 元",
+            (unsigned long)rows.count, parkedCount, feeSum];
+    }
 }
 
 @end
