@@ -151,7 +151,9 @@ bool ParkingBridge::resetDatabaseAndApplyLayout(const std::string &description,
         service_ = std::make_unique<smartpark::ParkingService>(*layout, strategy_);
         layoutText_ = description;
         if (error != nullptr){
-            *error = "重置后的数据库仍无法使用：" + buildError +
+            // 此时数据库文件已删除、内存中的历史也已随 service_ 释放：
+            // 必须讲清楚「历史已清空」，不能让用户以为重置失败、数据还在。
+            *error = "历史停车记录与预约已清空，但重建数据库失败：" + buildError +
                      "（已降级为内存模式，重启后不会保留）";
         }
         return false;
