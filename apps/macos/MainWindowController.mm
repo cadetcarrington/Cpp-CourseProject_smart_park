@@ -46,6 +46,10 @@
 }
 
 - (instancetype)init{
+    return [self initWithUserName:nil];
+}
+
+- (instancetype)initWithUserName:(NSString *)userName{
     NSWindow *window = [[NSWindow alloc]
         initWithContentRect:NSMakeRect(0, 0, 1120, 720)
         styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
@@ -67,6 +71,14 @@
 
         SidebarViewController *sidebar = [[SidebarViewController alloc] init];
         sidebar.delegate = self;
+        sidebar.userName = userName;
+        __weak MainWindowController *weakSelf = self;
+        sidebar.logoutHandler = ^{
+            MainWindowController *strongSelf = weakSelf;
+            if (strongSelf != nil && strongSelf.logoutHandler != nil){
+                strongSelf.logoutHandler();
+            }
+        };
         NSSplitViewItem *sidebarItem =
             [NSSplitViewItem sidebarWithViewController:sidebar];
         sidebarItem.minimumThickness = 200;

@@ -3,6 +3,7 @@
 @interface SidebarViewController () <NSTableViewDataSource, NSTableViewDelegate>
 @property (nonatomic, strong) NSTableView *tableView;
 @property (nonatomic, copy) NSArray<NSString *> *items;
+@property (nonatomic, strong) NSTextField *userLabel;
 @end
 
 @implementation SidebarViewController
@@ -38,11 +39,90 @@
     [self.tableView addTableColumn:column];
 
     scroll.documentView = self.tableView;
+
+    // 底部账号区：当前登录账号 + 退出登录（对齐 Qt 版顶栏的「管理员：X / 退出登录」）。
+    NSBox *separator = [[NSBox alloc] init];
+    separator.boxType = NSBoxSeparator;
+
+    self.userLabel = [NSTextField wrappingLabelWithString:@""];
+    self.userLabel.font = [NSFont systemFontOfSize:11];
+    self.userLabel.textColor = [NSColor secondaryLabelColor];
+
+    NSButton *logoutButton = [NSButton buttonWithTitle:@"退出登录"
+                                                target:self
+                                                action:@selector(requestLogout:)];
+    logoutButton.bezelStyle = NSBezelStyleRounded;
+    logoutButton.controlSize = NSControlSizeSmall;
+    logoutButton.font = [NSFont systemFontOfSize:11];
+
+    NSStackView *footer = [NSStackView stackViewWithViews:@[
+        separator, self.userLabel, logoutButton
+    ]];
+    footer.orientation = NSUserInterfaceLayoutOrientationVertical;
+    footer.alignment = NSLayoutAttributeLeading;
+    footer.spacing = 6.0;
+    footer.edgeInsets = NSEdgeInsetsMake(8, 12, 10, 12);
+
+    scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    footer.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:scroll];
+    [self.view addSubview:footer];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [scroll.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [scroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [scroll.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [scroll.bottomAnchor constraintEqualToAnchor:footer.topAnchor],
+
+        [footer.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [footer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [footer.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+
+        [separator.widthAnchor constraintEqualToAnchor:footer.widthAnchor
+                                              constant:-24],
+        [self.userLabel.widthAnchor constraintEqualToAnchor:footer.widthAnchor
+                                                   constant:-24],
+    ]];
+
+    // userName 可能在 loadView 之前就被赋值（MainWindowController 在 init 里设置），
+    // 那时 userLabel 还不存在，所以在控件建好之后补一次，否则底部会一直空着。
+    [self setUserName:_userName];
 
     // 默认选中第一项（仪表盘）。
     [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0]
                 byExtendingSelection:NO];
+}
+
+- (void)setUserName:(NSString *)userName{
+    _userName = [userName copy];
+    self.userLabel.stringValue = userName.length > 0
+        ? [NSString stringWithFormat:@"管理员：%@", userName]
+        : @"未登录";
+}
+
+- (void)requestLogout:(id)sender{
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"退出登录";
+    alert.informativeText = @"确认退出当前管理员会话并返回登录界面吗？";
+    [alert addButtonWithTitle:@"退出登录"];
+    [alert addButtonWithTitle:@"取消"];
+    alert.alertStyle = NSAlertStyleWarning;
+
+    NSWindow *window = self.view.window;
+    void (^proceed)(NSModalResponse) = ^(NSModalResponse response){
+        if (response != NSAlertFirstButtonReturn){
+            return;
+        }
+        void (^handler)(void) = self.logoutHandler;
+        if (handler != nil){
+            handler();
+        }
+    };
+    if (window != nil){
+        [alert beginSheetModalForWindow:window completionHandler:proceed];
+        return;
+    }
+    proceed([alert runModal]);
 }
 
 - (void)tableViewSelectionDidChange:(NSNotification *)notification{

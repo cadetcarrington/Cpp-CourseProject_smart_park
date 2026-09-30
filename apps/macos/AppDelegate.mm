@@ -1,16 +1,97 @@
 #import "AppDelegate.h"
+
+#import "LoginViewController.h"
 #import "MainWindowController.h"
 
-@implementation AppDelegate
+#include "core/persistence/Persistence.h"
+#include "core/service/UserStore.h"
+
+#include <QString>
+
+#include <memory>
+
+@implementation AppDelegate{
+    // 账号库与停车数据共用同一个 SQLite 文件（与 Qt 版一致）。
+    std::unique_ptr<smartpark::UserStore> userStore_;
+}
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification{
-    self.mainWindowController = [[MainWindowController alloc] init];
-    [self.mainWindowController showWindow:nil];
-    [NSApp activateIgnoringOtherApps:YES];
+    [self showLogin];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender{
     return YES;
+}
+
+#pragma mark - 登录界面
+
+- (void)showLogin{
+    const QString databasePath = smartpark::Persistence::defaultDatabasePath();
+    userStore_ = std::make_unique<smartpark::UserStore>(databasePath);
+    if (!userStore_->lastError().isEmpty()){
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"账号数据库不可用";
+        alert.informativeText = [NSString stringWithFormat:
+            @"无法打开 %@：\n%s", databasePath.toNSString(),
+            userStore_->lastError().toUtf8().constData()];
+        alert.alertStyle = NSAlertStyleCritical;
+        [alert addButtonWithTitle:@"退出"];
+        [alert runModal];
+        [NSApp terminate:nil];
+        return;
+    }
+
+    LoginViewController *login = [[LoginViewController alloc]
+        initWithUserStore:userStore_.get()];
+    __weak AppDelegate *weakSelf = self;
+    login.onAuthenticated = ^(NSString *userName){
+        [weakSelf showMainForUser:userName];
+    };
+
+    NSWindow *window = [[NSWindow alloc]
+        initWithContentRect:NSMakeRect(0, 0, 420, 560)
+                  styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
+                    backing:NSBackingStoreBuffered
+                      defer:NO];
+    window.title = @"智能停车系统";
+    window.titlebarAppearsTransparent = YES;
+    window.contentViewController = login;
+    [window center];
+
+    NSWindowController *controller =
+        [[NSWindowController alloc] initWithWindow:window];
+    // 先把登录窗口显示出来，再关掉主窗口：避免出现「零窗口」瞬间
+    // 触发 applicationShouldTerminateAfterLastWindowClosed 而直接退出。
+    [controller showWindow:nil];
+    self.loginWindowController = controller;
+
+    [self.mainWindowController close];
+    self.mainWindowController = nil;
+    self.currentUser = nil;
+
+    [NSApp activateIgnoringOtherApps:YES];
+}
+
+#pragma mark - 主窗口
+
+- (void)showMainForUser:(NSString *)userName{
+    self.currentUser = userName;
+
+    MainWindowController *main =
+        [[MainWindowController alloc] initWithUserName:userName];
+    __weak AppDelegate *weakSelf = self;
+    main.logoutHandler = ^{
+        [weakSelf showLogin];
+    };
+
+    [main showWindow:nil];
+    self.mainWindowController = main;
+
+    // 主窗口已经就位，此时再收起登录窗口。
+    [self.loginWindowController close];
+    self.loginWindowController = nil;
+
+    [NSApp activateIgnoringOtherApps:YES];
 }
 
 @end

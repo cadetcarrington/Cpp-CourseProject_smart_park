@@ -10,6 +10,10 @@ set(MACOS_ADMIN_SOURCES
     AppDelegate.mm
     MainWindowController.h
     MainWindowController.mm
+    LoginViewController.h
+    LoginViewController.mm
+    RegisterViewController.h
+    RegisterViewController.mm
     SidebarViewController.h
     SidebarViewController.mm
     DashboardViewController.h
