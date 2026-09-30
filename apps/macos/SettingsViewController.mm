@@ -274,8 +274,8 @@
     confirm.messageText = @"应用自定义停车场布局？";
     confirm.informativeText =
         @"应用后按新布局重建车位数据。车库中保存的布局快照与新布局不一致，"
-        @"因此通常需要重置数据库（清空历史停车记录与预约）——届时会再次确认。"
-        @"建议先用「导出…」备份布局。";
+        @"若车库中保存的布局快照与新布局不一致，需要重置数据库（清空历史停车"
+        @"记录与预约）——继续后会再次确认。建议先用「导出…」备份布局。";
     [confirm addButtonWithTitle:@"应用"];
     [confirm addButtonWithTitle:@"取消"];
     [self presentAlert:confirm completion:^(NSModalResponse response){
@@ -306,10 +306,13 @@
     }
 
     NSAlert *reset = [[NSAlert alloc] init];
-    reset.messageText = @"需要重置数据库才能应用新布局";
+    // rebuildService 对任何异常都返回失败，原因不一定是布局快照冲突
+    // （也可能是读取/恢复失败）。因此标题保持中性，只如实转述核心的原因。
+    reset.messageText = @"无法在当前数据库上应用新布局";
     reset.informativeText = [NSString stringWithFormat:
-        @"车库中保存的布局快照与新布局不一致，历史停车记录无法直接迁移：\n%s\n\n"
-        @"重置会清空历史停车记录与预约，然后应用当前布局。是否继续？", error.c_str()];
+        @"失败原因：\n%s\n\n"
+        @"继续会重置数据库：清空历史停车记录与预约，然后应用当前布局。是否继续？",
+        error.c_str()];
     [reset addButtonWithTitle:@"重置并应用"];
     [reset addButtonWithTitle:@"取消"];
     reset.alertStyle = NSAlertStyleCritical;
