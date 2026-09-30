@@ -49,19 +49,11 @@ static NSString *const kLastUserKey = @"SmartParkLastUser";
 
 - (void)loadView{
     NSVisualEffectView *root = [[NSVisualEffectView alloc]
-        initWithFrame:NSMakeRect(0, 0, 420, 560)];
-    root.material = NSVisualEffectMaterialWindowBackground;
+        initWithFrame:NSMakeRect(0, 0, 420, 494)];
+    // UnderWindowBackground + BehindWindow：模糊窗口后方（桌面）的毛玻璃。
+    root.material = NSVisualEffectMaterialUnderWindowBackground;
     root.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     root.state = NSVisualEffectStateActive;
-
-    // 品牌块
-    NSTextField *badge = [NSTextField labelWithString:@"停"];
-    badge.font = [NSFont systemFontOfSize:20 weight:NSFontWeightBold];
-    badge.textColor = [NSColor whiteColor];
-    badge.alignment = NSTextAlignmentCenter;
-    badge.wantsLayer = YES;
-    badge.layer.backgroundColor = [NSColor systemBlueColor].CGColor;
-    badge.layer.cornerRadius = 12.0;
 
     NSTextField *title = [NSTextField labelWithString:@"智能停车系统"];
     title.font = [NSFont systemFontOfSize:25 weight:NSFontWeightSemibold];
@@ -71,11 +63,14 @@ static NSString *const kLastUserKey = @"SmartParkLastUser";
     subtitle.font = [NSFont systemFontOfSize:12];
     subtitle.textColor = [NSColor secondaryLabelColor];
 
-    // 登录卡片
-    NSBox *card = [[NSBox alloc] init];
-    card.boxType = NSBoxCustom;
-    card.cornerRadius = 14.0;
-    card.fillColor = [NSColor colorWithSRGBRed:1 green:1 blue:1 alpha:0.06];
+    // 登录卡片：在窗口内层再叠一层毛玻璃，形成分层的玻璃卡片质感。
+    NSVisualEffectView *card = [[NSVisualEffectView alloc] init];
+    card.material = NSVisualEffectMaterialContentBackground;
+    card.blendingMode = NSVisualEffectBlendingModeWithinWindow;
+    card.state = NSVisualEffectStateActive;
+    card.wantsLayer = YES;
+    card.layer.cornerRadius = 14.0;
+    card.layer.masksToBounds = YES;
 
     NSTextField *cardTitle = [NSTextField labelWithString:@"管理端登录"];
     cardTitle.font = [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];
@@ -139,18 +134,14 @@ static NSString *const kLastUserKey = @"SmartParkLastUser";
     demoHint.textColor = [NSColor tertiaryLabelColor];
     demoHint.alignment = NSTextAlignmentCenter;
 
-    for (NSView *view in @[badge, title, subtitle, card, demoHint]){
+    for (NSView *view in @[title, subtitle, card, demoHint]){
         view.translatesAutoresizingMaskIntoConstraints = NO;
         [root addSubview:view];
     }
 
     [NSLayoutConstraint activateConstraints:@[
-        [badge.topAnchor constraintEqualToAnchor:root.topAnchor constant:44],
-        [badge.centerXAnchor constraintEqualToAnchor:root.centerXAnchor],
-        [badge.widthAnchor constraintEqualToConstant:52],
-        [badge.heightAnchor constraintEqualToConstant:52],
-
-        [title.topAnchor constraintEqualToAnchor:badge.bottomAnchor constant:14],
+        // 顶部留出无标题栏窗口的交通灯区域。
+        [title.topAnchor constraintEqualToAnchor:root.topAnchor constant:44],
         [title.centerXAnchor constraintEqualToAnchor:root.centerXAnchor],
         [subtitle.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:4],
         [subtitle.centerXAnchor constraintEqualToAnchor:root.centerXAnchor],
