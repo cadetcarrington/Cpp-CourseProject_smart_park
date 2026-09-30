@@ -77,6 +77,10 @@ public:
     // 已在内存模式生效）。
     bool resetDatabaseAndApplyLayout(const std::string &description, std::string *error);
 
+    // 数据库不可用而降级为纯内存模式时为 true：此时布局写入会「成功」但不落库，
+    // 重启即丢失。调用方据此如实提示，不要谎报已保存。
+    bool memoryOnly() const noexcept;
+
 private:
     // 用给定布局重建 ParkingService；失败时保留原有 service_（旧布局继续可用）。
     bool rebuildService(const smartpark::ParkingLayout &layout, std::string *error);

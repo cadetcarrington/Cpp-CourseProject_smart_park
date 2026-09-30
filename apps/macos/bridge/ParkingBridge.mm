@@ -94,6 +94,10 @@ const std::string &ParkingBridge::layoutDescription() const noexcept{
     return layoutText_;
 }
 
+bool ParkingBridge::memoryOnly() const noexcept{
+    return databaseFailed_ || databasePath_.empty();
+}
+
 bool ParkingBridge::applyLayoutDescription(const std::string &description,
                                            std::string *error,
                                            bool *needsDatabaseReset){

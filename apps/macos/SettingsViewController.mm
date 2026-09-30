@@ -340,9 +340,17 @@
 - (void)reportAppliedLayout{
     const std::size_t count =
         (self.bridge != nullptr) ? self.bridge->spots().size() : 0;
-    _layoutStatus.stringValue = [NSString stringWithFormat:
-        @"已应用自定义布局：%zu 个车位。", count];
-    _layoutStatus.textColor = [NSColor systemGreenColor];
+    // 内存模式下布局确实生效了，但没有落库：如实说明，不谎报已保存。
+    if (self.bridge != nullptr && self.bridge->memoryOnly()){
+        _layoutStatus.stringValue = [NSString stringWithFormat:
+            @"已应用自定义布局：%zu 个车位，但数据库不可用，仅保存在内存（重启后不会保留）。",
+            count];
+        _layoutStatus.textColor = [NSColor systemOrangeColor];
+    } else{
+        _layoutStatus.stringValue = [NSString stringWithFormat:
+            @"已应用自定义布局：%zu 个车位。", count];
+        _layoutStatus.textColor = [NSColor systemGreenColor];
+    }
     [self broadcastDataChanged];
 }
 
