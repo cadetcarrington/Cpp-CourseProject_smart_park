@@ -676,7 +676,29 @@ QJsonObject SmartParkTcpServer::actionAdminSnapshot(const QJsonObject &,
                                  {QStringLiteral("occupied"), entry.second.second}});
     }
 
+    QJsonArray dailyRevenue;
+    const QDate today = QDate::currentDate();
+    double fees[7]{};
+    for (const ParkingRecord &record : service_->records()){
+        if (!record.isClosed() || !record.exitTime()){
+            continue;
+        }
+        const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+            record.exitTime()->time_since_epoch()).count();
+        const QDate exitDate = QDateTime::fromMSecsSinceEpoch(milliseconds).date();
+        const qint64 daysAgo = exitDate.daysTo(today);
+        if (daysAgo >= 0 && daysAgo < 7){
+            fees[6 - daysAgo] += record.fee();
+        }
+    }
+    for (int i = 0; i < 7; ++i){
+        dailyRevenue.append(QJsonObject{
+            {QStringLiteral("date"), today.addDays(i - 6).toString(Qt::ISODate)},
+            {QStringLiteral("fee"), fees[i]}});
+    }
+
     QJsonObject result;
+    result.insert(QStringLiteral("dailyRevenue"), dailyRevenue);
     result.insert(QStringLiteral("layout"), layoutJson);
     result.insert(QStringLiteral("spots"), spots);
     result.insert(QStringLiteral("zones"), zones);

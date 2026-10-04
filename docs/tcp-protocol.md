@@ -63,13 +63,16 @@ DB4403/T 313 智慧停车业务数据与接口规范、北京 DB11/T 3001 ETC �
 | `reservation.checkin` | `{plate}` | `{spotId}` | 到场核销；广播 `reservation.checkin`；Gate 普通入场直接用 `parking.enter`，自动核销匹配预约 |
 | `gate.replay` | `{events:[{kind, plate, vehicleType?, ts}]}` | `{applied, duplicate, skipped, results:[{plate, kind, ok, duplicate?, error?, spotId?, fee?}]}` | Gate 账号补报；`kind=enter|exit`，`ts` 为事件发生时 epoch 毫秒 |
 | `analytics.report` | `{}` | `{model, summary, findings, recommendations}` | 本地分析结论 |
-| `admin.snapshot` | `{}` | `{layout, spots, zones, capacity, occupied, available, reserved, disabled, generatedAtMs}` | **仅 `admin` 账号**。管理端远程模式一次性全量快照，见下方说明 |
+| `admin.snapshot` | `{}` | `{layout, spots, zones, capacity, occupied, available, reserved, disabled, dailyRevenue, generatedAtMs}` | **仅 `admin` 账号**。管理端远程模式一次性全量快照，见下方说明 |
 
 `admin.snapshot` 应答细节：`layout = {siteWidth, siteHeight, plan, entrances:[{x,y}],
 exits:[{x,y}], obstacles:[{name,x,y,w,h}], regions:[{x,y,w,h}]}`，其中 `plan`
 为 `garage`（58×42.4 六层车库平面，管理端绘制轴线标注）或 `grid`（通用网格）；
 `spots = [{spotId, zone, type, status, plate?, vehicleType?, x, y, w, h}]`，
 `status` 取值 `0` 空闲 / `1` 占用 / `2` 预订 / `3` 停用，`type` 同车位类型字符串。
+`dailyRevenue = [{date, fee}]` 固定七项，日期为服务端本地时区的今天及前六个
+日历日（`yyyy-MM-dd`，从早到晚）；金额为当日离场的已结算停车记录费用之和，
+已扣除预约定金抵扣，不含单独收取或没收的定金。无记录的日期返回 `0`。
 管理端远程模式以该快照 + 广播事件渲染全部界面，不在本地维护第二个
 `ParkingService`。
 
