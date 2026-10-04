@@ -15,8 +15,8 @@ if(TARGET smartpark_gate)
     find_package(Qt6 REQUIRED COMPONENTS Network)
     qt_add_executable(smartpark_gate_replay_tests
         gate_replay_tests.cpp
-        ${CMAKE_SOURCE_DIR}/apps/gate/BarrierGate.cpp
-        ${CMAKE_SOURCE_DIR}/apps/gate/BarrierGate.h
+        ${CMAKE_SOURCE_DIR}/apps/gate/OfflineQueue.cpp
+        ${CMAKE_SOURCE_DIR}/apps/gate/OfflineQueue.h
     )
     target_include_directories(smartpark_gate_replay_tests
         PRIVATE ${CMAKE_SOURCE_DIR}/apps/gate

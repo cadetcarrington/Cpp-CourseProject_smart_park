@@ -9,7 +9,7 @@
 // 3. 兼容不返回 results 的旧响应：三个计数之和等于提交条数才整批出队。
 // 4. 协议层：应答帧被截断时只报 NeedMore；配合进程内 mock 服务端「只发半帧
 //    就断开」，客户端拿不到应答，一个事件都不会被误出队（失败安全）。
-#include "BarrierGate.h"
+#include "OfflineQueue.h"
 #include "network/Protocol.h"
 #include "network/TcpClient.h"
 

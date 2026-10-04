@@ -1,4 +1,7 @@
 #include "BarrierGate.h"
+#include "GateSelftest.h"
+#include "OfflineQueue.h"
+#include "QtGateClock.h"
 #include "network/TcpClient.h"
 
 #include <QCoreApplication>
@@ -26,7 +29,7 @@ public:
         : host_(std::move(host)), port_(port), user_(std::move(user)),
           pass_(std::move(pass)), role_(std::move(role)),
           queue_(std::move(queuePath)){
-        barrier_.onLog = [](const QString &text){ std::cout << text.toStdString() << '\n'; };
+        barrier_.onLog = [](const std::string &text){ std::cout << text << '\n'; };
         client_.onEvent = [this](const QJsonObject &event){
             std::cout << "[事件] "
                       << event.value(QStringLiteral("event")).toString().toStdString()
@@ -205,7 +208,8 @@ private:
         }
         if (line == QStringLiteral("status")){
             log(QStringLiteral("道闸状态：%1 | 连接：%2 | 离线缓存：%3 条 | 车型：%4")
-                    .arg(smartpark::gate::BarrierGate::stateText(barrier_.state()),
+                    .arg(QString::fromUtf8(
+                             smartpark::gate::BarrierGate::stateText(barrier_.state())),
                          client_.connected() ? QStringLiteral("在线")
                                              : QStringLiteral("离线"))
                     .arg(queue_.size())
@@ -298,7 +302,9 @@ private:
     QString role_;
     QString vehicleType_{QStringLiteral("car")};
     smartpark::gate::OfflineQueue queue_;
-    smartpark::gate::BarrierGate barrier_;
+    // 时钟必须先于道闸构造：BarrierGate 持有它的引用。
+    smartpark::gate::QtGateClock clock_;
+    smartpark::gate::BarrierGate barrier_{clock_};
     TcpClient client_;
     QTimer reconnectTimer_;
     QTimer heartbeatTimer_;
