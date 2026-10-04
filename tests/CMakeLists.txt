@@ -9,6 +9,29 @@ target_link_libraries(smartpark_core_tests
 
 add_test(NAME smartpark_core_tests COMMAND smartpark_core_tests)
 
+# Gate 断线补报「部分确认」：真实 OfflineQueue + 真实协议分帧，
+# 外加进程内 mock 服务端只发半帧应答，验证失败安全。
+if(TARGET smartpark_gate)
+    find_package(Qt6 REQUIRED COMPONENTS Network)
+    qt_add_executable(smartpark_gate_replay_tests
+        gate_replay_tests.cpp
+        ${CMAKE_SOURCE_DIR}/apps/gate/BarrierGate.cpp
+        ${CMAKE_SOURCE_DIR}/apps/gate/BarrierGate.h
+    )
+    target_include_directories(smartpark_gate_replay_tests
+        PRIVATE ${CMAKE_SOURCE_DIR}/apps/gate
+    )
+    target_compile_features(smartpark_gate_replay_tests PRIVATE cxx_std_17)
+    target_link_libraries(smartpark_gate_replay_tests
+        PRIVATE
+            Qt6::Network
+            smartpark_network
+    )
+    set_target_properties(smartpark_gate_replay_tests PROPERTIES AUTOMOC ON)
+    add_test(NAME smartpark_gate_replay_tests
+             COMMAND smartpark_gate_replay_tests)
+endif()
+
 if(APPLE AND TARGET smartpark_admin_macos)
     enable_language(OBJCXX)
     add_executable(smartpark_macos_map_tests

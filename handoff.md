@@ -4,10 +4,10 @@
 
 ## 当前进度（2026-09-27，P2）
 
-- P1 服务端和 P2 Gate/用户端已实现；P2 尚在本地工作区，未 commit/push。当前 `build/qt` 构建和 CTest 6/6 通过，服务端自测新增真正的长驻子进程监听/登录/查询断言。跨进程实测 Gate 先离线缓存，3 秒后服务端启动，5 秒重连时自动补报，SQLite `parking_records` 有原时间戳入场记录；在线入口/余位查询/出口也已跑通。
+- P1 服务端和 P2 Gate/用户端已实现；P2 尚在本地工作区，未 commit/push。当前 `build/qt` 构建和 CTest 12/12 通过（新增 `smartpark_gate_replay_tests`），服务端自测新增真正的长驻子进程监听/登录/查询断言。跨进程实测 Gate 先离线缓存，3 秒后服务端启动，5 秒重连时自动补报，SQLite `parking_records` 有原时间戳入场记录；在线入口/余位查询/出口也已跑通。
 - 长驻服务端生命周期已修复：`ParkingService`/`SmartParkTcpServer` 覆盖 `app.exec()`；Gate `parking.enter` 自动核销预约，不再先调用 `reservation.checkin` 再重复入场。
-- `apps/gate/` 手输车牌模拟 LPR、入口/出口双模式、定时道闸状态机、故障/防砸、离线 JSONL 队列；重连每 5 秒、心跳每 20 秒。队列按 500 条批次读取，只有收到全批次确认才用 `QSaveFile` 移除已确认前缀。补报错误会保留待人工检查。
-- `apps/user/` 查询余位、时段预约/取消，打印预期路线摘要；`src/network/SmartParkTcpServer.cpp` 的 `gate.replay` 按历史记录的车牌+事件类型+毫秒时间戳去重，限制过去 30 天和未来 5 分钟事件；非 gate 账号拒绝。服务端自测覆盖首次补报、重复回放、非法时间戳、权限；Gate 自测覆盖未确认队列跨实例恢复和前缀确认。
+- `apps/gate/` 手输车牌模拟 LPR、入口/出口双模式、定时道闸状态机、故障/防砸、离线 JSONL 队列；重连每 5 秒、心跳每 20 秒。队列按 500 条批次读取，按服务端逐条结论只移除「已获结论的前缀」（`replayHandledPrefix`，部分确认），响应截断或缺失时尾部连同其后事件留在本地重报；被判定无法追溯的事件（skipped）同样有结论、照常出队并打印丢弃明细，不会堵死队列。
+- `apps/user/` 查询余位、时段预约/取消，打印预期路线摘要；`src/network/SmartParkTcpServer.cpp` 的 `gate.replay` 按历史记录的车牌+事件类型+毫秒时间戳去重，限制过去 30 天和未来 5 分钟事件；非 gate 账号拒绝。服务端自测覆盖首次补报、重复回放、非法时间戳、权限、以及逐条结论/顺序/三计数之和的响应形状；`tests/gate_replay_tests.cpp` 覆盖多轮部分确认、未确认后缀跨重启重报、旧格式计数回退，以及 mock 服务端只发半帧应答时一个事件都不出队。
 - P3 待做真实摄像头/LPR；Admin GUI 仍直接使用本地服务，尚未转为 TCP 客户端。TCP v1 明文，限内网/隧道。已有用户数据库不自动播种 gate/user；演示推荐独立新库。参见 README 的三个终端启动命令及 `docs/tcp-protocol.md`。
 
 ## 一句话进度
