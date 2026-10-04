@@ -19,6 +19,14 @@ class ParkingLayout{
         static const char *garageDescription() noexcept;
         static ParkingLayout garageLayout();
         static ParkingLayout fromDescription(const std::string &description);
+        // 从外部数据直接装配布局：远程模式下布局几何来自服务端快照，
+        // 只有字段没有描述文本，走不了 fromDescription。
+        static ParkingLayout fromParts(double siteWidth, double siteHeight,
+                                       std::vector<ParkingSpot> spots,
+                                       std::vector<Rectangle> regions = {},
+                                       std::vector<LayoutObstacle> obstacles = {},
+                                       std::vector<Point> entrances = {},
+                                       std::vector<Point> exits = {});
         const std::vector<ParkingSpot> &spots() const noexcept;
         const std::vector<Rectangle> &regions() const noexcept;
         const std::vector<LayoutObstacle> &obstacles() const noexcept;

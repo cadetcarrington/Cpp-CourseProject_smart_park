@@ -1,9 +1,11 @@
 #pragma once
 
+#include "bridge/ParkingDataSource.h"
 #include "core/model/ParkingLayout.h"
 #include "core/service/ParkingInsightEngine.h"
 #include "core/service/ParkingService.h"
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -13,10 +15,16 @@
 
 namespace smartpark{
 class Persistence;
+class RemoteDataSource;
 }
 
 // C++ 业务核心与 AppKit UI 之间的数据桥。
-// 持有 Persistence + ParkingService，向 ViewController 暴露只读仪表盘指标。
+//
+// 双数据源外观：默认本地模式，持有 Persistence + ParkingService 直接读写本机
+// 数据库；调用 connectRemote() 后切换为远程模式，所有读写改走 RemoteDataSource
+// （协议 v1 的 admin.snapshot + 广播事件）。两种模式对 ViewController 暴露同一
+// 组方法，界面只需用 capabilities() 决定哪些入口该隐藏。
+//
 // 后续页面（车位地图/车辆作业/停车记录等）共享同一个 bridge 实例。
 class ParkingBridge{
 public:
@@ -83,11 +91,29 @@ public:
     // 重启即丢失。调用方据此如实提示，不要谎报已保存。
     bool memoryOnly() const noexcept;
 
+    // ---- 远程模式 ----
+    // 建立到服务端的 TCP 会话并登录。返回是否已发起；登录与连接结果通过
+    // onRemoteStateChanged 回调（远程模式下本 bridge 不再读写本地库）。
+    bool connectRemote(const QString &host, quint16 port, const QString &user,
+                       const QString &password);
+    // 断开并回到本地模式。
+    void disconnectRemote();
+    bool remoteMode() const noexcept;
+    // 当前数据源支持哪些能力（远程模式下预约/记录/布局编辑等为 false）。
+    smartpark::ParkingDataSource::Capabilities capabilities() const;
+    // 连接状态变化（online=false 时 detail 说明原因）。
+    std::function<void(bool online, const QString &detail)> onRemoteStateChanged;
+    // 远程快照刷新：界面应重绘。
+    std::function<void()> onRemoteDataChanged;
+    // 远程会话（本地模式为 nullptr），供界面读取快照时间与分析报告。
+    smartpark::RemoteDataSource *remote() const noexcept;
+
 private:
     // 用给定布局重建 ParkingService；失败时保留原有 service_（旧布局继续可用）。
     bool rebuildService(const smartpark::ParkingLayout &layout, std::string *error);
     bool clearParkingData(std::string *error);
 
+    std::unique_ptr<smartpark::RemoteDataSource> remote_;
     std::unique_ptr<smartpark::Persistence> persistence_;
     std::unique_ptr<smartpark::ParkingService> service_;
     std::string lastError_;

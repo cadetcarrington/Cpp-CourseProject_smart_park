@@ -22,24 +22,6 @@ namespace{
 using Clock = ParkingRecord::Clock;
 using TimePoint = ParkingRecord::TimePoint;
 
-std::optional<VehicleType> vehicleTypeFromString(const QString &text){
-    if (text == QStringLiteral("car")) return VehicleType::Car;
-    if (text == QStringLiteral("motorcycle")) return VehicleType::Motorcycle;
-    if (text == QStringLiteral("truck")) return VehicleType::Truck;
-    if (text == QStringLiteral("electric")) return VehicleType::Electric;
-    return std::nullopt;
-}
-
-QString vehicleTypeToString(VehicleType type){
-    switch (type){
-    case VehicleType::Car: return QStringLiteral("car");
-    case VehicleType::Motorcycle: return QStringLiteral("motorcycle");
-    case VehicleType::Truck: return QStringLiteral("truck");
-    case VehicleType::Electric: return QStringLiteral("electric");
-    }
-    return QStringLiteral("car");
-}
-
 TimePoint msToTime(qint64 ms){
     return TimePoint{} + std::chrono::milliseconds(ms);
 }
@@ -338,7 +320,7 @@ QJsonObject SmartParkTcpServer::actionSpotList(const QJsonObject &, bool *ok,
 QJsonObject SmartParkTcpServer::actionEnter(const QJsonObject &payload,
                                             bool *ok, QString *error){
     const QString plate = payload.value(QStringLiteral("plate")).toString().trimmed();
-    const auto type = vehicleTypeFromString(
+    const auto type = protocol::vehicleTypeFromString(
         payload.value(QStringLiteral("vehicleType")).toString(QStringLiteral("car")));
     if (plate.isEmpty() || !type.has_value()){
         *error = QStringLiteral("车牌或车辆类型无效");
@@ -387,7 +369,7 @@ QJsonObject SmartParkTcpServer::actionLeave(const QJsonObject &payload,
 QJsonObject SmartParkTcpServer::actionReservationCreate(const QJsonObject &payload,
                                                         bool *ok, QString *error){
     const QString plate = payload.value(QStringLiteral("plate")).toString().trimmed();
-    const auto type = vehicleTypeFromString(
+    const auto type = protocol::vehicleTypeFromString(
         payload.value(QStringLiteral("vehicleType")).toString(QStringLiteral("car")));
     const qint64 startMs = payload.value(QStringLiteral("startMs")).toInteger();
     const int durationMin = payload.value(QStringLiteral("durationMin")).toInt(120);
@@ -514,7 +496,7 @@ QJsonObject SmartParkTcpServer::actionGateReplay(const QJsonObject &payload,
                 itemResult.insert(QStringLiteral("duplicate"), true);
                 ++duplicate;
             } else if (kind == QStringLiteral("enter")){
-                const auto type = vehicleTypeFromString(event.value(
+                const auto type = protocol::vehicleTypeFromString(event.value(
                     QStringLiteral("vehicleType")).toString(QStringLiteral("car")));
                 const auto result = type ? service_->enter({plateText, *type}, time)
                                          : std::nullopt;
@@ -663,7 +645,7 @@ QJsonObject SmartParkTcpServer::actionAdminSnapshot(const QJsonObject &,
                         QString::fromStdString(
                             spot.parkedVehicle()->plateNumber()));
             item.insert(QStringLiteral("vehicleType"),
-                        vehicleTypeToString(spot.parkedVehicle()->type()));
+                        protocol::vehicleTypeToString(spot.parkedVehicle()->type()));
         }
         spots.append(item);
     }
