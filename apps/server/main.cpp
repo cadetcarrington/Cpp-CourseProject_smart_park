@@ -217,6 +217,68 @@ int runSelftest(){
                      .value(QStringLiteral("skipped")).toInt() == 1
               && !service.activeRecord("晋G00010"),
           "invalid offline timestamp rejected", invalid.value_or(QJsonObject()));
+
+    // 10b. 「部分确认」的前提：应答必须逐条给出结论，顺序与提交一致，
+    // 且 applied + duplicate + skipped 恰好等于提交条数。客户端只按前缀出队，
+    // 所以这三点缺一不可（详见 apps/gate 的 replayHandledPrefix）。
+    const qint64 shapeTs = QDateTime::currentMSecsSinceEpoch() - 60 * 1000LL;
+    const QJsonArray mixedBatch{
+        QJsonObject{{QStringLiteral("kind"), QStringLiteral("enter")},
+                    {QStringLiteral("plate"), QStringLiteral("晋G00101")},
+                    {QStringLiteral("vehicleType"), QStringLiteral("car")},
+                    {QStringLiteral("ts"), shapeTs}},
+        QJsonObject{{QStringLiteral("kind"), QStringLiteral("enter")},
+                    {QStringLiteral("plate"), QStringLiteral("晋G00101")},
+                    {QStringLiteral("vehicleType"), QStringLiteral("car")},
+                    {QStringLiteral("ts"), shapeTs}},
+        QJsonObject{{QStringLiteral("kind"), QStringLiteral("enter")},
+                    {QStringLiteral("plate"), QStringLiteral("晋G00102")},
+                    {QStringLiteral("ts"), qint64(0)}},
+        QJsonObject{{QStringLiteral("kind"), QStringLiteral("teleport")},
+                    {QStringLiteral("plate"), QStringLiteral("晋G00103")},
+                    {QStringLiteral("ts"), shapeTs}},
+        QJsonObject{{QStringLiteral("kind"), QStringLiteral("enter")},
+                    {QStringLiteral("plate"), QStringLiteral("晋G00104")},
+                    {QStringLiteral("vehicleType"), QStringLiteral("spaceship")},
+                    {QStringLiteral("ts"), shapeTs}}};
+    const auto mixed = gate.request(QStringLiteral("gate.replay"),
+        QJsonObject{{QStringLiteral("events"), mixedBatch}});
+    const QJsonObject mixedPayload = mixed
+        ? mixed->value(QStringLiteral("payload")).toObject() : QJsonObject{};
+    const QJsonArray mixedResults =
+        mixedPayload.value(QStringLiteral("results")).toArray();
+    check(mixed && mixed->value(QStringLiteral("ok")).toBool()
+              && mixedResults.size() == mixedBatch.size(),
+          "replay answers every submitted event with a per-event verdict",
+          mixed.value_or(QJsonObject()));
+    bool ordered = mixedResults.size() == mixedBatch.size();
+    bool everyVerdict = ordered;
+    for (int i = 0; ordered && i < mixedResults.size(); ++i){
+        const QJsonObject entry = mixedResults.at(i).toObject();
+        const QJsonObject submitted = mixedBatch.at(i).toObject();
+        ordered = entry.value(QStringLiteral("plate")).toString()
+                      == submitted.value(QStringLiteral("plate")).toString()
+                  && entry.value(QStringLiteral("kind")).toString()
+                      == submitted.value(QStringLiteral("kind")).toString();
+        everyVerdict = everyVerdict
+            && entry.value(QStringLiteral("ok")).isBool();
+    }
+    check(ordered, "replay verdicts arrive in the submitted order",
+          mixed.value_or(QJsonObject()));
+    check(everyVerdict,
+          "every verdict carries a boolean ok, so a client can stop at the first missing one",
+          mixed.value_or(QJsonObject()));
+    check(mixedPayload.value(QStringLiteral("applied")).toInt() == 1
+              && mixedPayload.value(QStringLiteral("duplicate")).toInt() == 1
+              && mixedPayload.value(QStringLiteral("skipped")).toInt() == 3,
+          "a mixed batch reports applied + duplicate + skipped == submitted",
+          mixed.value_or(QJsonObject()));
+    check(mixedPayload.value(QStringLiteral("applied")).toInt()
+              + mixedPayload.value(QStringLiteral("duplicate")).toInt()
+              + mixedPayload.value(QStringLiteral("skipped")).toInt()
+              == mixedBatch.size(),
+          "the three replay counters add up to the submitted count",
+          mixed.value_or(QJsonObject()));
     const auto forbidden = client.request(QStringLiteral("gate.replay"), replayPayload);
     check(forbidden && !forbidden->value(QStringLiteral("ok")).toBool(),
           "non-gate account cannot replay", forbidden.value_or(QJsonObject()));
