@@ -12,6 +12,15 @@ class QString;
 - (BOOL)isDatabaseReady;
 - (NSString *)databaseError;
 
+// 切换为远程模式：以 TCP 连接服务端，本机数据库不再作为数据源。
+// 连接与登录结果异步到达，期间界面显示连接状态。
+- (void)connectToRemoteHost:(NSString *)host port:(NSInteger)port
+                       user:(NSString *)user password:(NSString *)password;
+// 当前是否远程模式。
+- (BOOL)isRemote;
+// 远程模式下的连接/快照状态文案，供侧边栏底部或窗口副标题显示。
+- (NSString *)remoteStatusText;
+
 // 当前登录账号，显示在侧边栏底部。
 @property (nonatomic, copy) NSString *userName;
 // 用户确认「退出登录」后回调，由 AppDelegate 切回登录界面。

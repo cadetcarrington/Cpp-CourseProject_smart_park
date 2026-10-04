@@ -56,8 +56,12 @@
     LoginViewController *login = [[LoginViewController alloc]
         initWithUserStore:userStore_.get()];
     __weak AppDelegate *weakSelf = self;
-    login.onAuthenticated = ^(NSString *userName){
-        [weakSelf showMainForUser:userName];
+    login.onAuthenticated = ^(NSString *userName, NSString *remoteHost,
+                              NSInteger remotePort, NSString *remotePassword){
+        [weakSelf showMainForUser:userName
+                       remoteHost:remoteHost
+                             port:remotePort
+                         password:remotePassword];
     };
 
     // 高度随内容收缩：登录页去掉品牌图标后少了 66pt，保持底部留白不变。
@@ -96,8 +100,24 @@
 #pragma mark - 主窗口
 
 - (void)showMainForUser:(NSString *)userName{
+    [self showMainForUser:userName remoteHost:nil port:0 password:nil];
+}
+
+- (void)showMainForUser:(NSString *)userName
+             remoteHost:(NSString *)remoteHost
+                   port:(NSInteger)remotePort
+               password:(NSString *)remotePassword{
     MainWindowController *main =
         [[MainWindowController alloc] initWithUserName:userName databasePath:databasePath_];
+
+    if (remoteHost.length > 0){
+        // 远程模式：本机库不作为数据源，失败与否由连接状态决定。
+        [main connectToRemoteHost:remoteHost port:remotePort
+                             user:userName password:remotePassword];
+        [self presentMainWindow:main forUser:userName];
+        return;
+    }
+
     if (![main isDatabaseReady]){
         NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = @"停车数据库不可用";
@@ -108,6 +128,10 @@
                      completionHandler:nil];
         return;
     }
+    [self presentMainWindow:main forUser:userName];
+}
+
+- (void)presentMainWindow:(MainWindowController *)main forUser:(NSString *)userName{
     __weak AppDelegate *weakSelf = self;
     main.logoutHandler = ^{
         [weakSelf showLogin];

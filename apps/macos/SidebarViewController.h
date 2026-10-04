@@ -16,4 +16,9 @@
 
 // 供外部（如仪表盘快捷操作卡片）程序化选中某个导航项。
 - (void)selectIndex:(NSInteger)index;
+
+// 隐藏若干页面（下标与 SmartParkPage / MainWindowController.pages 一致）。
+// 远程模式覆盖不到的页面用它移除，避免点进去是一片空表；
+// 注意行号与页下标不再相等，内部按可见页映射换算。
+- (void)setHiddenPages:(NSIndexSet *)indexes;
 @end
