@@ -7,7 +7,9 @@
 #include "core/service/ParkingInsightEngine.h"
 #include "core/service/ParkingService.h"
 
-#include <QFile>
+#include <QSqlDatabase>
+#include <QSqlError>
+#include <QSqlQuery>
 #include <QString>
 
 #include <cstddef>
@@ -31,8 +33,11 @@ std::optional<smartpark::ParkingLayout> parseLayout(const std::string &descripti
 }
 } // namespace
 
-ParkingBridge::ParkingBridge(){
-    databasePath_ = smartpark::Persistence::defaultDatabasePath().toStdString();
+ParkingBridge::ParkingBridge()
+    : ParkingBridge(smartpark::Persistence::defaultDatabasePath()){}
+
+ParkingBridge::ParkingBridge(const QString &databasePath){
+    databasePath_ = databasePath.toStdString();
     layoutText_ = smartpark::ParkingLayout::garageDescription();
 
     std::string error;
@@ -74,20 +79,44 @@ bool ParkingBridge::rebuildService(const smartpark::ParkingLayout &layout,
     }
 }
 
-bool ParkingBridge::removeDatabaseFiles(){
-    if (databasePath_.empty()){
-        return true;
+bool ParkingBridge::clearParkingData(std::string *error){
+    if (!persistence_){
+        if (error != nullptr){
+            *error = "停车数据库连接不可用";
+        }
+        return false;
     }
-    const QString base = QString::fromStdString(databasePath_);
-    bool removed = true;
-    for (const QString &suffix :
-         {QStringLiteral(""), QStringLiteral("-wal"), QStringLiteral("-shm")}){
-        QFile file(base + suffix);
-        if (file.exists() && !file.remove()){
-            removed = false;
+    QSqlDatabase &database = persistence_->databaseManager().database();
+    if (!database.transaction()){
+        if (error != nullptr){
+            *error = database.lastError().text().toStdString();
+        }
+        return false;
+    }
+    // 账号和停车数据共库，只清理业务数据，保留已注册用户。
+    for (const QString &table : {QStringLiteral("deposit_payments"),
+                                 QStringLiteral("reservations"),
+                                 QStringLiteral("bookings"),
+                                 QStringLiteral("parking_records"),
+                                 QStringLiteral("parking_spots"),
+                                 QStringLiteral("layout_snapshot")}){
+        QSqlQuery query(database);
+        if (!query.exec(QStringLiteral("DELETE FROM ") + table)){
+            if (error != nullptr){
+                *error = query.lastError().text().toStdString();
+            }
+            database.rollback();
+            return false;
         }
     }
-    return removed;
+    if (!database.commit()){
+        if (error != nullptr){
+            *error = database.lastError().text().toStdString();
+        }
+        database.rollback();
+        return false;
+    }
+    return true;
 }
 
 const std::string &ParkingBridge::layoutDescription() const noexcept{
@@ -131,19 +160,15 @@ bool ParkingBridge::resetDatabaseAndApplyLayout(const std::string &description,
         return false;
     }
 
-    service_.reset();
-    persistence_.reset();
-    if (!removeDatabaseFiles()){
-        // 删不掉旧库：降级为内存模式，布局生效但不落库。
-        databaseFailed_ = true;
-        service_ = std::make_unique<smartpark::ParkingService>(*layout, strategy_);
-        layoutText_ = description;
-        if (error != nullptr){
-            *error = "无法删除数据库文件，已降级为内存模式：新布局仅保存在内存，重启后不会保留。";
-        }
+    if (!clearParkingData(error)){
         return false;
     }
-
+    service_.reset();
+    // 必须连 Persistence 一起重建：ParkingRepository 会把上次失败的原因留在
+    // lastError_（例如 "persisted layout differs from the current layout"），
+    // 而 restore() 只要看到 lastError_ 非空就抛「恢复失败」。复用同一连接会让
+    // 已经成功的重置被误判为失败，并连带把 bridge 打成内存模式。
+    persistence_.reset();
     databaseFailed_ = false;
     std::string buildError;
     if (!rebuildService(*layout, &buildError)){
@@ -151,9 +176,7 @@ bool ParkingBridge::resetDatabaseAndApplyLayout(const std::string &description,
         service_ = std::make_unique<smartpark::ParkingService>(*layout, strategy_);
         layoutText_ = description;
         if (error != nullptr){
-            // 此时数据库文件已删除、内存中的历史也已随 service_ 释放：
-            // 必须讲清楚「历史已清空」，不能让用户以为重置失败、数据还在。
-            *error = "历史停车记录与预约已清空，但重建数据库失败：" + buildError +
+            *error = "历史停车记录与预约已清空，但重建停车服务失败：" + buildError +
                      "（已降级为内存模式，重启后不会保留）";
         }
         return false;

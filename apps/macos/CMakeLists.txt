@@ -62,6 +62,10 @@ target_link_libraries(smartpark_admin_macos
 find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
 target_link_libraries(smartpark_admin_macos PRIVATE ${APPKIT_FRAMEWORK})
 
+# 「记住密码」把口令存入系统钥匙串（加密），而不是明文写进 plist。
+find_library(SECURITY_FRAMEWORK Security REQUIRED)
+target_link_libraries(smartpark_admin_macos PRIVATE ${SECURITY_FRAMEWORK})
+
 # 全部 ObjC++ 源码启用 ARC，简化内存管理。
 target_compile_options(smartpark_admin_macos PRIVATE -fobjc-arc)
 

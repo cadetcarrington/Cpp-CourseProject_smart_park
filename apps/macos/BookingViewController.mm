@@ -138,9 +138,16 @@
     auto result = self.bridge->bookVehicle(plate.UTF8String,
         smartpark_ui::vehicleTypeFromIndex(typeIndex), arrival);
     _statusLabel.stringValue = result
-        ? [NSString stringWithFormat:@"预约成功：%@ → 车位 %@", plate,
-            [NSString stringWithUTF8String:result->booking.spotId().c_str()]]
-        : [NSString stringWithFormat:@"预约失败：车牌 %@ 无法预约。", plate];
+        ? [NSString stringWithFormat:
+            @"预约成功：%@ → 车位 %@，到场时间 %@；可在 %@ 至 %@ 之间点「到场确认」。",
+            plate, smartpark_ui::toNSString(result->booking.spotId()),
+            smartpark_ui::toNSString(smartpark_ui::formatTime(result->booking.arrivalTime())),
+            smartpark_ui::toNSString(smartpark_ui::formatTime(
+                result->booking.arrivalTime() - self.bridge->bookingPolicy().gracePeriod)),
+            smartpark_ui::toNSString(smartpark_ui::formatTime(result->booking.arrivalDeadline()))]
+        : [NSString stringWithFormat:
+            @"预约失败：车牌 %@ 无法预约（可能已在场、已有预约、时间超出 %d 天或没有可用车位）。",
+            plate, self.bridge->bookingPolicy().advanceDays];
     // 预约会占用/释放预留车位并产生定金，广播给所有页面统一刷新
     // （通知总线会回调本页 refresh，无需再单独调用）。
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SmartParkDataChanged"
@@ -154,13 +161,72 @@
         return;
     }
     auto result = self.bridge->confirmBooking(plate.UTF8String);
-    _statusLabel.stringValue = result
-        ? [NSString stringWithFormat:@"到场确认成功：%@ → 车位 %@", plate,
-            [NSString stringWithUTF8String:result->spotId.c_str()]]
-        : [NSString stringWithFormat:@"车牌 %@ 没有可确认的预约。", plate];
+    if (result){
+        _statusLabel.stringValue = [NSString stringWithFormat:
+            @"到场确认成功：%@ → 车位 %@，定金退回（离场时按计费规则结算）。",
+            plate, smartpark_ui::toNSString(result->spotId)];
+    } else{
+        _statusLabel.stringValue = [self checkInFailureReasonForPlate:plate];
+    }
     // 到场确认会把预留车位转为占用并新建停车记录，必须让仪表盘/地图同步。
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SmartParkDataChanged"
                                                         object:nil];
+}
+
+// confirmBooking 只有成功/失败两种结果，失败原因要自己回查预约记录：
+// 未预约 / 已取消 / 已爽约 / 还没到到场时间 / 已过宽限。
+// 最常见的是「还没到到场时间」——预约表单默认把到场时间设在 1 小时后，
+// 刚预约完就点「到场确认」必然落在这个分支，不能笼统说成「没有预约」。
+- (NSString *)checkInFailureReasonForPlate:(NSString *)plate{
+    if (self.bridge == nullptr || !self.bridge->ready()){
+        return @"数据未就绪，无法确认到场。";
+    }
+    const std::string target(plate.UTF8String);
+    const smartpark::Booking *latest = nullptr;
+    for (const smartpark::Booking &booking : self.bridge->bookings()){
+        if (booking.plateNumber() != target){
+            continue;
+        }
+        if (latest == nullptr || booking.arrivalTime() > latest->arrivalTime()){
+            latest = &booking;
+        }
+    }
+    if (latest == nullptr){
+        return [NSString stringWithFormat:@"车牌 %@ 没有预约记录，请先预约。", plate];
+    }
+
+    NSString *arrival = smartpark_ui::toNSString(
+        smartpark_ui::formatTime(latest->arrivalTime()));
+    NSString *deadline = smartpark_ui::toNSString(
+        smartpark_ui::formatTime(latest->arrivalDeadline()));
+    switch (latest->status()){
+    case smartpark::BookingStatus::Cancelled:
+        return [NSString stringWithFormat:@"车牌 %@ 的预约已被取消。", plate];
+    case smartpark::BookingStatus::NoShow:
+        return [NSString stringWithFormat:
+            @"车牌 %@ 的预约已超过宽限截止 %@ 作废（爽约，定金已没收），请重新预约。",
+            plate, deadline];
+    case smartpark::BookingStatus::CheckedIn:
+        return [NSString stringWithFormat:
+            @"车牌 %@ 已到场，车辆正在场内；如需离场请到「车辆作业」办理出库。", plate];
+    case smartpark::BookingStatus::Booked:
+    default:
+        break;
+    }
+
+    // 可确认窗口 = 到场时间前后各一个宽限期，与核心 confirmBooking 保持一致。
+    const auto grace = self.bridge->bookingPolicy().gracePeriod;
+    const auto now = smartpark::Booking::Clock::now();
+    if (now < latest->arrivalTime() - grace){
+        NSString *opens = smartpark_ui::toNSString(smartpark_ui::formatTime(
+            latest->arrivalTime() - grace));
+        return [NSString stringWithFormat:
+            @"还没到可确认时间：%@ 的预约到场时间是 %@，可确认时段为 %@ 至 %@"
+             "（到场前后各 %lld 分钟）；到点后再点「到场确认」。",
+            plate, arrival, opens, deadline, (long long)grace.count()];
+    }
+    return [NSString stringWithFormat:
+        @"%@ 的预约已超过宽限截止 %@，请重新预约。", plate, deadline];
 }
 
 - (void)cancel:(id)sender{

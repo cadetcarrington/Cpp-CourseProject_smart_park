@@ -1,5 +1,6 @@
 #import "SettingsViewController.h"
 
+#import "TextUtil.h"
 #import "bridge/ParkingBridge.h"
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -257,7 +258,7 @@
     } catch (const std::exception &failure){
         _applyButton.enabled = NO;
         _layoutStatus.stringValue = [NSString stringWithFormat:
-            @"语法错误：%s", failure.what()];
+            @"语法错误：%@", smartpark_ui::toNSString(failure.what())];
         _layoutStatus.textColor = [NSColor systemRedColor];
     }
 }
@@ -300,7 +301,7 @@
     [self validatePendingLayout];
     if (!needsDatabaseReset){
         [self presentMessage:@"布局未应用"
-                      detail:[NSString stringWithFormat:@"%s", error.c_str()]
+                      detail:smartpark_ui::toNSString(error)
                        style:NSAlertStyleWarning];
         return;
     }
@@ -310,9 +311,9 @@
     // （也可能是读取/恢复失败）。因此标题保持中性，只如实转述核心的原因。
     reset.messageText = @"无法在当前数据库上应用新布局";
     reset.informativeText = [NSString stringWithFormat:
-        @"失败原因：\n%s\n\n"
+        @"失败原因：\n%@\n\n"
         @"继续会重置数据库：清空历史停车记录与预约，然后应用当前布局。是否继续？",
-        error.c_str()];
+        smartpark_ui::toNSString(error)];
     [reset addButtonWithTitle:@"重置并应用"];
     [reset addButtonWithTitle:@"取消"];
     reset.alertStyle = NSAlertStyleCritical;
@@ -335,7 +336,7 @@
     }
 
     // 布局已在内存模式生效，但未能落库：如实告知，不谎报成功。
-    _layoutStatus.stringValue = [NSString stringWithFormat:@"%s", error.c_str()];
+    _layoutStatus.stringValue = smartpark_ui::toNSString(error);
     _layoutStatus.textColor = [NSColor systemOrangeColor];
     [self broadcastDataChanged];
 }

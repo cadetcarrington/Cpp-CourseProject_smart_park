@@ -12,6 +12,18 @@
     NSPopUpButton *_typePopup;
     NSPopUpButton *_strategyPopup;
     NSTextField *_statusLabel;
+    NSTask *_recognitionTask;
+    BOOL _recognitionTimedOut;
+    BOOL _recognitionCancelled;
+    NSString *_selectedPlate;
+}
+
+- (instancetype)initWithNibName:(NSNibName)nibNameOrNil bundle:(NSBundle *)nibBundleOrNil{
+    if ((self = [super initWithNibName:nibNameOrNil bundle:nibBundleOrNil])){
+        [[NSNotificationCenter defaultCenter] addObserver:self
+            selector:@selector(vehicleSelected:) name:@"SmartParkVehicleSelected" object:nil];
+    }
+    return self;
 }
 
 - (void)loadView{
@@ -41,6 +53,7 @@
 
     NSButton *allocateButton = [NSButton buttonWithTitle:@"自动分配车位" target:self action:@selector(allocate:)];
     NSButton *recognizeButton = [NSButton buttonWithTitle:@"识别图片" target:self action:@selector(recognizeImage:)];
+    NSButton *cancelRecognitionButton = [NSButton buttonWithTitle:@"取消识别" target:self action:@selector(cancelRecognition:)];
     NSButton *updateTypeButton = [NSButton buttonWithTitle:@"修改车辆类型" target:self action:@selector(updateType:)];
     NSButton *releaseButton = [NSButton buttonWithTitle:@"车辆出库" target:self action:@selector(release:)];
     NSButton *emergencyButton = [NSButton buttonWithTitle:@"应急生命通道入场" target:self action:@selector(emergency:)];
@@ -54,15 +67,23 @@
     grid.columnSpacing = 12.0;
     grid.translatesAutoresizingMaskIntoConstraints = NO;
 
-    NSStackView *buttons = [[NSStackView alloc] init];
-    buttons.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    buttons.spacing = 10.0;
+    NSStackView *primaryButtons = [NSStackView stackViewWithViews:@[
+        allocateButton, updateTypeButton, releaseButton
+    ]];
+    primaryButtons.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    primaryButtons.spacing = 10.0;
+    NSStackView *secondaryButtons = [NSStackView stackViewWithViews:@[
+        recognizeButton, cancelRecognitionButton, emergencyButton
+    ]];
+    secondaryButtons.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    secondaryButtons.spacing = 10.0;
+    NSStackView *buttons = [NSStackView stackViewWithViews:@[
+        primaryButtons, secondaryButtons
+    ]];
+    buttons.orientation = NSUserInterfaceLayoutOrientationVertical;
+    buttons.alignment = NSLayoutAttributeLeading;
+    buttons.spacing = 8.0;
     buttons.translatesAutoresizingMaskIntoConstraints = NO;
-    [buttons addArrangedSubview:allocateButton];
-    [buttons addArrangedSubview:recognizeButton];
-    [buttons addArrangedSubview:updateTypeButton];
-    [buttons addArrangedSubview:releaseButton];
-    [buttons addArrangedSubview:emergencyButton];
 
     [form addSubview:grid];
     [form addSubview:buttons];
@@ -94,6 +115,26 @@
     ]];
 
     self.view = root;
+    if (_selectedPlate.length > 0){
+        _plateField.stringValue = _selectedPlate;
+    }
+}
+
+- (void)dealloc{
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    if (_recognitionTask.running){
+        [_recognitionTask terminate];
+    }
+}
+
+- (void)vehicleSelected:(NSNotification *)notification{
+    NSString *plate = notification.userInfo[@"plate"];
+    if ([plate isKindOfClass:[NSString class]]){
+        _selectedPlate = [plate copy];
+        if (self.isViewLoaded){
+            _plateField.stringValue = plate;
+        }
+    }
 }
 
 - (void)viewDidLoad{
@@ -123,8 +164,8 @@
         return;
     }
     _statusLabel.stringValue = [NSString stringWithFormat:
-        @"已分配车位：%s | 入口 %.1f m | 出口 %.1f m | 拥堵 %d | 分区压力 %.1f | 转向 %d | 类型成本 %.1f | 综合评分 %.1f",
-        result->spotId.c_str(), result->entryRoute.distance, result->exitRoute.distance,
+        @"已分配车位：%@ | 入口 %.1f m | 出口 %.1f m | 拥堵 %d | 分区压力 %.1f | 转向 %d | 类型成本 %.1f | 综合评分 %.1f",
+        smartpark_ui::toNSString(result->spotId), result->entryRoute.distance, result->exitRoute.distance,
         result->nearbyOccupiedSpots, result->breakdown.zonePressureCost,
         result->entryRoute.turnCount + result->exitRoute.turnCount,
         result->breakdown.typePenalty, result->score];
@@ -140,9 +181,9 @@
     auto newType = [self selectedType];
     bool ok = self.bridge->updateVehicleType(plate.UTF8String, newType);
     _statusLabel.stringValue = ok
-        ? [NSString stringWithFormat:@"车辆类型已修改：%s → %s", plate.UTF8String,
-            smartpark_ui::vehicleTypeText(newType)]
-        : [NSString stringWithFormat:@"无法修改车牌 %s 的车辆类型：车辆不在场。", plate.UTF8String];
+        ? [NSString stringWithFormat:@"车辆类型已修改：%@ → %@", plate,
+            smartpark_ui::toNSString(smartpark_ui::vehicleTypeText(newType))]
+        : [NSString stringWithFormat:@"无法修改车牌 %@ 的车辆类型：车辆不在场。", plate];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SmartParkDataChanged" object:nil];
 }
 
@@ -154,13 +195,14 @@
     }
     auto record = self.bridge->leaveVehicle(plate.UTF8String);
     if (!record){
-        _statusLabel.stringValue = [NSString stringWithFormat:@"车牌 %s 不存在可离场的在场记录。", plate.UTF8String];
+        _statusLabel.stringValue = [NSString stringWithFormat:@"车牌 %@ 不存在可离场的在场记录。", plate];
         return;
     }
     auto duration = std::chrono::duration_cast<std::chrono::minutes>(record->duration());
     _statusLabel.stringValue = [NSString stringWithFormat:
-        @"离场完成：%s | 车位 %s | 时长 %lld 分钟 | 费用 %.2f 元",
-        record->plateNumber().c_str(), record->spotId().c_str(),
+        @"离场完成：%@ | 车位 %@ | 时长 %lld 分钟 | 费用 %.2f 元",
+        smartpark_ui::toNSString(record->plateNumber()),
+        smartpark_ui::toNSString(record->spotId()),
         (long long)duration.count(), record->fee()];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SmartParkDataChanged" object:nil];
 }
@@ -173,7 +215,8 @@
     }
     auto result = self.bridge->emergencyEnter(plate.UTF8String, [self selectedType]);
     _statusLabel.stringValue = result
-        ? [NSString stringWithFormat:@"应急入场完成：分配车位 %s。", result->spotId.c_str()]
+        ? [NSString stringWithFormat:@"应急入场完成：分配车位 %@。",
+            smartpark_ui::toNSString(result->spotId)]
         : @"应急入场失败：无可用车位。";
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SmartParkDataChanged" object:nil];
 }
@@ -210,10 +253,24 @@
     return nil;
 }
 
+- (void)cancelRecognition:(id)sender{
+    if (_recognitionTask.running){
+        _recognitionCancelled = YES;
+        [_recognitionTask terminate];
+        _statusLabel.stringValue = @"已取消识别。";
+    }
+}
+
 - (void)runRecognitionForImage:(NSString *)imagePath{
+    if (_recognitionTask.running){
+        _statusLabel.stringValue = @"识别仍在进行，请等待或先取消。";
+        return;
+    }
     NSString *detectorPython = [self resolvePython:"SMARTPARK_LPR_PY" fallbackDir:"lpr"];
     NSString *ocrPython = [self resolvePython:"SMARTPARK_OCR_PY" fallbackDir:"ocr"];
-    NSString *script = @SMARTPARK_LPR_SCRIPT_PATH;
+    const char *override = getenv("SMARTPARK_LPR_SCRIPT");
+    NSString *script = override != nullptr && override[0] != '\0'
+        ? [NSString stringWithUTF8String:override] : @SMARTPARK_LPR_SCRIPT_PATH;
 
     if (detectorPython == nil || ocrPython == nil
         || ![[NSFileManager defaultManager] fileExistsAtPath:script]){
@@ -222,6 +279,8 @@
     }
 
     _statusLabel.stringValue = @"正在识别车牌，请稍候…";
+    _recognitionTimedOut = NO;
+    _recognitionCancelled = NO;
 
     NSTask *task = [[NSTask alloc] init];
     task.executableURL = [NSURL fileURLWithPath:detectorPython];
@@ -238,23 +297,48 @@
     task.standardOutput = outPipe;
     task.standardError = errPipe;
 
-    __weak OperationsViewController *weakSelf = self;
-    task.terminationHandler = ^(NSTask *t){
-        NSData *outData = outPipe.fileHandleForReading.readDataToEndOfFile;
-        NSData *errData = errPipe.fileHandleForReading.readDataToEndOfFile;
-        NSString *outStr = [[NSString alloc] initWithData:outData encoding:NSUTF8StringEncoding];
-        NSString *errStr = [[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding];
-        int exitCode = t.terminationStatus;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf handleRecognitionOutput:outStr error:errStr exitCode:exitCode];
-        });
-    };
-
     NSError *error = nil;
-    [task launchAndReturnError:&error];
-    if (error){
+    if (![task launchAndReturnError:&error]){
         _statusLabel.stringValue = [NSString stringWithFormat:@"无法启动识别程序：%@", error.localizedDescription];
+        return;
     }
+    _recognitionTask = task;
+    __weak OperationsViewController *weakSelf = self;
+    dispatch_group_t readers = dispatch_group_create();
+    __block NSData *outData;
+    __block NSData *errData;
+    dispatch_group_async(readers, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        outData = [outPipe.fileHandleForReading readDataToEndOfFile];
+    });
+    dispatch_group_async(readers, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        errData = [errPipe.fileHandleForReading readDataToEndOfFile];
+    });
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        [task waitUntilExit];
+        dispatch_group_wait(readers, DISPATCH_TIME_FOREVER);
+        NSString *output = [[NSString alloc] initWithData:outData encoding:NSUTF8StringEncoding] ?: @"";
+        NSString *details = [[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding] ?: @"";
+        dispatch_async(dispatch_get_main_queue(), ^{
+            OperationsViewController *controller = weakSelf;
+            if (controller == nil || controller->_recognitionTask != task){
+                return;
+            }
+            controller->_recognitionTask = nil;
+            if (controller->_recognitionTimedOut){
+                controller->_statusLabel.stringValue = @"识别超时，请重试。";
+            } else if (!controller->_recognitionCancelled){
+                [controller handleRecognitionOutput:output error:details exitCode:task.terminationStatus];
+            }
+        });
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_SEC),
+                   dispatch_get_main_queue(), ^{
+        OperationsViewController *controller = weakSelf;
+        if (controller != nil && controller->_recognitionTask == task && task.running){
+            controller->_recognitionTimedOut = YES;
+            [task terminate];
+        }
+    });
 }
 
 - (void)handleRecognitionOutput:(NSString *)output error:(NSString *)error exitCode:(int)exitCode{

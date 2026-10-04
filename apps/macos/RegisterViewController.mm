@@ -41,35 +41,42 @@
 
     _userNameField = [[NSTextField alloc] init];
     _userNameField.placeholderString = @"账号（2-24 个字符，不含空格）";
+    _userNameField.accessibilityIdentifier = @"smartpark.register.username";
     _userNameField.delegate = self;
 
     _passwordField = [[NSSecureTextField alloc] init];
     _passwordField.placeholderString = @"口令（至少 6 位）";
+    _passwordField.accessibilityIdentifier = @"smartpark.register.password";
     _passwordField.delegate = self;
 
     _confirmField = [[NSSecureTextField alloc] init];
     _confirmField.placeholderString = @"再次输入口令";
+    _confirmField.accessibilityIdentifier = @"smartpark.register.confirm";
     _confirmField.delegate = self;
 
     _strengthLabel = [NSTextField wrappingLabelWithString:@""];
     _strengthLabel.textColor = [NSColor secondaryLabelColor];
     _strengthLabel.font = [NSFont systemFontOfSize:11];
+    _strengthLabel.accessibilityIdentifier = @"smartpark.register.strength";
 
     _errorLabel = [NSTextField wrappingLabelWithString:@""];
     _errorLabel.textColor = [NSColor systemRedColor];
     _errorLabel.font = [NSFont systemFontOfSize:11];
+    _errorLabel.accessibilityIdentifier = @"smartpark.register.error";
     _errorLabel.hidden = YES;
 
     _registerButton = [NSButton buttonWithTitle:@"注册账号"
                                          target:self
                                          action:@selector(register:)];
     _registerButton.bezelStyle = NSBezelStyleRounded;
+    _registerButton.accessibilityIdentifier = @"smartpark.register.submit";
     _registerButton.keyEquivalent = @"\r";
 
     NSButton *cancelButton = [NSButton buttonWithTitle:@"取消"
                                                 target:self
                                                 action:@selector(cancel:)];
     cancelButton.bezelStyle = NSBezelStyleRounded;
+    cancelButton.accessibilityIdentifier = @"smartpark.register.cancel";
     cancelButton.keyEquivalent = @"\033";
 
     NSStackView *buttons = [NSStackView stackViewWithViews:@[_registerButton, cancelButton]];

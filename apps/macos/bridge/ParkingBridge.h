@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include <QString>
+
 namespace smartpark{
 class Persistence;
 }
@@ -19,6 +21,7 @@ class Persistence;
 class ParkingBridge{
 public:
     ParkingBridge();
+    explicit ParkingBridge(const QString &databasePath);
     ~ParkingBridge();
 
     ParkingBridge(const ParkingBridge &) = delete;
@@ -72,9 +75,8 @@ public:
     bool applyLayoutDescription(const std::string &description, std::string *error,
                                 bool *needsDatabaseReset);
 
-    // 重置数据库（删除 db / -wal / -shm）后应用布局。会清空历史停车记录，
-    // 仅在用户明确确认后调用。返回 false 时 error 说明降级原因（布局仍可能
-    // 已在内存模式生效）。
+    // 重置停车业务数据后应用布局，保留同库的用户账号。仅在用户明确
+    // 确认后调用；失败时 error 说明原因。
     bool resetDatabaseAndApplyLayout(const std::string &description, std::string *error);
 
     // 数据库不可用而降级为纯内存模式时为 true：此时布局写入会「成功」但不落库，
@@ -84,7 +86,7 @@ public:
 private:
     // 用给定布局重建 ParkingService；失败时保留原有 service_（旧布局继续可用）。
     bool rebuildService(const smartpark::ParkingLayout &layout, std::string *error);
-    bool removeDatabaseFiles();
+    bool clearParkingData(std::string *error);
 
     std::unique_ptr<smartpark::Persistence> persistence_;
     std::unique_ptr<smartpark::ParkingService> service_;
