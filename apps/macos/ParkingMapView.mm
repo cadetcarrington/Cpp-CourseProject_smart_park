@@ -1,9 +1,12 @@
 #import "ParkingMapView.h"
+
+#import "TextUtil.h"
 #import "bridge/ParkingBridge.h"
 
 #include "core/model/ParkingLayout.h"
 #include "core/model/ParkingSpot.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -76,13 +79,14 @@ const char *vehicleTypeText(smartpark::VehicleType type){
 }
 
 NSString *spotLabel(const smartpark::ParkingSpot &spot){
-    NSString *label = [NSString stringWithUTF8String:spot.identifier().c_str()];
+    NSString *label = smartpark_ui::toNSString(spot.identifier());
     if (spot.parkedVehicle()){
-        label = [label stringByAppendingFormat:@"\n%s",
-                 spot.parkedVehicle()->plateNumber().c_str()];
+        label = [label stringByAppendingFormat:@"\n%@",
+                 smartpark_ui::toNSString(spot.parkedVehicle()->plateNumber())];
     } else if (spot.type() != smartpark::SpotType::Normal
                && spot.status() == smartpark::SpotStatus::Available){
-        label = [label stringByAppendingFormat:@"\n%s", spotTypeText(spot.type())];
+        label = [label stringByAppendingFormat:@"\n%@",
+                 smartpark_ui::toNSString(spotTypeText(spot.type()))];
     }
     return label;
 }
@@ -90,6 +94,83 @@ NSString *spotLabel(const smartpark::ParkingSpot &spot){
 bool isGarageFloorplan(const smartpark::ParkingLayout &layout){
     return std::fabs(layout.siteWidth() - 58.0) < 0.25
         && std::fabs(layout.siteHeight() - 42.4) < 0.25;
+}
+
+struct MapTransform{
+    double scale;
+    double ox;
+    double oy;
+
+    NSPoint modelPoint(NSPoint point) const{
+        return NSMakePoint((point.x - ox) / scale, (point.y - oy) / scale);
+    }
+};
+
+MapTransform mapTransform(NSRect bounds, const smartpark::ParkingLayout &layout){
+    const double width = layout.siteWidth();
+    const double height = layout.siteHeight();
+    if (width <= 0.0 || height <= 0.0
+        || bounds.size.width <= 80.0 || bounds.size.height <= 80.0){
+        return {0.0, 0.0, 0.0};
+    }
+    const double scale = MIN((bounds.size.width - 80.0) / width,
+                             (bounds.size.height - 80.0) / height);
+    return {scale, bounds.origin.x + (bounds.size.width - width * scale) / 2.0,
+            bounds.origin.y + (bounds.size.height - height * scale) / 2.0};
+}
+
+void drawFittedLabel(NSString *text, NSRect rect, NSColor *color,
+                     CGFloat maxFontSize = 10.0){
+    NSRect inner = NSInsetRect(rect, 1.5, 1.5);
+    if (inner.size.width < 5.0 || inner.size.height < 5.0 || text.length == 0){
+        return;
+    }
+    const BOOL vertical = inner.size.height > inner.size.width * 1.45;
+    const NSSize area = vertical
+        ? NSMakeSize(inner.size.height, inner.size.width) : inner.size;
+    NSArray<NSString *> *lines = [text componentsSeparatedByString:@"\n"];
+    CGFloat fontSize = maxFontSize;
+    for (; fontSize >= 5.0; fontSize -= 0.5){
+        NSFont *font = [NSFont fontWithName:@"PingFang SC" size:fontSize]
+            ?: [NSFont systemFontOfSize:fontSize];
+        NSDictionary *attrs = @{NSFontAttributeName: font};
+        const CGFloat lineHeight = font.ascender - font.descender + font.leading;
+        BOOL fits = lineHeight * lines.count <= area.height;
+        for (NSString *line in lines){
+            fits = fits && [line sizeWithAttributes:attrs].width <= area.width;
+        }
+        if (fits){
+            break;
+        }
+    }
+    fontSize = MAX(5.0, fontSize);
+    NSFont *font = [NSFont fontWithName:@"PingFang SC" size:fontSize]
+        ?: [NSFont systemFontOfSize:fontSize];
+    const CGFloat lineHeight = font.ascender - font.descender + font.leading;
+    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+    style.alignment = NSTextAlignmentCenter;
+    style.lineBreakMode = NSLineBreakByClipping;
+    NSDictionary *attrs = @{NSFontAttributeName: font,
+                            NSForegroundColorAttributeName: color,
+                            NSParagraphStyleAttributeName: style};
+    [NSGraphicsContext saveGraphicsState];
+    [[NSBezierPath bezierPathWithRect:rect] addClip];
+    if (vertical){
+        NSAffineTransform *rotation = [NSAffineTransform transform];
+        [rotation translateXBy:NSMidX(inner) yBy:NSMidY(inner)];
+        [rotation rotateByDegrees:-90.0];
+        [rotation concat];
+    }
+    const NSRect drawing = vertical
+        ? NSMakeRect(-area.width / 2.0, -area.height / 2.0, area.width, area.height)
+        : inner;
+    CGFloat y = NSMidY(drawing) - lineHeight * lines.count / 2.0;
+    for (NSString *line in lines){
+        [line drawInRect:NSMakeRect(drawing.origin.x, y, drawing.size.width, lineHeight)
+         withAttributes:attrs];
+        y += lineHeight;
+    }
+    [NSGraphicsContext restoreGraphicsState];
 }
 
 // 在 path 中追加一段带缺口（入口/出口）的墙体线段。
@@ -148,22 +229,20 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
 
 @implementation ParkingMapView{
     NSTrackingArea *_trackingArea;
-    double _scale;
-    double _ox;
-    double _oy;
-}
-
-- (instancetype)initWithFrame:(NSRect)frameRect{
-    if ((self = [super initWithFrame:frameRect])){
-        _scale = 1.0;
-        _ox = 0.0;
-        _oy = 0.0;
-    }
-    return self;
 }
 
 - (BOOL)isFlipped{
     return YES;  // 原点左上、y 向下，与 Qt 场景坐标一致
+}
+
+- (void)setFrameSize:(NSSize)newSize{
+    [super setFrameSize:newSize];
+    [self setNeedsDisplay:YES];
+}
+
+- (void)viewDidChangeEffectiveAppearance{
+    [super viewDidChangeEffectiveAppearance];
+    [self setNeedsDisplay:YES];
 }
 
 - (void)updateTrackingAreas{
@@ -182,23 +261,27 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
         return;
     }
     NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    const double sx = (p.x - _ox) / _scale;
-    const double sy = (p.y - _oy) / _scale;
+    const MapTransform transform = mapTransform(self.bounds, self.bridge->layout());
+    if (transform.scale <= 0.0){
+        return;
+    }
+    const NSPoint model = transform.modelPoint(p);
     for (const smartpark::ParkingSpot &spot : self.bridge->spots()){
         const smartpark::Rectangle &b = spot.bounds();
-        if (sx >= b.origin.x && sx <= b.origin.x + b.width
-            && sy >= b.origin.y && sy <= b.origin.y + b.height){
+        if (model.x >= b.origin.x && model.x <= b.origin.x + b.width
+            && model.y >= b.origin.y && model.y <= b.origin.y + b.height){
             NSString *plate = spot.parkedVehicle()
-                ? [NSString stringWithUTF8String:spot.parkedVehicle()->plateNumber().c_str()]
+                ? smartpark_ui::toNSString(spot.parkedVehicle()->plateNumber())
                 : @"-";
             NSString *vehicle = spot.parkedVehicle()
-                ? [NSString stringWithUTF8String:vehicleTypeText(spot.parkedVehicle()->type())]
+                ? smartpark_ui::toNSString(vehicleTypeText(spot.parkedVehicle()->type()))
                 : @"-";
-            self.toolTip = [NSString stringWithFormat:@"%s | %s | %s | %@ | %@",
-                spot.identifier().c_str(), spotTypeText(spot.type()),
-                (spot.status() == smartpark::SpotStatus::Occupied ? "占用"
-                 : spot.status() == smartpark::SpotStatus::Reserved ? "预订"
-                 : spot.status() == smartpark::SpotStatus::Disabled ? "停用" : "空闲"),
+            self.toolTip = [NSString stringWithFormat:@"%@ | %@ | %@ | %@ | %@",
+                smartpark_ui::toNSString(spot.identifier()),
+                smartpark_ui::toNSString(spotTypeText(spot.type())),
+                (spot.status() == smartpark::SpotStatus::Occupied ? @"占用"
+                 : spot.status() == smartpark::SpotStatus::Reserved ? @"预订"
+                 : spot.status() == smartpark::SpotStatus::Disabled ? @"停用" : @"空闲"),
                 plate, vehicle];
             return;
         }
@@ -219,29 +302,26 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
         return;
     }
 
-    const NSRect bounds = self.bounds;
-    const double margin = 40.0;
-    const double availW = bounds.size.width - 2.0 * margin;
-    const double availH = bounds.size.height - 2.0 * margin;
-    if (availW <= 0.0 || availH <= 0.0){
+    const MapTransform transform = mapTransform(self.bounds, layout);
+    if (transform.scale <= 0.0){
         return;
     }
-    _scale = MIN(availW / siteW, availH / siteH);
-    _ox = (bounds.size.width - siteW * _scale) / 2.0;
-    _oy = (bounds.size.height - siteH * _scale) / 2.0;
+    const double scale = transform.scale;
+    const double ox = transform.ox;
+    const double oy = transform.oy;
 
-    auto tx = [&](double x){ return _ox + x * _scale; };
-    auto ty = [&](double y){ return _oy + y * _scale; };
+    auto tx = [&](double x){ return ox + x * scale; };
+    auto ty = [&](double y){ return oy + y * scale; };
     auto rectFor = [&](const smartpark::Rectangle &r){
         return NSMakeRect(tx(r.origin.x), ty(r.origin.y),
-                          r.width * _scale, r.height * _scale);
+                          r.width * scale, r.height * scale);
     };
 
     const bool garage = isGarageFloorplan(layout);
 
     // 场地背景
     [rgba(232, 234, 229, 255) setFill];
-    NSRectFill(NSMakeRect(_ox, _oy, siteW * _scale, siteH * _scale));
+    NSRectFill(NSMakeRect(ox, oy, siteW * scale, siteH * scale));
 
     // 网格 + 坐标轴标签
     if (garage){
@@ -292,14 +372,16 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
         }
     }
 
-    // 区域
-    for (const smartpark::Rectangle &region : layout.regions()){
-        NSRect r = rectFor(region);
-        [rgba(226, 230, 235, 40) setFill];
-        NSRectFill(r);
-        NSBezierPath *p = [NSBezierPath bezierPathWithRect:r];
-        [rgba(170, 178, 188, 255) setStroke];
-        [p stroke];
+    // 内置车库的区域包络包含通道，只绘制普通布局的区域边界。
+    if (!garage){
+        for (const smartpark::Rectangle &region : layout.regions()){
+            NSRect r = rectFor(region);
+            [rgba(226, 230, 235, 40) setFill];
+            NSRectFill(r);
+            NSBezierPath *p = [NSBezierPath bezierPathWithRect:r];
+            [rgba(170, 178, 188, 255) setStroke];
+            [p stroke];
+        }
     }
 
     // 障碍物
@@ -310,19 +392,21 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
         NSBezierPath *p = [NSBezierPath bezierPathWithRect:r];
         [rgba(92, 96, 102, 255) setStroke];
         [p stroke];
+        drawFittedLabel(smartpark_ui::toNSString(obstacle.name), r,
+                        rgba(48, 52, 56, 255), 12.0);
     }
 
     // 入口 / 出口标记
     for (const smartpark::Point &entrance : layout.entrances()){
         if (entrance.y <= 0.6){
-            NSRect r = NSMakeRect(tx(entrance.x - 3.2), ty(0.05), 6.4 * _scale, 2.4 * _scale);
+            NSRect r = NSMakeRect(tx(entrance.x - 3.2), ty(0.05), 6.4 * scale, 2.4 * scale);
             [rgba(176, 178, 172, 255) setFill];
             NSRectFill(r);
         }
     }
     for (const smartpark::Point &exit : layout.exits()){
         if (exit.y <= 0.6){
-            NSRect r = NSMakeRect(tx(exit.x - 2.6), ty(0.05), 5.2 * _scale, 2.2 * _scale);
+            NSRect r = NSMakeRect(tx(exit.x - 2.6), ty(0.05), 5.2 * scale, 2.2 * scale);
             [rgba(176, 178, 172, 255) setFill];
             NSRectFill(r);
         }
@@ -339,22 +423,17 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
         p.lineWidth = 0.5;
         [p stroke];
 
-        NSDictionary *attrs = @{
-            NSFontAttributeName: [NSFont systemFontOfSize:10.0 weight:NSFontWeightMedium],
-            NSForegroundColorAttributeName: labelColor(spot.status()),
-        };
-        [spotLabel(spot) drawInRect:NSInsetRect(r, 1.0, 1.0)
-                     withAttributes:attrs];
+        drawFittedLabel(spotLabel(spot), r, labelColor(spot.status()));
     }
 
     // 墙体（带入口/出口缺口）
     std::vector<smartpark::Point> gates = layout.entrances();
     gates.insert(gates.end(), layout.exits().begin(), layout.exits().end());
     NSBezierPath *wall = [NSBezierPath bezierPath];
-    addWallSegment(wall, NSMakePoint(0.0, 0.0), NSMakePoint(siteW, 0.0), gates, 4.6, _scale, _ox, _oy);
-    addWallSegment(wall, NSMakePoint(0.0, siteH), NSMakePoint(siteW, siteH), gates, 4.6, _scale, _ox, _oy);
-    addWallSegment(wall, NSMakePoint(0.0, 0.0), NSMakePoint(0.0, siteH), gates, 4.6, _scale, _ox, _oy);
-    addWallSegment(wall, NSMakePoint(siteW, 0.0), NSMakePoint(siteW, siteH), gates, 4.6, _scale, _ox, _oy);
+    addWallSegment(wall, NSMakePoint(0.0, 0.0), NSMakePoint(siteW, 0.0), gates, 4.6, scale, ox, oy);
+    addWallSegment(wall, NSMakePoint(0.0, siteH), NSMakePoint(siteW, siteH), gates, 4.6, scale, ox, oy);
+    addWallSegment(wall, NSMakePoint(0.0, 0.0), NSMakePoint(0.0, siteH), gates, 4.6, scale, ox, oy);
+    addWallSegment(wall, NSMakePoint(siteW, 0.0), NSMakePoint(siteW, siteH), gates, 4.6, scale, ox, oy);
     [rgba(46, 50, 54, 255) setStroke];
     wall.lineWidth = 2.0;
     [wall stroke];

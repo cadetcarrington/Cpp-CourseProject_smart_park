@@ -118,6 +118,21 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     [_stack addArrangedSubview:_summaryLabel];
     [_summaryLabel.widthAnchor constraintEqualToAnchor:_stack.widthAnchor].active = YES;
 
+    // 快捷操作：三个卡片分别跳到车辆作业（入库 / 出库）与预约管理。
+    NSStackView *quickRow = [self rowWithViews:@[
+        [self quickActionCardWithTitle:@"快捷入库"
+                                detail:@"输入车牌与车型，自动分配车位"
+                                action:@selector(quickCheckIn:)],
+        [self quickActionCardWithTitle:@"预约"
+                                detail:@"登记预约、到场确认与取消"
+                                action:@selector(quickBooking:)],
+        [self quickActionCardWithTitle:@"出库"
+                                detail:@"输入在场车牌，结算并放行"
+                                action:@selector(quickCheckOut:)],
+    ]];
+    [_stack addArrangedSubview:quickRow];
+    [quickRow.widthAnchor constraintEqualToAnchor:_stack.widthAnchor].active = YES;
+
     // 图表：第一行（组合 Donut + 车型 Donut + 预测 Line）
     _compositionChart = [DonutChartView new];
     _typeChart = [DonutChartView new];
@@ -125,7 +140,9 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     [_forecastChart setUnit:@"%"];
     NSStackView *chartRow1 = [self rowWithViews:@[
         [self cardWithTitle:@"车位组合" content:_compositionChart],
-        [self cardWithTitle:@"车位类型" content:_typeChart],
+        // 「车位类型」卡片暂时下线：取消下面这行注释即可恢复
+        // （_typeChart 仍在 refreshMetrics 中照常计算，恢复后立即有数据）。
+        // [self cardWithTitle:@"车位类型" content:_typeChart],
         [self cardWithTitle:@"占用率预测" content:_forecastChart],
     ]];
     [_stack addArrangedSubview:chartRow1];
@@ -243,8 +260,64 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     return box;
 }
 
-- (NSStackView *)rowWithViews:(NSArray<NSView *> *)views{
-    NSStackView *row = [[NSStackView alloc] init];
+// 快捷操作卡片：标题 + 说明 + 前往按钮。
+- (NSView *)quickActionCardWithTitle:(NSString *)title
+                              detail:(NSString *)detail
+                              action:(SEL)action{
+    NSVisualEffectView *box = [self glassCard];
+
+    NSTextField *titleLabel = [NSTextField labelWithString:title];
+    titleLabel.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
+
+    NSTextField *detailLabel = [NSTextField wrappingLabelWithString:detail];
+    detailLabel.font = [NSFont systemFontOfSize:11];
+    detailLabel.textColor = [NSColor secondaryLabelColor];
+
+    NSButton *button = [NSButton buttonWithTitle:@"前往" target:self action:action];
+    button.bezelStyle = NSBezelStyleRounded;
+    // 让卡片整体可点：按钮撑满卡片宽度。
+    NSStackView *stack = [NSStackView stackViewWithViews:@[titleLabel, detailLabel, button]];
+    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    stack.alignment = NSLayoutAttributeLeading;
+    stack.spacing = 6.0;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [box addSubview:stack];
+
+    // 按钮撑满卡片宽度（让整张卡片看起来可点）。约束必须在 button、stack、box
+    // 已经处于同一视图树之后再激活，否则 AppKit 会抛「no common ancestor」。
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.topAnchor constraintEqualToAnchor:box.topAnchor constant:12],
+        [stack.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:14],
+        [stack.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-14],
+        [stack.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-12],
+        [detailLabel.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
+        [button.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
+    ]];
+    return box;
+}
+
+#pragma mark - 快捷操作
+
+- (void)notifyQuickAction:(SmartParkPage)page{
+    void (^handler)(SmartParkPage) = self.quickActionHandler;
+    if (handler != nil){
+        handler(page);
+    }
+}
+
+- (void)quickCheckIn:(id)sender{
+    [self notifyQuickAction:SmartParkPageOperations];
+}
+
+- (void)quickBooking:(id)sender{
+    [self notifyQuickAction:SmartParkPageBooking];
+}
+
+- (void)quickCheckOut:(id)sender{
+    [self notifyQuickAction:SmartParkPageOperations];
+}
+
+- (NSStackView *)rowWithViews:(NSArray<NSView *> *)views{    NSStackView *row = [[NSStackView alloc] init];
     row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     row.distribution = NSStackViewDistributionFillEqually;
     row.spacing = 12.0;

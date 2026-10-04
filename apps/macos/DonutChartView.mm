@@ -49,11 +49,18 @@
         total += MAX(0.0, slice.value);
     }
 
-    NSInteger legendRows = MAX(1, (NSInteger)_slices.count);
-    CGFloat legendHeight = MIN(72.0, legendRows * 16.0 + 4.0);
-    NSRect donutArea = NSMakeRect(area.origin.x, area.origin.y + 8.0,
+    // 图例按两列排布：真正占用的行数是 ceil(条数 / 2)，而不是条数本身。
+    // 原来按条数预留高度，预留区（4 行 = 68pt）远高于实际图例（2 行 = 32pt），
+    // 于是圆环被挤到上方、图例贴在下缘，第二列正好压在圆环下方造成重叠。
+    const NSInteger legendColumns = 2;
+    const CGFloat legendRowHeight = 16.0;
+    const NSInteger legendRows = MAX(1, (NSInteger)(
+        (_slices.count + (NSUInteger)legendColumns - 1) / (NSUInteger)legendColumns));
+    const CGFloat legendHeight = legendRows * legendRowHeight + 4.0;
+    const CGFloat legendGap = 8.0;
+    NSRect donutArea = NSMakeRect(area.origin.x, area.origin.y,
                                   area.size.width,
-                                  area.size.height - 8.0 - legendHeight - 6.0);
+                                  area.size.height - legendHeight - legendGap);
     if (donutArea.size.width <= 40 || donutArea.size.height <= 40){
         return;
     }
@@ -91,40 +98,52 @@
         }
     }
 
-    // 中心文字：苹方 + 原生语义色，上下分层避免冲突。
+    // 中心文字：苹方 + 原生语义色，上下两层整体在圆环内居中。
+    // drawInRect: 默认是左对齐，必须显式给居中的段落样式，否则文字会贴在
+    // 内圆左缘（实测偏左 10pt），看起来就是「不在中间」。
     NSRect inner = NSInsetRect(donutRect, ring, ring);
-    CGFloat midY = NSMidY(inner);
+    const CGFloat midY = NSMidY(inner);
+    NSMutableParagraphStyle *centreStyle = [[NSMutableParagraphStyle alloc] init];
+    centreStyle.alignment = NSTextAlignmentCenter;
+    centreStyle.lineBreakMode = NSLineBreakByTruncatingTail;
     NSDictionary *titleAttrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:12.0 weight:NSFontWeightMedium],
         NSForegroundColorAttributeName: [NSColor labelColor],
+        NSParagraphStyleAttributeName: centreStyle,
     };
     NSDictionary *valueAttrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:20.0 weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: [NSColor labelColor],
+        NSParagraphStyleAttributeName: centreStyle,
     };
-    [_centerValue drawInRect:NSMakeRect(inner.origin.x, midY - 8.0, inner.size.width, 24.0)
+    const CGFloat valueHeight = 24.0;
+    const CGFloat titleHeight = 14.0;
+    const CGFloat blockTop = midY - (valueHeight + titleHeight) / 2.0;
+    [_centerValue drawInRect:NSMakeRect(inner.origin.x, blockTop,
+                                        inner.size.width, valueHeight)
               withAttributes:valueAttrs];
-    [_centerTitle drawInRect:NSMakeRect(inner.origin.x, midY + 18.0, inner.size.width, 14.0)
+    [_centerTitle drawInRect:NSMakeRect(inner.origin.x, blockTop + valueHeight,
+                                        inner.size.width, titleHeight)
               withAttributes:titleAttrs];
 
-    // 图例（两列、紧凑）：苹方 + 次要色。
-    CGFloat columnWidth = area.size.width / 2.0;
-    CGFloat rowHeight = 16.0;
+    // 图例（两列、紧凑）：苹方 + 次要色，底边对齐 area 下缘。
+    const CGFloat columnWidth = area.size.width / 2.0;
     NSDictionary *legendAttrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:11.0],
         NSForegroundColorAttributeName: [NSColor labelColor],
     };
+    const CGFloat legendTop = NSMaxY(area) - legendHeight + 2.0;
     for (NSUInteger i = 0; i < _slices.count; ++i){
         DonutSliceData *slice = _slices[i];
-        NSUInteger column = i % 2;
-        NSUInteger row = i / 2;
-        CGFloat x = area.origin.x + column * columnWidth;
-        CGFloat y = NSMaxY(area) - legendHeight + 2.0 + row * rowHeight;
+        const NSUInteger column = i % (NSUInteger)legendColumns;
+        const NSUInteger row = i / (NSUInteger)legendColumns;
+        const CGFloat x = area.origin.x + column * columnWidth;
+        const CGFloat y = legendTop + row * legendRowHeight;
         [slice.color setFill];
         NSRectFill(NSMakeRect(x, y + 1.0, 10.0, 10.0));
         NSString *text = [NSString stringWithFormat:@"%@ %.0f", slice.label,
                           MAX(0.0, slice.value)];
-        [text drawInRect:NSMakeRect(x + 15.0, y, columnWidth - 18.0, rowHeight)
+        [text drawInRect:NSMakeRect(x + 15.0, y, columnWidth - 18.0, legendRowHeight)
           withAttributes:legendAttrs];
     }
 }

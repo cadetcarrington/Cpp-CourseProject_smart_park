@@ -10,6 +10,8 @@
 #import "SidebarViewController.h"
 #import "bridge/ParkingBridge.h"
 
+#include "core/persistence/Persistence.h"
+
 #include <memory>
 
 // 内容区容器：在 Sidebar 切换时替换当前页面 VC。
@@ -39,6 +41,7 @@
 @interface MainWindowController () <SidebarDelegate>
 @property (nonatomic, strong) PageHostViewController *pageHost;
 @property (nonatomic, strong) NSArray<NSViewController *> *pages;
+@property (nonatomic, strong) SidebarViewController *sidebar;
 @end
 
 @implementation MainWindowController{
@@ -50,6 +53,11 @@
 }
 
 - (instancetype)initWithUserName:(NSString *)userName{
+    return [self initWithUserName:userName
+                    databasePath:smartpark::Persistence::defaultDatabasePath()];
+}
+
+- (instancetype)initWithUserName:(NSString *)userName databasePath:(const QString &)databasePath{
     NSWindow *window = [[NSWindow alloc]
         initWithContentRect:NSMakeRect(0, 0, 1120, 720)
         styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
@@ -58,9 +66,10 @@
         backing:NSBackingStoreBuffered
         defer:NO];
     if ((self = [super initWithWindow:window])){
-        bridge_ = std::make_unique<ParkingBridge>();
+        bridge_ = std::make_unique<ParkingBridge>(databasePath);
 
         window.title = @"SmartPark Admin";
+        window.accessibilityIdentifier = @"smartpark.main.window";
         window.titlebarAppearsTransparent = YES;
         window.titleVisibility = NSWindowTitleHidden;
         window.contentMinSize = NSMakeSize(960, 600);
@@ -84,10 +93,15 @@
         sidebarItem.minimumThickness = 200;
         sidebarItem.maximumThickness = 260;
         sidebarItem.canCollapse = NO;
+        self.sidebar = sidebar;
 
         // 构建 7 个页面，共享同一个 bridge。
         DashboardViewController *dashboard = [[DashboardViewController alloc] init];
         dashboard.bridge = bridge_.get();
+        // 仪表盘快捷操作卡片：切到目标页并同步侧边栏选中态。
+        dashboard.quickActionHandler = ^(SmartParkPage page){
+            [weakSelf showPage:(NSInteger)page];
+        };
         ParkingMapViewController *map = [[ParkingMapViewController alloc] init];
         map.bridge = bridge_.get();
         OperationsViewController *operations = [[OperationsViewController alloc] init];
@@ -125,6 +139,17 @@
     return self;
 }
 
+- (BOOL)isDatabaseReady{
+    return bridge_ != nullptr && bridge_->ready();
+}
+
+- (NSString *)databaseError{
+    if (bridge_ == nullptr){
+        return @"无法创建停车数据服务。";
+    }
+    return [NSString stringWithUTF8String:bridge_->lastError().c_str()] ?: @"无法打开停车数据库。";
+}
+
 - (void)dealloc{
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
@@ -144,8 +169,14 @@
     }
 }
 
-- (void)dataChanged:(NSNotification *)notification{
-    for (NSViewController *vc in self.pages){
+// 程序化切页（仪表盘快捷操作卡片）：同步侧边栏选中态后直接切页。
+// 侧边栏若已选中同一行不会再回调，因此这里显式调用一次。
+- (void)showPage:(NSInteger)index{
+    [self.sidebar selectIndex:index];
+    [self sidebar:self.sidebar didSelectIndex:index];
+}
+
+- (void)dataChanged:(NSNotification *)notification{    for (NSViewController *vc in self.pages){
         if ([vc respondsToSelector:@selector(refresh)]){
             [vc performSelector:@selector(refresh)];
         }

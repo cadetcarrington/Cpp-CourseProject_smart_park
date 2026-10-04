@@ -54,6 +54,7 @@
     logoutButton.bezelStyle = NSBezelStyleRounded;
     logoutButton.controlSize = NSControlSizeSmall;
     logoutButton.font = [NSFont systemFontOfSize:11];
+    logoutButton.accessibilityIdentifier = @"smartpark.logout";
 
     NSStackView *footer = [NSStackView stackViewWithViews:@[
         separator, self.userLabel, logoutButton
@@ -100,6 +101,15 @@
         : @"未登录";
 }
 
+- (void)selectIndex:(NSInteger)index{
+    if (index < 0 || index >= (NSInteger)self.items.count){
+        return;
+    }
+    [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)index]
+                byExtendingSelection:NO];
+    [self.tableView scrollRowToVisible:index];
+}
+
 - (void)requestLogout:(id)sender{
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"退出登录";
@@ -142,18 +152,31 @@
 - (NSView *)tableView:(NSTableView *)tableView
    viewForTableColumn:(NSTableColumn *)tableColumn
                   row:(NSInteger)row{
-    NSTextField *cell = [tableView makeViewWithIdentifier:@"NavCell" owner:self];
+    // 用容器 + 显式 centerY 约束保证文字在行内垂直居中。
+    // 直接把 NSTextField 当单元格时，单元格默认 wraps=YES，文字会贴顶显示。
+    NSView *cell = [tableView makeViewWithIdentifier:@"NavCell" owner:self];
+    NSTextField *label = nil;
     if (cell == nil){
-        cell = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 200, 40)];
+        cell = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 200, 40)];
         cell.identifier = @"NavCell";
-        cell.bordered = NO;
-        cell.editable = NO;
-        cell.selectable = NO;
-        cell.drawsBackground = NO;
-        cell.textColor = [NSColor labelColor];
-        cell.font = [NSFont systemFontOfSize:14];
+
+        label = [NSTextField labelWithString:@""];
+        label.font = [NSFont systemFontOfSize:14];
+        label.textColor = [NSColor labelColor];
+        label.lineBreakMode = NSLineBreakByTruncatingTail;
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell addSubview:label];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [label.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:14],
+            [label.trailingAnchor constraintLessThanOrEqualToAnchor:cell.trailingAnchor
+                                                           constant:-8],
+            [label.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
+        ]];
+    } else{
+        label = cell.subviews.firstObject;
     }
-    cell.stringValue = self.items[(NSUInteger)row];
+    label.stringValue = self.items[(NSUInteger)row];
     return cell;
 }
 

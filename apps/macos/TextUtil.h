@@ -1,5 +1,7 @@
 #pragma once
 
+#import <Foundation/Foundation.h>
+
 #include "core/model/Booking.h"
 #include "core/model/ParkingRecord.h"
 #include "core/model/ParkingSpot.h"
@@ -10,6 +12,18 @@
 
 // AppKit 版共享的文本映射（与 Qt 版 MainWindow 中的同类函数保持一致）。
 namespace smartpark_ui{
+
+// 中文安全的 C++ -> NSString 转换。
+// 注意：NSString 的 %s 按「系统默认 C 字符串编码」解析，非 ASCII 内容
+// （中文车牌、状态、类型等）会被静默丢弃成空串，因此凡是可能含中文的
+// C++ 字符串都要走这里并配合 %@ 使用。
+inline NSString *toNSString(const std::string &text){
+    return [NSString stringWithUTF8String:text.c_str()];
+}
+
+inline NSString *toNSString(const char *text){
+    return text == nullptr ? @"" : [NSString stringWithUTF8String:text];
+}
 
 inline const char *vehicleTypeText(smartpark::VehicleType type){
     switch (type){
