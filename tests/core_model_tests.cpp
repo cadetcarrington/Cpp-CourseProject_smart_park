@@ -268,6 +268,26 @@ void testGarageFloorplanLayout(){
     expect(layout.obstacles().front().name == u8"楼梯间"
                && layout.obstacles().back().name == u8"楼梯间",
            "remaining obstacles are the west and east stair cores");
+    const auto checkSpot = [&](const char *identifier, double x, double y,
+                               double width, double height){
+        const auto it = std::find_if(layout.spots().begin(), layout.spots().end(),
+            [identifier](const smartpark::ParkingSpot &spot){
+                return spot.identifier() == identifier;
+            });
+        expect(it != layout.spots().end(), "garage keeps its numbered stalls");
+        const auto &bounds = it->bounds();
+        expect(std::fabs(bounds.origin.x - x) < 0.01
+                   && std::fabs(bounds.origin.y - y) < 0.01
+                   && std::fabs(bounds.width - width) < 0.01
+                   && std::fabs(bounds.height - height) < 0.01,
+               "garage stall bounds match the north-origin floorplan");
+    };
+    checkSpot("A001", 27.0, 2.5, 2.75, 5.3);
+    checkSpot("A009", 27.0, 10.8, 2.75, 5.5);
+    checkSpot("A025", 27.0, 24.84, 2.75, 5.54);
+    checkSpot("A045", 12.0, 2.5, 5.75, 2.4);
+    checkSpot("A049", 51.5, 2.5, 5.5, 2.4);
+    checkSpot("A075", 54.0, 24.98, 2.5, 5.4);
     int accessible = 0;
     int charging = 0;
     int vip = 0;
@@ -571,6 +591,81 @@ void testSqlitePersistenceAndRecovery(){
            "loader rejects an invalid persisted spot status");
     expect(!invalidRepository.lastError().empty(),
            "loader reports an invalid persisted spot status");
+}
+void testPaidExitSurvivesRestart(){
+    using namespace std::chrono_literals;
+    const auto layout = smartpark::ParkingLayout::fromDescription(
+        "site 60 30\n"
+        "entrance 0 15\n"
+        "exit 60 15\n"
+        "region A 10 10 1 3 1.2 5.5 6 left\n");
+    QTemporaryDir directory;
+    expect(directory.isValid(), "paid exit test creates a temporary directory");
+    const QString path = directory.filePath("paid-exit.db");
+    const auto entry = smartpark::ParkingRecord::Clock::from_time_t(1700000000) + 250ms;
+    const auto exit = entry + 90min + 500ms;
+    {
+        smartpark::Persistence persistence(path);
+        smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                          &persistence.repository());
+        expect(service.enter({u8"晋A12345", smartpark::VehicleType::Car}, entry).has_value(),
+               "paid exit test stores an entry");
+        const auto closed = service.leave(u8"晋A12345", exit);
+        expect(closed && closed->exitTime() && *closed->exitTime() == exit
+                   && closed->fee() == 15.0,
+               "paid exit records exact exit time and charged fee");
+        expect(service.totalRevenue() == 15.0,
+               "paid exit contributes to settled parking fees");
+    }
+    {
+        smartpark::Persistence persistence(path);
+        smartpark::ParkingService restored(layout, smartpark::AllocationStrategy::Nearest,
+                                           &persistence.repository());
+        expect(restored.records().size() == 1 && restored.records().front().isClosed(),
+               "restart restores the paid closed record");
+        if (restored.records().size() == 1){
+            const auto &record = restored.records().front();
+            expect(record.entryTime() == entry && record.exitTime()
+                       && *record.exitTime() == exit && record.fee() == 15.0,
+                   "restart preserves paid record timestamps and fee");
+        }
+        expect(restored.totalRevenue() == 15.0,
+               "restart preserves settled parking fee total");
+    }
+}
+void testFractionalFeeSurvivesRestart(){
+    using namespace std::chrono_literals;
+    const auto layout = smartpark::ParkingLayout::fromDescription(
+        "site 60 30\n"
+        "entrance 0 15\n"
+        "exit 60 15\n"
+        "region A 10 10 1 1 1.2 5.5 6 left\n");
+    QTemporaryDir directory;
+    expect(directory.isValid(), "fractional fee test creates a directory");
+    const QString path = directory.filePath("fractional-fee.db");
+    const auto entry = smartpark::ParkingRecord::Clock::from_time_t(1700000000);
+    smartpark::BillingRule rule;
+    rule.minimumFee = 0.4;
+    rule.unitFee = 0.4;
+    {
+        smartpark::Persistence persistence(path);
+        smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                          &persistence.repository(), rule);
+        expect(service.enter({u8"晋A12345", smartpark::VehicleType::Car}, entry).has_value(),
+               "fractional fee test stores entry");
+        const auto closed = service.leave(u8"晋A12345", entry + 30min + 1ms);
+        expect(closed && std::abs(closed->fee() - 0.4) < 1e-9,
+               "one millisecond past free period incurs fractional minimum fee");
+    }
+    {
+        smartpark::Persistence persistence(path);
+        smartpark::ParkingService restored(layout, smartpark::AllocationStrategy::Nearest,
+                                           &persistence.repository(), rule);
+        expect(restored.records().size() == 1
+                   && std::abs(restored.records().front().fee() - 0.4) < 1e-9
+                   && std::abs(restored.totalRevenue() - 0.4) < 1e-9,
+               "restart retains fractional fee and total");
+    }
 }
 void testVehicleTypeUpdate(){
     using namespace std::chrono_literals;
@@ -1127,6 +1222,44 @@ void testBookingPersistenceAcrossRestart(){
     expect(arrived.has_value(), "an active booking can be confirmed after restart");
     expect(restored.occupiedSpots() == 1, "post-restart confirmation occupies the spot");
 }
+// 回归：同一车牌「取消后重新预约」会复用同一车位。此时那条历史预约是
+// Cancelled，但车位确实被新的有效预约占用着——恢复时不能判为数据不一致。
+// 曾经这个校验会让用户取消重约之后再也打不开数据库
+// （"resolved booking still holds its reserved spot: 晋A12345"）。
+void testRebookAfterCancelSurvivesRestart(){
+    using namespace std::chrono_literals;
+    const auto layout = smartpark::ParkingLayout::fromDescription(bookingLayoutDescription);
+    const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
+    QTemporaryDir directory;
+    expect(directory.isValid(), "rebook test can create a temporary directory");
+    const QString databasePath = directory.filePath("smartpark.db");
+    std::string firstSpot;
+    {
+        smartpark::Persistence persistence(databasePath);
+        smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                          &persistence.repository());
+        const smartpark::Vehicle vehicle(u8"晋A12345", smartpark::VehicleType::Car);
+        const auto first = service.createBooking(vehicle, now + 2h, now);
+        expect(first.has_value(), "rebook test can create the first booking");
+        firstSpot = first ? first->booking.spotId() : std::string();
+        expect(service.cancelBooking(u8"晋A12345", now + 1h),
+               "rebook test can cancel the first booking");
+        expect(service.reservedSpots() == 0, "cancel releases the spot");
+        const auto second = service.createBooking(vehicle, now + 3h, now + 1h);
+        expect(second.has_value(), "the same plate can book again after cancelling");
+        expect(second && second->booking.spotId() == firstSpot,
+               "re-booking reuses the same spot");
+        expect(service.reservedSpots() == 1, "re-booking reserves the spot again");
+    }
+    // 关键断言：这一步以前会抛 "resolved booking still holds its reserved spot"。
+    smartpark::Persistence restoredPersistence(databasePath);
+    smartpark::ParkingService restored(layout, smartpark::AllocationStrategy::Nearest,
+                                       &restoredPersistence.repository());
+    expect(restored.bookings().size() == 2, "restart restores both bookings");
+    expect(restored.reservedSpots() == 1, "restart keeps the re-booked spot reserved");
+    expect(restored.activeBooking(u8"晋A12345").has_value(),
+           "restart restores the re-booked active booking");
+}
 void testPreviewAllocationReadOnly(){
     const std::string description =
         "site 80 40\n"
@@ -1666,6 +1799,8 @@ void testReservationPersistenceAcrossRestart(){
            "restart keeps the refunded deposit total");
     expect(std::abs(reservations.appliedDeposits() - 20.0) < 1e-9,
            "restart keeps the applied deposit total");
+    expect(std::abs(service.totalRevenue() - 5.0) < 1e-9,
+           "restart counts only the settled exit fee after deposit credit");
     expect(std::abs(reservations.heldDeposits() - 40.0) < 1e-9,
            "restart keeps the held deposit total");
     // 重启后继续业务：确认订单到场并完成，CheckedIn 订单离场结算。
@@ -2059,6 +2194,8 @@ int main(){
     testZonePressureBalancing();
     testMultiEntranceSelection();
     testSqlitePersistenceAndRecovery();
+    testPaidExitSurvivesRestart();
+    testFractionalFeeSurvivesRestart();
     testPersistenceHelperRestoresAcrossRestart();
     testVehicleTypeUpdate();
     testLayoutMismatchRejected();
@@ -2073,6 +2210,7 @@ int main(){
     testBookingRejectsOutOfWindow();
     testBookingCancelRefunds();
     testBookingPersistenceAcrossRestart();
+    testRebookAfterCancelSurvivesRestart();
     testPreviewAllocationReadOnly();
     testParkingInsightEngine();
     testAnalyticsLinearModel();
