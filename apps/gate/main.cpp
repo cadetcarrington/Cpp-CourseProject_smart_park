@@ -17,17 +17,7 @@
 namespace{
 using smartpark::TcpClient;
 
-const char *stateText(smartpark::gate::BarrierGate::State state){
-    using State = smartpark::gate::BarrierGate::State;
-    switch (state){
-    case State::Closed: return "关闭";
-    case State::Opening: return "抬杆中";
-    case State::Open: return "保持";
-    case State::Closing: return "落闸中";
-    case State::Fault: return "故障";
-    }
-    return "未知";
-}
+// 状态中文名已移到 BarrierGate::stateText()，终端与自测共用同一份。
 
 class GateApp : public QObject{
 public:
@@ -86,7 +76,25 @@ private:
         std::cout << (role_ == QStringLiteral("entrance")
                            ? "入口"
                            : "出口")
-                  << "道闸终端。输入车牌回车 = 车辆识别放行；命令：status | fault on|off | reset | help | quit\n";
+                  << "道闸终端。输入车牌回车 = 车辆识别放行；当前车型："
+                  << vehicleType_.toStdString() << "\n"
+                  << "命令：status | type car|motorcycle|truck|electric | pass（地感：车辆通过）"
+                     " | fault on|off | reset | help | quit\n";
+    }
+
+    // 车型允许在闸口切换：它直接影响服务端的车位分配与计费规则，
+    // 原来写死为 car，摩托车/货车/新能源车都会被当成轿车处理。
+    void setVehicleType(const QString &type){
+        static const QStringList allowed = {QStringLiteral("car"),
+                                            QStringLiteral("motorcycle"),
+                                            QStringLiteral("truck"),
+                                            QStringLiteral("electric")};
+        if (!allowed.contains(type)){
+            log(QStringLiteral("车型必须是 car / motorcycle / truck / electric"));
+            return;
+        }
+        vehicleType_ = type;
+        log(QStringLiteral("车型已切换为 %1").arg(type));
     }
 
     void log(const QString &text){
@@ -134,16 +142,33 @@ private:
         const auto replay = client_.request(QStringLiteral("gate.replay"), payload);
         if (replay && replay->value(QStringLiteral("ok")).toBool()){
             const QJsonObject result = replay->value(QStringLiteral("payload")).toObject();
-            if (result.value(QStringLiteral("applied")).toInt()
-                    + result.value(QStringLiteral("duplicate")).toInt() == events.size()
-                && queue_.acknowledge(events.size())){
-                log(QStringLiteral("补报完成：应用 %1 条，去重 %2 条")
-                        .arg(result.value(QStringLiteral("applied")).toInt())
-                        .arg(result.value(QStringLiteral("duplicate")).toInt()));
+            const int applied = result.value(QStringLiteral("applied")).toInt();
+            const int duplicate = result.value(QStringLiteral("duplicate")).toInt();
+            const int skipped = result.value(QStringLiteral("skipped")).toInt();
+            // 只出队服务端已明确处理完的前缀：若响应在第 N 条被截断，前 N-1 条
+            // 已经生效的不会被重复上报，其余留在本地队列下次重报。
+            const int handled =
+                smartpark::gate::replayHandledPrefix(result, (int)events.size());
+            if (handled > 0 && queue_.acknowledge(handled)){
+                log(QStringLiteral("补报完成：本批 %1 条，已确认 %2 条（应用 %3，去重 %4，丢弃 %5）")
+                        .arg(events.size()).arg(handled)
+                        .arg(applied).arg(duplicate).arg(skipped));
+                // 被服务端判定为无法追溯的事件要如实报出来，不能悄悄丢掉。
+                for (const QString &detail :
+                     smartpark::gate::replaySkippedDetails(result, handled)){
+                    log(QStringLiteral("  [丢弃] %1").arg(detail));
+                }
+                if (handled < (int)events.size()){
+                    log(QStringLiteral("本批仍有 %1 条未获确认，保留在本地队列稍后重报")
+                            .arg((int)events.size() - handled));
+                }
                 return;
             }
+            log(QStringLiteral("补报未获确认（提交 %1，应用 %2，去重 %3，丢弃 %4），事件保留在本地队列")
+                    .arg(events.size()).arg(applied).arg(duplicate).arg(skipped));
+            return;
         }
-        log(QStringLiteral("补报未完全确认，事件保留在本地队列"));
+        log(QStringLiteral("补报请求失败，事件保留在本地队列"));
     }
 
     // 离线模式：本地放行 + 事件入队（重连后补报）。
@@ -151,7 +176,7 @@ private:
         QJsonObject event;
         event.insert(QStringLiteral("kind"), kind);
         event.insert(QStringLiteral("plate"), plate);
-        event.insert(QStringLiteral("vehicleType"), QStringLiteral("car"));
+        event.insert(QStringLiteral("vehicleType"), vehicleType_);
         event.insert(QStringLiteral("ts"),
                      QDateTime::currentMSecsSinceEpoch());
         if (!queue_.append(event)){
@@ -179,11 +204,16 @@ private:
             return;
         }
         if (line == QStringLiteral("status")){
-            log(QStringLiteral("道闸状态：%1 | 连接：%2 | 离线缓存：%3 条")
-                    .arg(stateText(barrier_.state()),
+            log(QStringLiteral("道闸状态：%1 | 连接：%2 | 离线缓存：%3 条 | 车型：%4")
+                    .arg(smartpark::gate::BarrierGate::stateText(barrier_.state()),
                          client_.connected() ? QStringLiteral("在线")
                                              : QStringLiteral("离线"))
-                    .arg(queue_.size()));
+                    .arg(queue_.size())
+                    .arg(vehicleType_));
+            return;
+        }
+        if (line.startsWith(QStringLiteral("type "))){
+            setVehicleType(line.mid(5).trimmed());
             return;
         }
         if (line == QStringLiteral("fault on")){
@@ -222,7 +252,7 @@ private:
         // ParkingService::enter automatically checks in a matching reservation.
         const auto enter = client_.request(QStringLiteral("parking.enter"),
             QJsonObject{{QStringLiteral("plate"), plate},
-                        {QStringLiteral("vehicleType"), QStringLiteral("car")}},
+                        {QStringLiteral("vehicleType"), vehicleType_}},
             2500);
         if (!enter.has_value() || !enter->value(QStringLiteral("ok")).toBool()){
             log(QStringLiteral("拒绝入场：%1（%2）")
@@ -266,6 +296,7 @@ private:
     QString user_;
     QString pass_;
     QString role_;
+    QString vehicleType_{QStringLiteral("car")};
     smartpark::gate::OfflineQueue queue_;
     smartpark::gate::BarrierGate barrier_;
     TcpClient client_;
