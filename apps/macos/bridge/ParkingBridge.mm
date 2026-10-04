@@ -199,41 +199,6 @@ bool ParkingBridge::resetDatabaseAndApplyLayout(const std::string &description,
     return true;
 }
 
-int ParkingBridge::totalSpots() const noexcept{
-    if (remote_){
-        return remote_->totalSpots();
-    }
-    return service_ ? static_cast<int>(service_->spots().size()) : 0;
-}
-
-int ParkingBridge::occupiedSpots() const noexcept{
-    if (remote_){
-        return remote_->occupiedSpots();
-    }
-    return service_ ? service_->occupiedSpots() : 0;
-}
-
-int ParkingBridge::reservedSpots() const noexcept{
-    if (remote_){
-        return remote_->reservedSpots();
-    }
-    return service_ ? service_->reservedSpots() : 0;
-}
-
-int ParkingBridge::remainingSpots() const noexcept{
-    if (remote_){
-        return remote_->remainingSpots();
-    }
-    return service_ ? service_->remainingSpots() : 0;
-}
-
-int ParkingBridge::recordCount() const noexcept{
-    if (remote_){
-        return remote_->recordCount();
-    }
-    return service_ ? static_cast<int>(service_->records().size()) : 0;
-}
-
 double ParkingBridge::totalRevenue() const noexcept{
     if (remote_){
         return remote_->totalRevenue();
