@@ -1,6 +1,8 @@
 find_package(Qt6 6.2 REQUIRED COMPONENTS Network)
 
 add_library(smartpark_network STATIC
+    ServerSession.cpp
+    ServerSession.h
     Protocol.cpp
     Protocol.h
     SmartParkTcpServer.cpp

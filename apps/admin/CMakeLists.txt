@@ -2,8 +2,6 @@ set(ADMIN_SOURCES
     main.cpp
     MainWindow.h
     MainWindow.cpp
-    ServerSession.h
-    ServerSession.cpp
     PlateReviewDialog.h
     PlateReviewDialog.cpp
     LoginDialog.h
