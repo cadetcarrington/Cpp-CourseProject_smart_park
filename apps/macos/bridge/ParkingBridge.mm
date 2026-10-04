@@ -14,7 +14,12 @@
 #include <QSqlQuery>
 #include <QString>
 
+#include <QJsonArray>
+#include <QJsonValue>
+
+#include <cmath>
 #include <cstddef>
+#include <ctime>
 #include <cstdio>
 #include <optional>
 #include <stdexcept>
@@ -399,6 +404,64 @@ const std::string &ParkingBridge::lastError() const noexcept{
         return remote_->lastError();
     }
     return lastError_;
+}
+
+namespace{
+// 本地按记录聚合 7 日收入：与服务端 admin.snapshot 的口径一致
+// （仅已离场记录，费用已扣定金）。
+std::vector<ParkingBridge::DailyRevenueEntry> localSevenDayRevenue(
+    const std::vector<smartpark::ParkingRecord> &records){
+    std::vector<ParkingBridge::DailyRevenueEntry> series;
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t today = std::chrono::system_clock::to_time_t(now);
+    std::tm parts{};
+    localtime_r(&today, &parts);
+    parts.tm_hour = 0;
+    parts.tm_min = 0;
+    parts.tm_sec = 0;
+    const std::time_t midnight = std::mktime(&parts);
+    for (int offset = 6; offset >= 0; --offset){
+        const std::time_t day = midnight - offset * 86400;
+        std::tm dayParts{};
+        localtime_r(&day, &dayParts);
+        char buffer[16];
+        std::strftime(buffer, sizeof(buffer), "%Y-%m-%d", &dayParts);
+        series.push_back({buffer, 0.0});
+    }
+    for (const smartpark::ParkingRecord &record : records){
+        if (!record.isClosed() || !record.exitTime()){
+            continue;
+        }
+        const std::time_t exit = std::chrono::system_clock::to_time_t(*record.exitTime());
+        std::tm exitParts{};
+        localtime_r(&exit, &exitParts);
+        exitParts.tm_hour = 0;
+        exitParts.tm_min = 0;
+        exitParts.tm_sec = 0;
+        const double daysAgo = std::difftime(midnight, std::mktime(&exitParts)) / 86400.0;
+        const int index = 6 - static_cast<int>(std::llround(daysAgo));
+        if (index >= 0 && index < 7){
+            series[static_cast<std::size_t>(index)].fee += record.fee();
+        }
+    }
+    return series;
+}
+} // namespace
+
+std::vector<ParkingBridge::DailyRevenueEntry> ParkingBridge::sevenDayRevenue() const{
+    if (remote_){
+        std::vector<DailyRevenueEntry> series;
+        for (const QJsonValue &item : remote_->dailyRevenueSeries()){
+            const QJsonObject entry = item.toObject();
+            series.push_back({entry.value(QStringLiteral("date")).toString().toStdString(),
+                              entry.value(QStringLiteral("fee")).toDouble()});
+        }
+        if (!series.empty()){
+            return series;
+        }
+        return {};
+    }
+    return localSevenDayRevenue(records());
 }
 
 bool ParkingBridge::connectRemote(const QString &host, quint16 port,

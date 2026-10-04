@@ -3,6 +3,7 @@
 #include "ParkingDataSource.h"
 #include "network/ServerSession.h"
 
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QObject>
 #include <QString>
@@ -49,8 +50,10 @@ public:
     qint64 snapshotGeneratedAtMs() const noexcept { return generatedAtMs_; }
     // 服务端 analytics.report 的摘要与结论（远程模式没有本地洞察）。
     const QJsonObject &analyticsReport() const noexcept { return analytics_; }
-    // 近 7 日已结算收入（快照 dailyRevenue）。
+    // 近 7 日已结算收入（快照 dailyRevenue，服务端已按同样口径算好）。
     double dailyRevenueTotal() const noexcept;
+    // 逐日明细：{date: yyyy-MM-dd, fee}，从早到晚固定 7 项。
+    QJsonArray dailyRevenueSeries() const noexcept { return dailyRevenue_; }
 
     // ---- ParkingDataSource ----
     Capabilities capabilities() const override;
@@ -91,6 +94,9 @@ private:
     std::vector<ParkingRecord> records_;   // 远程模式不提供，恒为空
     std::vector<Booking> bookings_;        // 同上
     QJsonObject analytics_;
+    // 快照随带的 7 日收入。单独存一份：analytics.report 的应答会整体替换
+    // analytics_，混在一起会在报告到达后把收入数据抹掉。
+    QJsonArray dailyRevenue_;
     std::string layoutText_;               // 快照只有几何，没有描述文本
     std::string lastError_;
     QString host_;

@@ -91,6 +91,15 @@ public:
     // 重启即丢失。调用方据此如实提示，不要谎报已保存。
     bool memoryOnly() const noexcept;
 
+    // 近 7 日（含今天）已结算收入，从早到晚固定 7 项。
+    // 本地模式按停车记录聚合；远程模式直接取服务端快照的 dailyRevenue
+    // （服务端已按同一口径算好，客户端不必也不该重算）。
+    struct DailyRevenueEntry{
+        std::string date;   // yyyy-MM-dd
+        double fee{0.0};
+    };
+    std::vector<DailyRevenueEntry> sevenDayRevenue() const;
+
     // ---- 远程模式 ----
     // 建立到服务端的 TCP 会话并登录。返回是否已发起；登录与连接结果通过
     // onRemoteStateChanged 回调（远程模式下本 bridge 不再读写本地库）。
