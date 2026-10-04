@@ -1,0 +1,9 @@
+{
+  "mode": "quad",
+  "height": 64,
+  "min_width": 160,
+  "max_width": 320,
+  "expand": 0.06,
+  "quality": 95,
+  "note": "现有识别权重 smartpark_plate_ppocrv5_best 按四角透视矫正裁剪训练，因此推理默认也走 quad。若改用按运行时检测框重训的识别权重（scripts/prepare_recognition.py --crop-mode bbox），把 mode 改为 bbox，或直接用该数据集目录里的 crop_recipe.json（recognize_plate.py --crop-recipe）。"
+}

@@ -13,4 +13,8 @@ set -euo pipefail
 ROOT="/home/inspur/nfs/home/cadetcarrington/Cpp-CourseProject_smart_park"
 PY="${SMARTPARK_LPR_PY:-/home/inspur/nfs/home/cadetcarrington/miniforge3/envs/smartpark-lpr/bin/python}"
 cd "$ROOT"
-exec "$PY" -u "$ROOT/scripts/prepare_recognition.py" --no-download --workers 16 --green-repeat 5 --output "$ROOT/model/datasets/ccpd_rec"
+# 默认产出四角矫正数据集；按运行时裁剪重训识别权重时追加参数覆盖，例如：
+#   sbatch scripts/prepare_recognition.slurm --crop-mode bbox \
+#     --output "$ROOT/model/datasets/ccpd_rec_runtime"
+exec "$PY" -u "$ROOT/scripts/prepare_recognition.py" --no-download --workers 16 --green-repeat 5 \
+  --output "$ROOT/model/datasets/ccpd_rec" "$@"
