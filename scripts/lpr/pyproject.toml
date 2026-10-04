@@ -1,0 +1,16 @@
+[project]
+name = "smartpark-lpr"
+version = "0.1.0"
+description = "SmartPark 车牌检测环境（YOLO11m/ultralytics + OpenCV，macOS CPU 推理，uv 管理）"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "ultralytics==8.4.164",
+    "opencv-python==5.0.0.93",
+    "numpy==2.5.3",
+    "torch==2.14.0",
+    "torchvision==0.29.0",
+]
+
+[tool.uv]
+# 钉住本机已知可用版本的传递依赖，使 uv.lock 与现有 ~/.smartpark/lpr 完全一致。
+constraint-dependencies = ["filelock==4.0.5", "ultralytics-platform==0.1.65"]

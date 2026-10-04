@@ -174,27 +174,39 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
   - 界面：浅色企业风主题（低饱和蓝）+ 主界面毛玻璃模式（整窗高斯模糊光斑 + 半透明面板，`SMARTPARK_NO_GLASS=1` 回退）、登录/注册重做（`UserStore` 盐化哈希口令、失败锁定、密码可见切换）。
   - 创新 Top-5（10 角度子代理评分选拔）：应急生命通道（出口最近车位 + 满场让位）、无障碍关怀预约（免定金/宽限翻倍/无障碍车位限定/少转弯路线）、哈希链防篡改审计日志（`AuditLogService` + `verifyChain`）、反向寻车（行人栅格步行路线）、剧本式一键演示（`DemoDirector` 16 步）。
   - 数据分析：`AnalyticsEngine` 本地 OLS 占用率预测 + 规则结论（CLI `--analyze`），`RemoteAnalystClient` 预留 OpenAI 兼容远程分析接口。
-  - macOS 原生：菜单栏余位图标、通知中心、中文语音播报、PDF 报告导出、NSURLSession 远程分析传输（`MacSystemBridge`）。
+  - macOS 原生：菜单栏余位图标、通知中心、离场毛玻璃窗口通知横幅（`src/platform/MacNotifications`）、中文语音播报、PDF 报告导出、NSURLSession 远程分析传输（`MacSystemBridge`）。
   - 算法：分区均衡升级为负载水位填充（跨分区低负载无条件优先，同档内按距离/拥堵/类型），车库布局 38 辆实测 13 分区负载 25%~62% 均衡。
 - 2026-09-28 增量：合入 `feature/lpr-samples-models`——管理端本地选图识别审阅（YOLO11m + PP-OCRv5 权重经 Git LFS 分发）、40 张授权样例与识别审阅对话框；macOS 原生毛玻璃接入登录页与主窗口；主界面移除顶部工具栏。
 
 尚未完成：Gate 侧真实摄像头 LPR、预约查询接口与账号角色体系、`ReservationRule`/计费规则配置化及真实支付。当前 TCP v1 使用内网明文传输，不能直接暴露公网。
 
-管理端提供本地选图识别审阅：`scripts/recognize_plate.py` 通过 PyTorch 与 Paddle 环境串联 YOLO11m 和 PP-OCRv5 最佳权重。在“车辆作业”点击“识别图片”，审阅原图、定位框、车牌裁剪图与置信度，可更换图片或重试；只有点击“使用车牌”才填入操作输入框，入场/出场始终另行人工操作。40 张整图样例及来源/授权说明见 [`examples/plates/`](examples/plates/)。此路径不是 Gate/Server 集成。两份最佳权重通过 Git LFS 跟踪；克隆时需要 Git LFS，运行时还需安装依赖并提供 PaddleOCR 源码及两个 Python 环境。
+管理端提供本地选图识别审阅：`scripts/recognize_plate.py` 通过 PyTorch 与 Paddle 环境串联 YOLO11m 和 PP-OCRv5 最佳权重。启动 `scripts/run-admin.sh` 后登录，在主窗口顶栏点击“识别车牌”（“车辆作业”页的“识别图片”也可用）；选图窗口默认打开 [`examples/plates/`](examples/plates/)，可先试 `blue-01.jpg`。审阅原图、定位框、车牌裁剪图与置信度，可更换图片或重试；只有点击“使用车牌”才会转到“车辆作业”并填入车牌，入场/出场始终另行人工操作。40 张整图样例及来源/授权说明见该目录。此路径不是 Gate/Server 集成。两份最佳权重通过 Git LFS 跟踪；克隆时需要 Git LFS，运行时还需安装依赖并提供 PaddleOCR 源码及两个 Python 环境。
 
 ```bash
-# uv 一键建立两个环境（本机已按此配置完成，端到端实测通过）：
-uv venv ~/.smartpark/lpr --python 3.12
-uv pip install --python ~/.smartpark/lpr/bin/python ultralytics opencv-python
-uv venv ~/.smartpark/ocr --python 3.12
-uv pip install --python ~/.smartpark/ocr/bin/python paddlepaddle opencv-python \
-    pillow pyyaml numpy shapely pyclipper scikit-image tqdm lmdb albumentations requests protobuf
-# PaddleOCR 源码放在 scripts/recognize_plate.py 期望的 third_party/PaddleOCR：
-git clone --depth 1 https://github.com/PaddlePaddle/PaddleOCR.git third_party/PaddleOCR
-# 验证（输出一行 JSON：车牌、置信度、边界框、格式检查）：
+# 两个 Python 环境由 uv 锁定：scripts/{lpr,ocr}/pyproject.toml + uv.lock
+# （与 ~/.smartpark/{lpr,ocr} 的当前环境零漂移），一键同步：
+scripts/setup_uv_env.sh
+# PaddleOCR 源码放在 scripts/recognize_plate.py 期望的 third_party/PaddleOCR。
+# 本机曾使用 Gitee 镜像修复 iCloud dataless 文件；镜像默认分支会漂移，
+# 当前 checkout c166448875bcecb8d3b7628fd697ac1c28f8705b 的 ppocr/tools/paddleocr
+# 与原 GitHub 克隆逐字节一致（已比对），但正式部署前仍应固定 revision。
+# 验证（输出一行 JSON：车牌、置信度、边界框、格式检查、裁剪方式）：
 ~/.smartpark/lpr/bin/python scripts/recognize_plate.py examples/plates/blue-01.jpg \
     --ocr-python ~/.smartpark/ocr/bin/python
 ```
+
+裁剪配方是训练与推理之间的合同：`model/weights/smartpark_plate_crop_recipe.json`
+声明推理该按哪种方式裁剪（`quad`＝四角透视矫正，现有权重即按此训练；`bbox`＝检测框
+原始裁剪，用于按运行分布重训的权重）。`scripts/recognize_plate.py` 默认读这份配方，
+`--crop-recipe` 可显式指定（如数据集目录里由 `prepare_recognition.py` 写出的那份），
+`--crop auto|quad|bbox` 可临时覆盖。输出的 `crop` 字段说明本次实际用了哪一种：
+`auto` 在检测器没有四角（仍是轴对齐框权重）时回退 `bbox`，不会静默假装做了矫正。
+
+四角检测（`--task obb` 四角旋转框，或 `--task pose` 四关键点）训练完成后，把新权重
+替换到 `model/weights/` 即可让 `crop` 变成 `quad`，倾斜/旋转车牌走训练同款透视矫正。
+pose 的关键点带语义顺序（0=左上、1=右上、2=右下、3=左下），图片整体旋转也能摆正；
+OBB 只有几何四角、无法区分上下，需要时可加 `--flip-check`（对裁剪图与其 180° 各识别
+一次，取格式合法或置信度更高的结果，代价是每张多一次 OCR）。
 
 `scripts/run-admin.sh` 会自动导出 `SMARTPARK_LPR_PY` / `SMARTPARK_OCR_PY`
 （缺省指向 `~/.smartpark/{lpr,ocr}/bin/python`）；直接启动 .app 时对话框也会
@@ -202,7 +214,59 @@ git clone --depth 1 https://github.com/PaddlePaddle/PaddleOCR.git third_party/Pa
 `resolve()`：uv/venv 的 `bin/python` 是符号链接，解析后会绕过 `pyvenv.cfg`
 丢失依赖。
 
-命令行输出一行 JSON（车牌、检测/识别置信度、边界框及基本格式检查）。默认在 CPU 上运行，首次载入两份权重可能较慢；识别器使用 `scripts/rec/ppocrv5_dict.txt`，它与训练时完整的 `ppocrv5_dict.txt` 保持一致，不能换成 `plate_dict.txt`。默认权重在 `model/weights/`，随 LFS 下载；配置文件 `smartpark_plate_ppocrv5_config.yml` 同时纳入版本控制，脚本会覆盖训练机的权重、字典与样例路径。PaddleOCR 源码与 Python 依赖仍需单独准备（`--paddleocr` 可指定位置）。当前 OCR 训练样本按标注四角透视矫正，而运行时使用检测框裁剪，正式部署前仍须评测困难场景与低置信度处理。Paddle 原生推理导出已在本机验证；YOLO ONNX 导出尚需 `onnx` 依赖，Paddle→ONNX 和 C++ 运行时尚未完成。
+命令行只接受一张图片，成功时输出一行 JSON（车牌、检测/识别置信度、边界框、格式检查、裁剪方式、四角来源）；失败时在标准错误输出原因并返回非零状态。检测和 OCR 在同一请求中串行运行，不支持多图批处理、`--ocr-workers` 或 `--no-warmup`。默认在 CPU 上运行，首次载入两份权重可能较慢；识别器使用 `scripts/rec/ppocrv5_dict.txt`，它与训练时完整的 `ppocrv5_dict.txt` 保持一致，不能换成 `plate_dict.txt`。默认权重在 `model/weights/`，随 LFS 下载；配置文件 `smartpark_plate_ppocrv5_config.yml` 同时纳入版本控制，脚本会覆盖训练机的权重、字典与样例路径。PaddleOCR 源码与 Python 依赖仍需单独准备（`--paddleocr` 可指定位置）。2026-09-30 已消除"训练四角矫正、推理检测框裁剪"的分布断层：裁剪几何收敛到 `scripts/plate_geometry.py` 一处，训练与推理共用同一配方（见下方评测数据与两条重训路线）。Paddle 原生推理导出已在本机验证；YOLO ONNX 导出尚需 `onnx` 依赖，Paddle→ONNX 和 C++ 运行时尚未完成。
+
+### 车牌识别准确率基线与两条对齐路线
+
+2026-09-30 用 `examples/plates/` 下 31 省均衡的 200 张 CCPD 整图（`manifest-provinces.csv`，含 tilt/rotate/challenge 等困难子集）复核当前两阶段权重，按整牌精确匹配统计：
+
+| 子集 | 现状（检测框裁剪，当前权重） | 训练同款四角矫正 |
+| --- | --- | --- |
+| ccpd_base 37 张 | 89.2% | 97.3% |
+| ccpd_challenge 45 张 | 82.2% | 84.4% |
+| ccpd_green 33 张 | 81.8% | 90.9% |
+| ccpd_db 15 张 | 73.3% | 80.0% |
+| ccpd_fn 8 张 | 87.5% | 100% |
+| ccpd_rotate 18 张 | 44.4% | **100%** |
+| ccpd_tilt 40 张 | 30.0% | **97.5%** |
+| 合计 200 张 | **69.0%** | **92.5%**（同一识别器，只换裁剪几何） |
+
+结论：识别权重本身没问题，掉点几乎全部来自裁剪几何；误差以省份字为主（62 个错例中 41 个只错省份字，30 个错成"皖"），且错例的识别置信度均值 0.906（54/62 ≥ 0.8），单靠提高阈值挡不住。精选 40 张样例复核为 90.0%，说明这不是模型退化。
+
+上表用仓库内评测脚本复现（左列＝真实检测器，右列＝标注四角，只换裁剪几何）：
+
+```bash
+# 逐图结果写 JSONL，终端按子集汇总整牌精确匹配率
+~/.smartpark/lpr/bin/python scripts/evaluate_plates.py \
+    --manifest examples/plates/manifest-provinces.csv --workers 4
+~/.smartpark/lpr/bin/python scripts/evaluate_plates.py \
+    --manifest examples/plates/manifest-provinces.csv --oracle-corners --workers 4
+```
+
+两条互补的对齐路线（都需要在训练机 s1 上跑）：
+
+```bash
+# 路线 1（推理侧，推荐）：检测改四角，推理按训练同款透视矫正
+#   obb=四角旋转框；pose=四关键点（带语义顺序，旋转图也能摆正）
+"$SMARTPARK_LPR_PY" scripts/prepare_ccpd.py --task pose --no-download \
+    --output "$ROOT/model/datasets/ccpd_yolo"
+sbatch scripts/train_lpr.slurm --task pose --name license_plate_pose
+
+# 路线 2（训练侧）：保持现有轴对齐检测器，用"运行时裁剪"重造识别数据集并重训
+sbatch scripts/prepare_recognition.slurm --crop-mode bbox \
+    --output "$ROOT/model/datasets/ccpd_rec_runtime"
+"$SMARTPARK_OCR_PY" scripts/train_rec.py \
+    --config scripts/rec/PP-OCRv5_server_rec_plate_runtime.yml \
+    --data "$ROOT/model/datasets/ccpd_rec_runtime" \
+    --output "$ROOT/model/runs/plate_rec_runtime"
+```
+
+路线 1 训完把检测权重换进 `model/weights/`（`--task` 会自动取
+`model/yolo11m-obb.pt` / `model/yolo11m-pose.pt` 作初始权重，需先放到 `model/`）；
+路线 2 训完把识别权重换进去，并把
+`ccpd_rec_runtime/crop_recipe.json` 复制成 `model/weights/smartpark_plate_crop_recipe.json`
+（`mode` 会变成 `bbox`），推理即自动按运行分布裁剪。两条路线都需要重跑上面的
+200 张评测后再更新本表。
 
 ## 后续发展路线
 
@@ -288,6 +352,22 @@ git clone --depth 1 https://github.com/PaddlePaddle/PaddleOCR.git third_party/Pa
 11. ⬜ 车牌识别：实现 HyperLPR3 基线，并完成 YOLO11m + PP-OCRv5 中国车牌专用模型训练、评测与 C++ 部署。
 
 ## 最近工作记录
+
+2026-09-30（晚）识别准确率归因 + 训练/推理裁剪对齐：
+
+- 用 31 省均衡的 200 张 CCPD 整图复核：整牌精确匹配 69.0%（精选 40 张为 90.0%），与 2026-09-28 记录的 `blue-01` 输出逐位一致，权重 sha256 与 LFS 指针一致，Gitee 重克隆的 `ppocr/tools/paddleocr` 与原 GitHub 克隆逐字节相同 —— 脚本、权重、环境都没有退化，掉点来自评测集变难（65% 为 tilt/rotate/db/fn/weather/challenge 困难子集）。
+- 归因：同一识别器换裁剪几何后 69.0% → 92.5%（tilt 30.0%→97.5%，rotate 44.4%→100%）。根因是训练侧 `prepare_recognition.py` 用四角透视矫正裁剪，而推理侧 `recognize_plate.py` 直接裁 YOLO 轴对齐框；倾斜车牌的裁剪图是歪的平行四边形，模型在倾斜/旋转子集上崩掉。检测本身没问题（框与标注 IoU≈0.86，0 次漏检）。
+- 新增 `scripts/plate_geometry.py`：四角排序/外扩/透视矫正/裁剪配方的唯一实现，训练与推理共用（黄金测试比对重构前的逐像素输出，防两侧几何各自漂移）。
+- `scripts/recognize_plate.py`：支持 OBB 四角与 4 关键点检测输出，按配方做训练同款矫正；新增 `--crop auto|quad|bbox`、`--crop-recipe`、`--flip-check`（OBB 上下歧义时二次识别取更可信者）；JSON 增加 `crop`/`quad_source`/`flip_checked`/`recipe` 诊断字段（GUI 仍按原有必需字段解析，不受影响）。默认配方随权重发布在 `model/weights/smartpark_plate_crop_recipe.json`。
+- 两条对齐路线的代码就绪：路线 1 `prepare_ccpd.py --task obb|pose` + `train_lpr.py --task` + `train_lpr.slurm`（四角/关键点检测，推理直接透视矫正）；路线 2 `prepare_recognition.py --crop-mode bbox`（按运行时检测框重造识别数据集，写出 `crop_recipe.json`）+ `PP-OCRv5_server_rec_plate_runtime.yml`。两者都需在 s1 上重训并重跑 200 张评测。
+- 测试：新增 `tests/test_plate_geometry.py`、`tests/test_plate_datasets.py`，扩充 `tests/test_recognize_plate.py`（共 37 个用例；无 numpy/opencv 的解释器自动跳过视觉用例）。
+
+2026-09-29（晚）离场原生窗口通知 + uv 环境固化 + 识别回退：
+
+- 车辆离场原生窗口通知：新增 Qt 无关的 `src/platform/MacNotifications`（NSPanel + NSVisualEffectView 毛玻璃横幅，PingFang 字体，5 秒自动淡出、点击关闭、多条横幅层叠，CTest 冒烟覆盖展示与自动消失）。Qt Admin 本地离场与远程 `parking.exited` 广播都会弹出“车辆已离场”横幅（车位/停车时长/费用）；远程模式只由事件触发一次，本端与 Gate 侧离场均覆盖，断线时随快照一起清空。
+- 识别环境固化：`scripts/{lpr,ocr}/pyproject.toml + uv.lock`（与 `~/.smartpark/{lpr,ocr}` 现有环境零漂移，锁定 paddlepaddle 3.3.1 / ultralytics 8.4.164 / torch 2.14.0），`scripts/setup_uv_env.sh` 一键 `uv sync --frozen` 同步。
+- `recognize_plate.py` 已恢复单图串行检测与 OCR：一次只接收一张图片，成功输出一行 JSON，失败返回非零。先前多图线程池基准不能代表 GUI 的单图延迟或准确率；本次没有新的全样例准确率和速度对照，勿引用先前的批量加速数据。
+- 排查并修复识别全挂问题：仓库位于 iCloud 同步的 `~/Documents`，「优化 Mac 存储」把全仓 1736 个文件（含 third_party/PaddleOCR 793 个、.git 249 个）驱逐为 dataless 占位，读取时在线拉取超时（errno 60）。GitHub 443 当时不通，改从 Gitee 官方镜像重克隆 `third_party/PaddleOCR`（0 dataless，端到端恢复）；构建关键文件已用看门狗读取物化。**建议对本项目目录关闭「优化 Mac 存储」或移出 iCloud 同步范围，否则会复发。**
 
 2026-09-28（下午）选图识别在本机端到端可用：
 

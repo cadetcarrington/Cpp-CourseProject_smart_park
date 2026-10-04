@@ -9,10 +9,31 @@ target_link_libraries(smartpark_core_tests
 
 add_test(NAME smartpark_core_tests COMMAND smartpark_core_tests)
 
+if(APPLE AND TARGET smartpark_admin_macos)
+    enable_language(OBJCXX)
+    add_executable(smartpark_macos_map_tests
+        macos_map_tests.mm
+        ${CMAKE_SOURCE_DIR}/apps/macos/ParkingMapView.mm
+        ${CMAKE_SOURCE_DIR}/apps/macos/bridge/ParkingBridge.mm
+    )
+    target_include_directories(smartpark_macos_map_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/apps/macos)
+    target_compile_features(smartpark_macos_map_tests PRIVATE cxx_std_17)
+    target_compile_options(smartpark_macos_map_tests PRIVATE -fobjc-arc)
+    target_link_libraries(smartpark_macos_map_tests PRIVATE
+        smartpark_core ${APPKIT_FRAMEWORK})
+    add_test(NAME smartpark_macos_map_tests COMMAND smartpark_macos_map_tests)
+endif()
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_test(NAME smartpark_lpr_script_tests
         COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_recognize_plate.py)
+    # 无 numpy/opencv 的解释器会自动跳过视觉用例（exit 0）。
+    add_test(NAME smartpark_plate_geometry_tests
+        COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_plate_geometry.py)
+    add_test(NAME smartpark_plate_dataset_tests
+        COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_plate_datasets.py)
 endif()
 
 if(TARGET smartpark_admin)
@@ -29,7 +50,8 @@ if(TARGET smartpark_admin)
         PRIVATE ${CMAKE_SOURCE_DIR}/apps/admin
     )
     target_compile_definitions(smartpark_admin_tests PRIVATE
-        SMARTPARK_LPR_SCRIPT_PATH="${CMAKE_SOURCE_DIR}/scripts/recognize_plate.py")
+        SMARTPARK_LPR_SCRIPT_PATH="${CMAKE_SOURCE_DIR}/scripts/recognize_plate.py"
+        SMARTPARK_PLATE_EXAMPLES_PATH="${CMAKE_SOURCE_DIR}/examples/plates")
     target_link_libraries(smartpark_admin_tests
         PRIVATE
             Qt6::Test
@@ -56,7 +78,8 @@ if(TARGET smartpark_admin)
         PRIVATE ${CMAKE_SOURCE_DIR}/apps/admin
     )
     target_compile_definitions(smartpark_admin_remote_tests PRIVATE
-        SMARTPARK_LPR_SCRIPT_PATH="${CMAKE_SOURCE_DIR}/scripts/recognize_plate.py")
+        SMARTPARK_LPR_SCRIPT_PATH="${CMAKE_SOURCE_DIR}/scripts/recognize_plate.py"
+        SMARTPARK_PLATE_EXAMPLES_PATH="${CMAKE_SOURCE_DIR}/examples/plates")
     target_link_libraries(smartpark_admin_remote_tests
         PRIVATE
             Qt6::Test

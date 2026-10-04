@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Convert CCPD filename annotations into a symlinked one-class YOLO dataset."""
+"""Convert CCPD filename annotations into a detection dataset for YOLO.
+
+`--task` 决定标签形态（CCPD 文件名同时给出轴对齐框与四个角点）：
+
+* ``det``（默认）：``class cx cy w h``，现有 YOLO11m 检测权重的训练格式；
+* ``obb``：``class x1 y1 x2 y2 x3 y3 x4 y4``，四角旋转框，推理侧可透视矫正；
+* ``pose``：``class cx cy w h px1 py1 v1 ... px4 py4 v4``，四关键点带语义顺序
+  （0=左上 1=右上 2=右下 3=左下），即使图片整体旋转也能还原车牌方向。
+"""
 
 from __future__ import annotations
 
@@ -15,9 +23,16 @@ from collections import Counter
 from pathlib import Path
 from typing import Iterable
 
+import numpy as np
 from PIL import Image
 
+import plate_geometry
+
 SPLITS = ("train", "val", "test")
+TASKS = ("det", "obb", "pose")
+DATASET_YAML = {"det": "ccpd.yaml", "obb": "ccpd_obb.yaml", "pose": "ccpd_pose.yaml"}
+# 关键点语义顺序：左上、右上、右下、左下；pose 任务需要告诉 ultralytics 形状。
+KEYPOINT_SHAPE = (4, 3)
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 DIFFICULTY_SUBSETS = ("ccpd_db", "ccpd_blur", "ccpd_rotate", "ccpd_tilt", "ccpd_fn", "ccpd_challenge", "ccpd_weather")
 OFFICIAL_SPLIT_URLS = {
@@ -32,6 +47,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ccpd2019", type=Path, default=root / "model/datasets/CCPD2019")
     parser.add_argument("--ccpd2020", type=Path, default=root / "model/datasets/CCPD2020")
     parser.add_argument("--output", type=Path, default=root / "model/datasets/ccpd_yolo")
+    parser.add_argument("--task", choices=TASKS, default="det",
+                        help="det=轴对齐框；obb=四角旋转框；pose=四关键点（含语义顺序）")
     parser.add_argument("--max-per-split", type=int, default=None, metavar="N",
                         help="limit each split for a fast smoke conversion")
     parser.add_argument("--green-only", action="store_true", help="convert CCPD2020 green only")
@@ -150,7 +167,7 @@ def ccpd2020_sources(root: Path) -> dict[str, list[Path]]:
     return result
 
 
-def yolo_label(image: Path) -> str | None:
+def det_label(image: Path) -> str | None:
     fields = image.stem.split("-")
     if len(fields) < 3:
         return None
@@ -174,6 +191,56 @@ def yolo_label(image: Path) -> str | None:
         return None
 
 
+def geometric_label(image: Path, task: str) -> str | None:
+    """obb / pose 标签，取 CCPD 文件名里的四角标注（语义顺序 LT, RT, RB, LB）。
+
+    obb 只保留旋转框，推理侧用几何排序还原朝向；pose 额外把关键点顺序写进标签，
+    模型能学到"哪个角是左上"，图片整体旋转时也能矫正成正确朝向。
+    """
+    fields = image.stem.split("-")
+    if len(fields) < 5:
+        return None
+    try:
+        corners = []
+        for pair in fields[3].split("_"):
+            x_text, y_text = pair.split("&", 1)
+            corners.append((float(x_text), float(y_text)))
+        if len(corners) != 4:
+            return None
+        first, second = fields[2].split("_", 1)
+        x1, y1 = (float(value) for value in first.split("&", 1))
+        x2, y2 = (float(value) for value in second.split("&", 1))
+        with Image.open(image) as source:
+            width, height = source.size
+        if width <= 0 or height <= 0:
+            return None
+        scale = np.array([float(width), float(height)], dtype=np.float64)
+        quad = np.clip(plate_geometry.ccpd_quad(corners), 0.0, scale)
+        if task == "obb":
+            normalized = quad / scale
+            return "0 " + " ".join(f"{value:.8f}" for value in normalized.reshape(-1)) + "\n"
+        left, right = sorted((max(0.0, min(x1, width)), max(0.0, min(x2, width))))
+        top, bottom = sorted((max(0.0, min(y1, height)), max(0.0, min(y2, height))))
+        if right <= left or bottom <= top:
+            return None
+        box = [(left + right) / 2 / width, (top + bottom) / 2 / height,
+               (right - left) / width, (bottom - top) / height]
+        keypoints = []
+        coordinates = [max(0.0, min(1.0, float(value)))
+                       for point in quad / scale for value in (point[0], point[1])]
+        for index in range(4):
+            # 可见性 v=2 表示该关键点有标注，不参与 [0,1] 归一化裁剪。
+            keypoints.extend([coordinates[2 * index], coordinates[2 * index + 1], 2.0])
+        values = [max(0.0, min(1.0, value)) for value in box] + keypoints
+        return "0 " + " ".join(f"{value:.8f}" for value in values) + "\n"
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def yolo_label(image: Path, task: str = "det") -> str | None:
+    return det_label(image) if task == "det" else geometric_label(image, task)
+
+
 def reset_output(output: Path) -> None:
     if output.exists():
         shutil.rmtree(output)
@@ -187,10 +254,18 @@ def output_name(image: Path) -> str:
     return f"{image.stem}_{digest}{image.suffix.lower()}"
 
 
-def write_yaml(output: Path) -> None:
-    (output / "ccpd.yaml").write_text(
-        f"path: {output.resolve()}\ntrain: images/train\nval: images/val\ntest: images/test\nnames:\n  0: license_plate\n"
-    )
+def write_yaml(output: Path, task: str = "det") -> Path:
+    lines = [f"path: {output.resolve()}", "train: images/train", "val: images/val",
+             "test: images/test", "names:", "  0: license_plate"]
+    if task == "pose":
+        lines.append(f"kpt_shape: [{KEYPOINT_SHAPE[0]}, {KEYPOINT_SHAPE[1]}]")
+        # 故意不写 flip_idx：镜像车牌在语义上没有意义，ultralytics 会因此关闭
+        # fliplr/flipud 增强（只用旋转、缩放、色变等不影响字符方向的增强）。
+        lines.append("# flip_idx omitted on purpose: mirrored plates are meaningless,"
+                     " so ultralytics disables fliplr/flipud.")
+    path = output / DATASET_YAML[task]
+    path.write_text("\n".join(lines) + "\n")
+    return path
 
 
 def main() -> int:
@@ -231,7 +306,7 @@ def main() -> int:
             seen.add(resolved)
             if args.max_per_split is not None and counts[split] >= args.max_per_split:
                 break
-            label = yolo_label(image)
+            label = yolo_label(image, args.task)
             if label is None:
                 skipped[split] += 1
                 continue
@@ -239,11 +314,12 @@ def main() -> int:
             destination.symlink_to(resolved)
             (output / "labels" / split / f"{destination.stem}.txt").write_text(label)
             counts[split] += 1
-    write_yaml(output)
+    yaml_path = write_yaml(output, args.task)
 
     for note in notes:
         print(note)
-    print(f"wrote {output / 'ccpd.yaml'}")
+    print(f"task: {args.task}")
+    print(f"wrote {yaml_path}")
     print("images/labels: " + ", ".join(f"{split}={counts[split]}" for split in SPLITS))
     print("skipped malformed/unreadable: " + ", ".join(f"{split}={skipped[split]}" for split in SPLITS))
     return 0
