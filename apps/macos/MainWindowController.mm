@@ -46,6 +46,8 @@
 
 @implementation MainWindowController{
     std::unique_ptr<ParkingBridge> bridge_;
+    BOOL _remoteOnline;
+    NSString *_remoteStatus;
 }
 
 - (instancetype)init{
@@ -137,6 +139,76 @@
                                                    object:nil];
     }
     return self;
+}
+
+- (void)connectToRemoteHost:(NSString *)host port:(NSInteger)port
+                       user:(NSString *)user password:(NSString *)password{
+    if (bridge_ == nullptr){
+        return;
+    }
+    __weak MainWindowController *weakSelf = self;
+    // 连接状态变化：登录失败要如实显示，不能只把界面停在「连接中」。
+    bridge_->onRemoteStateChanged = [weakSelf](bool online, const QString &detail){
+        MainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil){
+            return;
+        }
+        strongSelf->_remoteOnline = online;
+        strongSelf->_remoteStatus = [NSString stringWithUTF8String:
+            detail.toUtf8().constData()] ?: @"";
+        [strongSelf applyRemoteCapabilities];
+    };
+    // 快照刷新后让当前页面重画（页面自身从 bridge 取数）。
+    bridge_->onRemoteDataChanged = [weakSelf]{
+        MainWindowController *strongSelf = weakSelf;
+        if (strongSelf == nil){
+            return;
+        }
+        [strongSelf refreshVisiblePage];
+    };
+    bridge_->connectRemote(QString::fromUtf8(host.UTF8String),
+                           static_cast<quint16>(port),
+                           QString::fromUtf8((user ?: @"admin").UTF8String),
+                           QString::fromUtf8((password ?: @"").UTF8String));
+}
+
+- (BOOL)isRemote{
+    return bridge_ != nullptr && bridge_->remoteMode();
+}
+
+- (NSString *)remoteStatusText{
+    return _remoteStatus;
+}
+
+// 远程模式下协议覆盖不到的页面从侧边栏移除，避免点进去是一片空表。
+- (void)applyRemoteCapabilities{
+    if (bridge_ == nullptr || !bridge_->remoteMode()){
+        return;
+    }
+    const auto caps = bridge_->capabilities();
+    NSMutableIndexSet *hidden = [NSMutableIndexSet indexSet];
+    if (!caps.bookings){
+        [hidden addIndex:(NSUInteger)SmartParkPageBooking];
+    }
+    if (!caps.records){
+        [hidden addIndex:(NSUInteger)SmartParkPageRecords];
+    }
+    if (!caps.layoutEditing){
+        [hidden addIndex:(NSUInteger)SmartParkPageSettings];
+    }
+    [self.sidebar setHiddenPages:hidden];
+    // 当前页若被隐藏，退回仪表盘。
+    const NSInteger current = [self.pages indexOfObject:self.pageHost.childViewController];
+    if (current != NSNotFound && [hidden containsIndex:(NSUInteger)current]){
+        [self showPage:0];
+    }
+}
+
+- (void)refreshVisiblePage{
+    NSViewController *current = self.pageHost.childViewController;
+    if ([current respondsToSelector:@selector(refresh)]){
+        [current performSelector:@selector(refresh)];
+    }
 }
 
 - (BOOL)isDatabaseReady{

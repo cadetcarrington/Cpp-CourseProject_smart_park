@@ -4,6 +4,8 @@
 @property (nonatomic, strong) NSTableView *tableView;
 @property (nonatomic, copy) NSArray<NSString *> *items;
 @property (nonatomic, strong) NSTextField *userLabel;
+// 被隐藏的页下标；行号是「可见页」里的序号，需换算回页下标。
+@property (nonatomic, copy) NSIndexSet *hiddenPages;
 @end
 
 @implementation SidebarViewController
@@ -101,13 +103,34 @@
         : @"未登录";
 }
 
+// 当前可见的页下标（升序）。
+- (NSArray<NSNumber *> *)visiblePageIndices{
+    NSMutableArray<NSNumber *> *visible = [NSMutableArray array];
+    for (NSUInteger index = 0; index < self.items.count; ++index){
+        if (self.hiddenPages != nil && [self.hiddenPages containsIndex:index]){
+            continue;
+        }
+        [visible addObject:@(index)];
+    }
+    return visible;
+}
+
+- (void)setHiddenPages:(NSIndexSet *)indexes{
+    _hiddenPages = [indexes copy];
+    [self.tableView reloadData];
+}
+
 - (void)selectIndex:(NSInteger)index{
     if (index < 0 || index >= (NSInteger)self.items.count){
         return;
     }
-    [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)index]
+    const NSInteger row = [[self visiblePageIndices] indexOfObject:@(index)];
+    if (row == NSNotFound){
+        return;   // 该页在当前模式下被隐藏
+    }
+    [self.tableView selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row]
                 byExtendingSelection:NO];
-    [self.tableView scrollRowToVisible:index];
+    [self.tableView scrollRowToVisible:row];
 }
 
 - (void)requestLogout:(id)sender{
@@ -140,13 +163,17 @@
     if (row < 0){
         return;
     }
+    const NSArray<NSNumber *> *visible = [self visiblePageIndices];
+    if (row >= (NSInteger)visible.count){
+        return;
+    }
     if ([self.delegate respondsToSelector:@selector(sidebar:didSelectIndex:)]){
-        [self.delegate sidebar:self didSelectIndex:row];
+        [self.delegate sidebar:self didSelectIndex:visible[(NSUInteger)row].integerValue];
     }
 }
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView{
-    return (NSInteger)self.items.count;
+    return (NSInteger)[self visiblePageIndices].count;
 }
 
 - (NSView *)tableView:(NSTableView *)tableView
@@ -176,7 +203,13 @@
     } else{
         label = cell.subviews.firstObject;
     }
-    label.stringValue = self.items[(NSUInteger)row];
+    // row 是「可见页」序号，换算回页下标再取标题。
+    const NSArray<NSNumber *> *visible = [self visiblePageIndices];
+    if (row < 0 || row >= (NSInteger)visible.count){
+        label.stringValue = @"";
+    } else{
+        label.stringValue = self.items[visible[(NSUInteger)row].unsignedIntegerValue];
+    }
     return cell;
 }
 

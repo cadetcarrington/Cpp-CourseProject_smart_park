@@ -1,5 +1,9 @@
 #import "LoginViewController.h"
 
+#include "network/ServerSession.h"
+#include <QCoreApplication>
+#include <QEventLoop>
+
 #import "RegisterViewController.h"
 
 #include "core/service/UserStore.h"
@@ -86,6 +90,11 @@ void keychainDelete(NSString *account){
 @end
 
 @implementation LoginViewController{
+    // 远程模式控件（勾选后才显示地址/端口行）。
+    NSButton *_remoteCheck;
+    NSTextField *_hostField;
+    NSTextField *_portField;
+    NSStackView *_remoteRow;
     smartpark::UserStore *_userStore;   // 不持有所有权
     NSTextField *_userNameField;
     NSTextField *_passwordField;        // 在 NSSecureTextField / NSTextField 之间切换
@@ -198,6 +207,33 @@ void keychainDelete(NSString *account){
     _loginButton.accessibilityIdentifier = @"smartpark.login.submit";
     _loginButton.keyEquivalent = @"\r";
 
+    // 远程模式：勾选后连服务端，账号口令由服务端校验，本机数据库不参与。
+    _remoteCheck = [NSButton checkboxWithTitle:@"连接远程服务端"
+                                        target:self
+                                        action:@selector(remoteModeChanged:)];
+    _remoteCheck.accessibilityIdentifier = @"smartpark.login.remote";
+    _remoteCheck.toolTip =
+        @"勾选后通过 TCP 连接服务端，账号与口令由服务端校验；"
+        @"预约、停车记录与设施配置在远程模式下不提供。";
+
+    _hostField = [[NSTextField alloc] init];
+    _hostField.placeholderString = @"服务端地址";
+    _hostField.stringValue = @"127.0.0.1";
+    _hostField.accessibilityIdentifier = @"smartpark.login.host";
+    _hostField.delegate = self;
+
+    _portField = [[NSTextField alloc] init];
+    _portField.placeholderString = @"端口";
+    _portField.stringValue = @"9527";
+    _portField.accessibilityIdentifier = @"smartpark.login.port";
+    _portField.delegate = self;
+
+    _remoteRow = [NSStackView stackViewWithViews:@[_hostField, _portField]];
+    _remoteRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    _remoteRow.spacing = 8.0;
+    _remoteRow.distribution = NSStackViewDistributionFill;
+    _remoteRow.hidden = YES;
+
     _registerButton = [NSButton buttonWithTitle:@"注册新账号"
                                          target:self
                                          action:@selector(openRegister:)];
@@ -206,7 +242,7 @@ void keychainDelete(NSString *account){
 
     NSStackView *cardStack = [NSStackView stackViewWithViews:@[
         cardTitle, cardHint, _userNameField, _passwordRow, rememberRow,
-        _errorLabel, _loginButton, _registerButton
+        _remoteCheck, _remoteRow, _errorLabel, _loginButton, _registerButton
     ]];
     cardStack.orientation = NSUserInterfaceLayoutOrientationVertical;
     cardStack.alignment = NSLayoutAttributeLeading;
@@ -244,6 +280,11 @@ void keychainDelete(NSString *account){
 
         [_userNameField.widthAnchor constraintEqualToConstant:292],
         [_passwordRow.widthAnchor constraintEqualToConstant:292],
+        [_remoteRow.widthAnchor constraintEqualToConstant:292],
+        // 端口固定宽度、地址占满剩余：只给 >= 会让 Fill 分布下的宽度无解，
+        // 出现歧义约束（登录页夹具会直接报出来）。
+        [_portField.widthAnchor constraintEqualToConstant:88],
+        [_hostField.widthAnchor constraintGreaterThanOrEqualToConstant:180],
         // 父栈是 leading 对齐、只钉住左边，不给宽度会留下歧义约束。
         [rememberRow.widthAnchor constraintEqualToConstant:292],
         [_errorLabel.widthAnchor constraintEqualToConstant:292],
@@ -349,6 +390,68 @@ void keychainDelete(NSString *account){
 }
 
 #pragma mark - 口令可见切换
+
+- (IBAction)remoteModeChanged:(id)sender{
+    const BOOL remote = _remoteCheck.state == NSControlStateValueOn;
+    _remoteRow.hidden = !remote;
+    if (remote){
+        // 远程模式下本机账号只用于回填，真正的校验在服务端。
+        [_hostField becomeFirstResponder];
+    }
+}
+
+// 远程登录：连服务端并用同一个 login action 校验账号口令。
+// ServerSession 是异步的，这里用局部 run loop 等结果（与 Gate 端
+// TcpClient::request 同样的取舍）；超时按失败处理，不假装成功。
+- (BOOL)connectRemoteWithHost:(NSString *)host
+                         port:(NSInteger)port
+                         user:(NSString *)user
+                     password:(NSString *)password
+                        error:(NSString **)error{
+    auto session = std::make_unique<smartpark::ServerSession>();
+    // 普通 C++ 局部：lambda 在本函数内的 run loop 中同步执行，按引用捕获安全；
+    // __block 变量无法被 C++ lambda 捕获。
+    BOOL settled = NO;
+    BOOL succeeded = NO;
+    QString message;
+    QObject::connect(session.get(), &smartpark::ServerSession::stateChanged,
+                     [&](smartpark::ServerSession::State state){
+        if (state == smartpark::ServerSession::State::Online){
+            succeeded = YES;
+            settled = YES;
+        }
+    });
+    QObject::connect(session.get(), &smartpark::ServerSession::authFailed,
+                     [&](const QString &text){
+        message = text;
+        settled = YES;
+    });
+    session->start(QString::fromUtf8(host.UTF8String),
+                   static_cast<quint16>(port),
+                   QString::fromUtf8(user.UTF8String),
+                   QString::fromUtf8(password.UTF8String));
+
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:8.0];
+    while (!settled && [deadline timeIntervalSinceNow] > 0.0){
+        @autoreleasepool{
+            QCoreApplication::processEvents();
+            [[NSRunLoop currentRunLoop]
+                runMode:NSDefaultRunLoopMode
+             beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+        }
+    }
+    session->stop();
+    if (succeeded){
+        return YES;
+    }
+    if (error != nil){
+        *error = settled
+            ? [NSString stringWithFormat:@"服务端拒绝登录：%s",
+                                         message.toUtf8().constData()]
+            : @"连接服务端超时，请检查地址与端口。";
+    }
+    return NO;
+}
 
 - (IBAction)togglePasswordVisibility:(id)sender{
     const BOOL wantsPlainText = (_showPasswordCheck.state == NSControlStateValueOn);
@@ -462,6 +565,39 @@ void keychainDelete(NSString *account){
         return;
     }
 
+    // 远程模式：账号口令交给服务端校验，本机数据库不参与。
+    if (_remoteCheck.state == NSControlStateValueOn){
+        NSString *host = [_hostField.stringValue
+            stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        const NSInteger port = _portField.integerValue;
+        if (host.length == 0 || port <= 0 || port > 65535){
+            [self setError:@"请填写有效的服务端地址与端口（1-65535）。"
+                     focus:host.length == 0 ? _hostField : _portField];
+            return;
+        }
+        _loginButton.enabled = NO;
+        _loginButton.title = @"连接中…";
+        NSString *failure = nil;
+        const BOOL connected = [self connectRemoteWithHost:host port:port
+                                                      user:userName
+                                                  password:password
+                                                     error:&failure];
+        _loginButton.enabled = YES;
+        _loginButton.title = @"登录";
+        if (!connected){
+            ++_failedAttempts;
+            [self setError:failure focus:nil];
+            return;
+        }
+        [self persistRememberedUser:userName password:password];
+        void (^remoteCallback)(NSString *, NSString *, NSInteger, NSString *) =
+            self.onAuthenticated;
+        if (remoteCallback != nil){
+            remoteCallback(userName, host, port, password);
+        }
+        return;
+    }
+
     const auto result = _userStore != nullptr
         ? _userStore->verifyLogin(QString::fromUtf8(userName.UTF8String),
                                   QString::fromUtf8(password.UTF8String))
@@ -469,9 +605,10 @@ void keychainDelete(NSString *account){
 
     if (result == smartpark::UserStore::LoginResult::Success){
         [self persistRememberedUser:userName password:password];
-        void (^callback)(NSString *) = self.onAuthenticated;
+        void (^callback)(NSString *, NSString *, NSInteger, NSString *) =
+            self.onAuthenticated;
         if (callback != nil){
-            callback(userName);
+            callback(userName, nil, 0, nil);
         }
         return;
     }

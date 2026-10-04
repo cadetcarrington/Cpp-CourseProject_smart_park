@@ -14,7 +14,13 @@ class UserStore;
 
 - (instancetype)initWithUserStore:(smartpark::UserStore *)userStore;
 
-// 登录成功后回调，参数为账号名。
-@property (nonatomic, copy) void (^onAuthenticated)(NSString *userName);
+// 登录成功后回调。remoteHost 为 nil 表示本地模式（直接读写本机数据库）；
+// 非 nil 时界面应通过 bridge 以 TCP 连接该服务端。
+// remotePassword 仅在远程模式下非 nil：主窗口要再建一条 TCP 会话，
+// 必须重新登录一次，因此需要口令（与 Qt 版 ServerSession 同样只留在内存）。
+@property (nonatomic, copy) void (^onAuthenticated)(NSString *userName,
+                                                    NSString *remoteHost,
+                                                    NSInteger remotePort,
+                                                    NSString *remotePassword);
 
 @end
