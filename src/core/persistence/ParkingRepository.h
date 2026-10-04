@@ -22,6 +22,7 @@ struct PersistedRecord{
     std::string spotId;
     ParkingRecord::TimePoint entryTime{};
     std::optional<ParkingRecord::TimePoint> exitTime;
+    VehicleType vehicleType{VehicleType::Car};
     double fee{0.0};
 };
 class ParkingRepository{
