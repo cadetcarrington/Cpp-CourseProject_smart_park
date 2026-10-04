@@ -43,11 +43,17 @@ set(MACOS_ADMIN_SOURCES
     SettingsViewController.mm
     bridge/ParkingBridge.h
     bridge/ParkingBridge.mm
+    bridge/ParkingDataSource.h
+    bridge/RemoteDataSource.h
+    bridge/RemoteDataSource.mm
 )
 
 add_executable(smartpark_admin_macos MACOSX_BUNDLE ${MACOS_ADMIN_SOURCES})
 
 target_compile_features(smartpark_admin_macos PRIVATE cxx_std_17)
+
+# RemoteDataSource 是 QObject（ServerSession 用 Qt signals 回调），需要 moc。
+set_target_properties(smartpark_admin_macos PROPERTIES AUTOMOC ON)
 
 # 让 #import "bridge/ParkingBridge.h"、#import "AppDelegate.h" 等可解析。
 target_include_directories(smartpark_admin_macos PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

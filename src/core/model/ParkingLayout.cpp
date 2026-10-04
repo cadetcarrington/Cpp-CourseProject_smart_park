@@ -82,6 +82,20 @@ ParkingLayout::ParkingLayout(double siteWidth, double siteHeight)
     : siteWidth_(siteWidth)
     , siteHeight_(siteHeight){
 }
+ParkingLayout ParkingLayout::fromParts(double siteWidth, double siteHeight,
+                                       std::vector<ParkingSpot> spots,
+                                       std::vector<Rectangle> regions,
+                                       std::vector<LayoutObstacle> obstacles,
+                                       std::vector<Point> entrances,
+                                       std::vector<Point> exits){
+    ParkingLayout layout(siteWidth, siteHeight);
+    layout.spots_ = std::move(spots);
+    layout.regions_ = std::move(regions);
+    layout.obstacles_ = std::move(obstacles);
+    layout.entrances_ = std::move(entrances);
+    layout.exits_ = std::move(exits);
+    return layout;
+}
 ParkingLayout ParkingLayout::defaultLayout(){
     return fromDescription(
         "site 100 60\n"

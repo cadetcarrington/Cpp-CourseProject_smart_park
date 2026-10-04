@@ -1,7 +1,11 @@
 #pragma once
+#include "core/model/Vehicle.h"
+
 #include <QByteArray>
 #include <QJsonObject>
 #include <QString>
+
+#include <optional>
 
 namespace smartpark{
 namespace protocol{
@@ -27,6 +31,12 @@ QJsonObject makeResponse(const QString &id, bool ok,
                          const QJsonObject &payload = {},
                          const QString &error = {});
 QJsonObject makeEvent(const QString &event, const QJsonObject &payload = {});
+
+// 车型的线上字符串编码（parking.enter / gate.replay / admin.snapshot 共用）。
+// 定义在协议层而不是各自实现：服务端与客户端一旦对不上，
+// 摩托车/货车/新能源车会被静默当成轿车处理。
+QString vehicleTypeToString(smartpark::VehicleType type);
+std::optional<smartpark::VehicleType> vehicleTypeFromString(const QString &text);
 
 } // namespace protocol
 } // namespace smartpark

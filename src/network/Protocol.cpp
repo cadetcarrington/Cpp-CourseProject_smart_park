@@ -86,5 +86,24 @@ QJsonObject makeEvent(const QString &event, const QJsonObject &payload){
     return message;
 }
 
+QString vehicleTypeToString(smartpark::VehicleType type){
+    switch (type){
+    case smartpark::VehicleType::Motorcycle: return QStringLiteral("motorcycle");
+    case smartpark::VehicleType::Truck: return QStringLiteral("truck");
+    case smartpark::VehicleType::Electric: return QStringLiteral("electric");
+    case smartpark::VehicleType::Car:
+    default: return QStringLiteral("car");
+    }
+}
+
+std::optional<smartpark::VehicleType> vehicleTypeFromString(const QString &text){
+    if (text == QStringLiteral("car")) return smartpark::VehicleType::Car;
+    if (text == QStringLiteral("motorcycle")) return smartpark::VehicleType::Motorcycle;
+    if (text == QStringLiteral("truck")) return smartpark::VehicleType::Truck;
+    if (text == QStringLiteral("electric")) return smartpark::VehicleType::Electric;
+    return std::nullopt;
+}
+
 } // namespace protocol
 } // namespace smartpark
+

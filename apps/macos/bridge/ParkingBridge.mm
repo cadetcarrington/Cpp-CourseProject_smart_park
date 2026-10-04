@@ -1,5 +1,7 @@
 #include "ParkingBridge.h"
 
+#include "bridge/RemoteDataSource.h"
+
 #include "core/model/Booking.h"
 #include "core/model/ParkingLayout.h"
 #include "core/model/ParkingRecord.h"
@@ -120,10 +122,16 @@ bool ParkingBridge::clearParkingData(std::string *error){
 }
 
 const std::string &ParkingBridge::layoutDescription() const noexcept{
+    if (remote_){
+        return remote_->layoutDescription();
+    }
     return layoutText_;
 }
 
 bool ParkingBridge::memoryOnly() const noexcept{
+    if (remote_){
+        return remote_->memoryOnly();
+    }
     return databaseFailed_ || databasePath_.empty();
 }
 
@@ -187,50 +195,83 @@ bool ParkingBridge::resetDatabaseAndApplyLayout(const std::string &description,
 }
 
 int ParkingBridge::totalSpots() const noexcept{
+    if (remote_){
+        return remote_->totalSpots();
+    }
     return service_ ? static_cast<int>(service_->spots().size()) : 0;
 }
 
 int ParkingBridge::occupiedSpots() const noexcept{
+    if (remote_){
+        return remote_->occupiedSpots();
+    }
     return service_ ? service_->occupiedSpots() : 0;
 }
 
 int ParkingBridge::reservedSpots() const noexcept{
+    if (remote_){
+        return remote_->reservedSpots();
+    }
     return service_ ? service_->reservedSpots() : 0;
 }
 
 int ParkingBridge::remainingSpots() const noexcept{
+    if (remote_){
+        return remote_->remainingSpots();
+    }
     return service_ ? service_->remainingSpots() : 0;
 }
 
 int ParkingBridge::recordCount() const noexcept{
+    if (remote_){
+        return remote_->recordCount();
+    }
     return service_ ? static_cast<int>(service_->records().size()) : 0;
 }
 
 double ParkingBridge::totalRevenue() const noexcept{
+    if (remote_){
+        return remote_->totalRevenue();
+    }
     return service_ ? service_->totalRevenue() : 0.0;
 }
 
 const smartpark::ParkingLayout &ParkingBridge::layout() const noexcept{
+    if (remote_){
+        return remote_->layout();
+    }
     static const smartpark::ParkingLayout empty = smartpark::ParkingLayout::garageLayout();
     return service_ ? service_->layout() : empty;
 }
 
 const std::vector<smartpark::ParkingSpot> &ParkingBridge::spots() const noexcept{
+    if (remote_){
+        return remote_->spots();
+    }
     static const std::vector<smartpark::ParkingSpot> empty;
     return service_ ? service_->spots() : empty;
 }
 
 const std::vector<smartpark::ParkingRecord> &ParkingBridge::records() const noexcept{
+    if (remote_){
+        return remote_->records();
+    }
     static const std::vector<smartpark::ParkingRecord> empty;
     return service_ ? service_->records() : empty;
 }
 
 const std::vector<smartpark::Booking> &ParkingBridge::bookings() const noexcept{
+    if (remote_){
+        return remote_->bookings();
+    }
     static const std::vector<smartpark::Booking> empty;
     return service_ ? service_->bookings() : empty;
 }
 
 smartpark::ParkingInsights ParkingBridge::insights() const noexcept{
+    if (remote_){
+        return remote_->insights();
+    }
     if (!service_){
         return smartpark::ParkingInsights{};
     }
@@ -239,15 +280,24 @@ smartpark::ParkingInsights ParkingBridge::insights() const noexcept{
 }
 
 double ParkingBridge::pendingDeposits() const noexcept{
+    if (remote_){
+        return remote_->pendingDeposits();
+    }
     return service_ ? service_->pendingDeposits() : 0.0;
 }
 
 double ParkingBridge::forfeitedDeposits() const noexcept{
+    if (remote_){
+        return remote_->forfeitedDeposits();
+    }
     return service_ ? service_->forfeitedDeposits() : 0.0;
 }
 
 std::optional<smartpark::AllocationResult> ParkingBridge::enterVehicle(
     const std::string &plate, smartpark::VehicleType type){
+    if (remote_){
+        return remote_->enterVehicle(plate, type);
+    }
     if (!service_){
         return std::nullopt;
     }
@@ -256,6 +306,10 @@ std::optional<smartpark::AllocationResult> ParkingBridge::enterVehicle(
 
 std::optional<smartpark::AllocationResult> ParkingBridge::emergencyEnter(
     const std::string &plate, smartpark::VehicleType type){
+    if (remote_){
+        // 协议里没有应急生命通道 action：远程模式下该能力不可用。
+        return remote_->emergencyEnter(plate, type);
+    }
     if (!service_){
         return std::nullopt;
     }
@@ -263,6 +317,9 @@ std::optional<smartpark::AllocationResult> ParkingBridge::emergencyEnter(
 }
 
 std::optional<smartpark::ParkingRecord> ParkingBridge::leaveVehicle(const std::string &plate){
+    if (remote_){
+        return remote_->leaveVehicle(plate);
+    }
     if (!service_){
         return std::nullopt;
     }
@@ -270,12 +327,18 @@ std::optional<smartpark::ParkingRecord> ParkingBridge::leaveVehicle(const std::s
 }
 
 bool ParkingBridge::updateVehicleType(const std::string &plate, smartpark::VehicleType type){
+    if (remote_){
+        return remote_->updateVehicleType(plate, type);
+    }
     return service_ && service_->updateVehicleType(plate, type);
 }
 
 void ParkingBridge::setStrategy(smartpark::AllocationStrategy strategy){
     // 记录在 bridge 上：布局重建会构造新的 ParkingService，需要恢复该选择。
     strategy_ = strategy;
+    if (remote_){
+        return;   // 远程模式下分配策略由服务端统一配置
+    }
     if (service_){
         service_->setStrategy(strategy);
     }
@@ -284,6 +347,9 @@ void ParkingBridge::setStrategy(smartpark::AllocationStrategy strategy){
 std::optional<smartpark::BookingResult> ParkingBridge::bookVehicle(
     const std::string &plate, smartpark::VehicleType type,
     smartpark::ParkingRecord::TimePoint arrival){
+    if (remote_){
+        return remote_->bookVehicle(plate, type, arrival);
+    }
     if (!service_){
         return std::nullopt;
     }
@@ -291,6 +357,9 @@ std::optional<smartpark::BookingResult> ParkingBridge::bookVehicle(
 }
 
 std::optional<smartpark::AllocationResult> ParkingBridge::confirmBooking(const std::string &plate){
+    if (remote_){
+        return remote_->confirmBooking(plate);
+    }
     if (!service_){
         return std::nullopt;
     }
@@ -298,21 +367,79 @@ std::optional<smartpark::AllocationResult> ParkingBridge::confirmBooking(const s
 }
 
 bool ParkingBridge::cancelBooking(const std::string &plate){
+    if (remote_){
+        return remote_->cancelBooking(plate);
+    }
     return service_ && service_->cancelBooking(plate);
 }
 
 smartpark::BillingRule ParkingBridge::billingRule() const{
+    if (remote_){
+        return remote_->billingRule();
+    }
     return service_ ? service_->billing().rule() : smartpark::BillingRule{};
 }
 
 smartpark::BookingPolicy ParkingBridge::bookingPolicy() const{
+    if (remote_){
+        return remote_->bookingPolicy();
+    }
     return service_ ? service_->bookingPolicy() : smartpark::BookingPolicy{};
 }
 
 bool ParkingBridge::ready() const noexcept{
+    if (remote_){
+        return remote_->ready();
+    }
     return service_ != nullptr;
 }
 
 const std::string &ParkingBridge::lastError() const noexcept{
+    if (remote_){
+        return remote_->lastError();
+    }
     return lastError_;
+}
+
+bool ParkingBridge::connectRemote(const QString &host, quint16 port,
+                                  const QString &user, const QString &password){
+    if (!remote_){
+        remote_ = std::make_unique<smartpark::RemoteDataSource>();
+        remote_->onConnectionChanged = [this](bool online, const QString &detail){
+            if (onRemoteStateChanged){
+                onRemoteStateChanged(online, detail);
+            }
+        };
+        remote_->onSnapshotRefreshed = [this]{
+            if (onRemoteDataChanged){
+                onRemoteDataChanged();
+            }
+        };
+    }
+    remote_->start(host, port, user, password);
+    return true;
+}
+
+void ParkingBridge::disconnectRemote(){
+    if (!remote_){
+        return;
+    }
+    remote_->stop();
+    // 释放远程数据源：remoteMode() 变回 false，读写重新落回本地库。
+    remote_.reset();
+}
+
+bool ParkingBridge::remoteMode() const noexcept{
+    return remote_ != nullptr;
+}
+
+smartpark::ParkingDataSource::Capabilities ParkingBridge::capabilities() const{
+    if (remote_){
+        return remote_->capabilities();
+    }
+    return smartpark::ParkingDataSource::Capabilities{};
+}
+
+smartpark::RemoteDataSource *ParkingBridge::remote() const noexcept{
+    return remote_.get();
 }
