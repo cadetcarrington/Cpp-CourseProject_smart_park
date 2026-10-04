@@ -1,6 +1,6 @@
 #include "MainWindow.h"
 #include "PlateReviewDialog.h"
-#include "ServerSession.h"
+#include "network/ServerSession.h"
 #include "Theme.h"
 #include "NativeEffects.h"
 

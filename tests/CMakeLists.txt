@@ -64,7 +64,6 @@ if(TARGET smartpark_admin)
     qt_add_executable(smartpark_admin_tests
         admin_main_window_tests.cpp
         ${CMAKE_SOURCE_DIR}/apps/admin/MainWindow.cpp
-        ${CMAKE_SOURCE_DIR}/apps/admin/ServerSession.cpp
         ${CMAKE_SOURCE_DIR}/apps/admin/PlateReviewDialog.cpp
         ${CMAKE_SOURCE_DIR}/apps/admin/LoginDialog.cpp
         ${CMAKE_SOURCE_DIR}/apps/admin/RegisterDialog.cpp
@@ -92,7 +91,6 @@ if(TARGET smartpark_admin)
     qt_add_executable(smartpark_admin_remote_tests
         admin_remote_tests.cpp
         ${CMAKE_SOURCE_DIR}/apps/admin/MainWindow.cpp
-        ${CMAKE_SOURCE_DIR}/apps/admin/ServerSession.cpp
         ${CMAKE_SOURCE_DIR}/apps/admin/PlateReviewDialog.cpp
         ${CMAKE_SOURCE_DIR}/apps/admin/LoginDialog.cpp
         ${CMAKE_SOURCE_DIR}/apps/admin/RegisterDialog.cpp

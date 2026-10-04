@@ -3,7 +3,7 @@
 // 状态（含 Gate 侧事件驱动刷新与 Admin 侧入场/离场）、服务端重启重连。
 #include "MainWindow.h"
 #include "ChartWidgets.h"
-#include "ServerSession.h"
+#include "network/ServerSession.h"
 
 #include "core/persistence/Persistence.h"
 #include "core/service/AuditLogService.h"
