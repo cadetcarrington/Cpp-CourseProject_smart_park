@@ -2,7 +2,10 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QListWidget>
 #include <QMessageBox>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QTimer>
 #include <QUuid>
 
@@ -96,7 +99,23 @@ int main(int argc, char *argv[]){
         }
         MainWindow window(smokePath, QStringLiteral("系统检查"));
         window.show();
-        QTimer::singleShot(1500, &app, &QCoreApplication::quit);
+        auto *navigation = window.findChild<QListWidget *>(QStringLiteral("sideNavigation"));
+        auto *dashboard = window.findChild<QScrollArea *>();
+        int step = 0;
+        auto *pageCheck = new QTimer(&window);
+        QObject::connect(pageCheck, &QTimer::timeout, &window, [&, pageCheck]{
+            if (step == 0 && dashboard != nullptr){
+                dashboard->verticalScrollBar()->setValue(
+                    dashboard->verticalScrollBar()->maximum());
+            } else if (navigation != nullptr && step <= navigation->count()){
+                navigation->setCurrentRow(step - 1);
+            } else{
+                pageCheck->stop();
+                app.quit();
+            }
+            ++step;
+        });
+        pageCheck->start(180);
         return app.exec();
     }
 

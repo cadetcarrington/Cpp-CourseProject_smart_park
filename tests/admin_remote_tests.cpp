@@ -2,6 +2,7 @@
 // 覆盖 ServerSession 登录/快照/权限、MainWindow 远程模式镜像服务端
 // 状态（含 Gate 侧事件驱动刷新与 Admin 侧入场/离场）、服务端重启重连。
 #include "MainWindow.h"
+#include "ChartWidgets.h"
 #include "ServerSession.h"
 
 #include "core/persistence/Persistence.h"
@@ -105,6 +106,7 @@ private slots:
     void adminWindowMirrorsServerState();
     // 服务端重启后自动重连并恢复快照。
     void adminWindowReconnectsAfterServerRestart();
+    void snapshotRevenueUsesExitDatesAndSurvivesRestart();
 };
 
 void AdminRemoteTests::serverSessionSnapshotAndAuthorization(){
@@ -130,6 +132,14 @@ void AdminRemoteTests::serverSessionSnapshotAndAuthorization(){
     QCOMPARE(snapshot.value(QStringLiteral("spots")).toArray().size(), 60);
     QVERIFY(!snapshot.value(QStringLiteral("layout")).toObject()
                  .value(QStringLiteral("entrances")).toArray().isEmpty());
+    const QJsonArray dailyRevenue = snapshot.value(QStringLiteral("dailyRevenue")).toArray();
+    QCOMPARE(dailyRevenue.size(), 7);
+    for (int i = 0; i < dailyRevenue.size(); ++i){
+        const QJsonObject day = dailyRevenue.at(i).toObject();
+        QCOMPARE(day.value(QStringLiteral("date")).toString(),
+                 QDate::currentDate().addDays(i - 6).toString(Qt::ISODate));
+        QCOMPARE(day.value(QStringLiteral("fee")).toDouble(), 0.0);
+    }
 
     // Gate 会话禁止快照；admin 会话禁止补报。
     smartpark::ServerSession gateSession;
@@ -163,6 +173,60 @@ void AdminRemoteTests::serverSessionSnapshotAndAuthorization(){
     });
     adminLoop.exec();
     QVERIFY(adminError.contains(QStringLiteral("仅 Gate")));
+}
+
+void AdminRemoteTests::snapshotRevenueUsesExitDatesAndSurvivesRestart(){
+    using namespace std::chrono_literals;
+    const QDate today = QDate::currentDate();
+    const auto atNoon = [](QDate date){
+        return smartpark::ParkingRecord::TimePoint{}
+            + std::chrono::milliseconds(QDateTime(date, QTime(12, 0))
+                                            .toMSecsSinceEpoch());
+    };
+    const auto settle = [&](const std::string &plate, QDate exitDate,
+                            std::chrono::milliseconds stay){
+        const auto exit = atNoon(exitDate);
+        QVERIFY(service_->enter({plate, smartpark::VehicleType::Car}, exit - stay)
+                    .has_value());
+        QVERIFY(service_->leave(plate, exit).has_value());
+    };
+    settle(u8"晋A10001", today.addDays(-6), 90min);
+    settle(u8"晋A10002", today.addDays(-1), 3h);
+    settle(u8"晋A10003", today, 45min);
+    settle(u8"晋A10004", today.addDays(-7), 90min);
+    settle(u8"晋A10005", today.addDays(1), 90min);
+
+    const auto readRevenue = [&]{
+        std::unique_ptr<smartpark::TcpClient> client(loginClient(
+            QString::fromLatin1(kAdminUser), QString::fromLatin1(kAdminPass), port_));
+        const auto response = client->request(QStringLiteral("admin.snapshot"), {});
+        if (!response || !response->value(QStringLiteral("ok")).toBool()){
+            return QJsonArray{};
+        }
+        return response->value(QStringLiteral("payload")).toObject()
+            .value(QStringLiteral("dailyRevenue")).toArray();
+    };
+    const auto verifyRevenue = [&](const QJsonArray &days){
+        QCOMPARE(days.size(), 7);
+        if (days.size() != 7){
+            return;
+        }
+        for (int i = 0; i < 7; ++i){
+            const QJsonObject day = days.at(i).toObject();
+            QCOMPARE(day.value(QStringLiteral("date")).toString(),
+                     today.addDays(i - 6).toString(Qt::ISODate));
+            const double expected = i == 0 ? 10.0 : i == 5 ? 25.0 : i == 6 ? 5.0 : 0.0;
+            QCOMPARE(day.value(QStringLiteral("fee")).toDouble(), expected);
+        }
+    };
+    verifyRevenue(readRevenue());
+    server_.reset();
+    service_.reset();
+    audit_.reset();
+    users_.reset();
+    persistence_.reset();
+    startServer();
+    verifyRevenue(readRevenue());
 }
 
 void AdminRemoteTests::serverSessionWrongPasswordDoesNotReconnect(){
@@ -200,6 +264,13 @@ void AdminRemoteTests::adminWindowMirrorsServerState(){
     // 快照到达：60 车位全部可见。
     QVERIFY(waitFor([&]{ return kpiTotal->text() == QStringLiteral("60"); }));
     QCOMPARE(occupancyTable->rowCount(), 60);
+    auto *revenueChart = dynamic_cast<LineChartWidget *>(
+        window.findChild<QWidget *>("sevenDayRevenueChart"));
+    QVERIFY(revenueChart);
+    QVERIFY(waitFor([&]{
+        return revenueChart->series().size() == 1
+            && revenueChart->series().first().points.size() == 7;
+    }));
 
     // Gate 侧入场 → 事件广播 → Admin 去抖刷新。
     const QString plate = QStringLiteral("京Z00001");
@@ -235,6 +306,7 @@ void AdminRemoteTests::adminWindowMirrorsServerState(){
     QVERIFY(waitFor([&]{ return kpiOccupied->text() == QStringLiteral("1"); }));
     QVERIFY(waitFor([&]{ return !rowForPlate(occupancyTable,
                                               QStringLiteral("京Z00002")); }));
+    QCOMPARE(revenueChart->series().first().points.last().value, 0.0);
 }
 
 void AdminRemoteTests::adminWindowReconnectsAfterServerRestart(){
@@ -242,10 +314,16 @@ void AdminRemoteTests::adminWindowReconnectsAfterServerRestart(){
                       QString::fromLatin1(kAdminUser),
                       QString::fromLatin1(kAdminPass));
     auto *connection = window.findChild<QLabel *>("connectionBadge");
+    auto *revenueChart = dynamic_cast<LineChartWidget *>(
+        window.findChild<QWidget *>("sevenDayRevenueChart"));
     const auto metricValues = window.findChildren<QLabel *>("metricValue");
-    QVERIFY(connection && metricValues.size() >= 4);
+    QVERIFY(connection && revenueChart && metricValues.size() >= 4);
     auto *kpiTotal = metricValues.at(0);
     QVERIFY(waitFor([&]{ return kpiTotal->text() == QStringLiteral("60"); }));
+    QVERIFY(waitFor([&]{
+        return revenueChart->series().size() == 1
+            && revenueChart->series().first().points.size() == 7;
+    }));
 
     // 重启服务端（同库同布局同端口）：旧连接断开后按退避自动重连。
     const quint16 previousPort = port_;
@@ -253,10 +331,15 @@ void AdminRemoteTests::adminWindowReconnectsAfterServerRestart(){
     QVERIFY(waitFor([&]{
         return connection->text().contains(QStringLiteral("断开"));
     }, 15000));
+    QVERIFY(revenueChart->series().isEmpty());
     startServer(previousPort);
     QVERIFY(waitFor([&]{
         return connection->text().contains(QStringLiteral("已连接"));
     }, 15000));
+    QVERIFY(waitFor([&]{
+        return revenueChart->series().size() == 1
+            && revenueChart->series().first().points.size() == 7;
+    }));
     const auto metricValuesAfter = window.findChildren<QLabel *>("metricValue");
     QVERIFY(metricValuesAfter.size() >= 4);
     // 重启后快照恢复持久化状态：重启前的京Z00001 仍占用（先等恢复，

@@ -6,6 +6,7 @@
 #include "core/service/ParkingInsightEngine.h"
 #include "ChartWidgets.h"
 
+#include <QDate>
 #include <QJsonObject>
 #include <QMainWindow>
 #include <QString>
@@ -74,6 +75,7 @@ private slots:
 
 private:
     void buildUi();
+    void applyPageVibrancy();
     void refreshScene();
     void refreshBookings();
     void refreshRecords();
@@ -123,6 +125,9 @@ private:
     quint16 serverPort_{0};
     smartpark::ServerSession *session_{nullptr};
     QTimer snapshotDebounceTimer_;
+    QTimer revenueDateTimer_;
+    QDate revenueDate_;
+    quint64 snapshotRequestId_{0};
     QJsonObject snapshot_;
     QJsonObject analyticsReport_;
     QFrame *forecastCard_{nullptr};
@@ -136,6 +141,8 @@ private:
     QListWidget *navigation_{nullptr};
     QStackedWidget *pages_{nullptr};
     QSplitter *shellSplitter_{nullptr};
+    QFrame *sideBar_{nullptr};
+    QFrame *topHeader_{nullptr};
     QLabel *pageTitleLabel_{nullptr};
     QLabel *pageSubtitleLabel_{nullptr};
     QLabel *userLabel_{nullptr};
@@ -161,8 +168,12 @@ private:
     QPushButton *checkInButton_{nullptr};
     QPushButton *cancelBookingButton_{nullptr};
     QTableWidget *bookingsTable_{nullptr};
-    QTableWidget *recordsTable_{nullptr};
+    QWidget *bookingsHost_{nullptr};
+    void *nativeBookingsHandle_{nullptr};
     QTableWidget *occupancyTable_{nullptr};
+    QWidget *recordsHost_{nullptr};
+    void *nativeRecordsHandle_{nullptr};
+    QTableWidget *recordsTable_{nullptr};
     QDateTimeEdit *recordFromInput_{nullptr};
     QDateTimeEdit *recordToInput_{nullptr};
     QLabel *depositLabel_{nullptr};

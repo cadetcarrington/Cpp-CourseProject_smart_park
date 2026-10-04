@@ -22,6 +22,7 @@
 #include <QDateTime>
 #include <QDateTimeEdit>
 #include <QDialog>
+#include <QDir>
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QFrame>
@@ -56,6 +57,7 @@
 #include <QSettings>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QStyle>
 #include <QStringList>
 #include <QShowEvent>
 #include <QSplitter>
@@ -136,25 +138,25 @@ QString statusText(smartpark::SpotStatus status){
 QColor stallFillColor(const smartpark::ParkingSpot &spot){
     switch (spot.status()){
     case smartpark::SpotStatus::Reserved:
-        return QColor(181, 71, 8);
+        return QColor(181, 71, 8, 140);
     case smartpark::SpotStatus::Occupied:
         return QColor(180, 35, 24);
     case smartpark::SpotStatus::Disabled:
-        return QColor(102, 112, 133);
+        return QColor(102, 112, 133, 140);
     case smartpark::SpotStatus::Available:
     default:
         break;
     }
     switch (spot.type()){
     case smartpark::SpotType::Accessible:
-        return QColor(79, 70, 229);
+        return QColor(79, 70, 229, 140);
     case smartpark::SpotType::Charging:
-        return QColor(2, 106, 162);
+        return QColor(2, 106, 162, 140);
     case smartpark::SpotType::Vip:
-        return QColor(124, 58, 237);
+        return QColor(124, 58, 237, 140);
     case smartpark::SpotType::Normal:
     default:
-        return QColor(15, 118, 110);
+        return QColor(15, 118, 110, 140);
     }
 }
 
@@ -288,6 +290,14 @@ bool recordOverlapsRange(const smartpark::ParkingRecord &record,
         smartpark::ParkingRecord::Clock::now());
     return record.entryTime() <= to && exitTime >= from;
 }
+
+// 离场通知与状态栏共用的停车时长文案。
+QString formatStayMinutes(qint64 minutes){
+    if (minutes >= 60){
+        return MainWindow::tr("%1 小时 %2 分").arg(minutes / 60).arg(minutes % 60);
+    }
+    return MainWindow::tr("%1 分钟").arg(minutes);
+}
 } // namespace
 
 MainWindow::MainWindow(QString databasePath, QWidget *parent)
@@ -326,6 +336,15 @@ MainWindow::MainWindow(QString databasePath, QString currentUser, QWidget *paren
     refreshRecords();
     refreshOccupancy();
     refreshDashboard();
+    revenueDate_ = QDate::currentDate();
+    revenueDateTimer_.setInterval(60000);
+    connect(&revenueDateTimer_, &QTimer::timeout, this, [this]{
+        if (revenueDate_ != QDate::currentDate()){
+            revenueDate_ = QDate::currentDate();
+            refreshDashboard();
+        }
+    });
+    revenueDateTimer_.start();
 
     const int savedPage = settings.value(QStringLiteral("Navigation/lastPage"), 0).toInt();
     navigation_->setCurrentRow(std::clamp(savedPage, 0, navigation_->count() - 1));
@@ -362,6 +381,15 @@ MainWindow::MainWindow(QString serverHost, quint16 serverPort,
     snapshotDebounceTimer_.setInterval(250);
     connect(&snapshotDebounceTimer_, &QTimer::timeout, this,
             &MainWindow::requestSnapshot);
+    revenueDate_ = QDate::currentDate();
+    revenueDateTimer_.setInterval(60000);
+    connect(&revenueDateTimer_, &QTimer::timeout, this, [this]{
+        if (revenueDate_ != QDate::currentDate()){
+            revenueDate_ = QDate::currentDate();
+            requestSnapshot();
+        }
+    });
+    revenueDateTimer_.start();
     startRemoteSession(std::move(serverPassword));
 }
 
@@ -426,7 +454,15 @@ void MainWindow::buildUi(){
     shellSplitter_->setChildrenCollapsible(false);
 
     auto *sideBar = new QFrame(shellSplitter_);
+    sideBar_ = sideBar;
     sideBar->setObjectName("sideBar");
+#ifdef Q_OS_MAC
+    if (glassMode_){
+        sideBar->setAttribute(Qt::WA_TranslucentBackground);
+        sideBar->setAttribute(Qt::WA_NoSystemBackground);
+        sideBar->setAutoFillBackground(false);
+    }
+#endif
     auto *sideLayout = new QVBoxLayout(sideBar);
     sideLayout->setContentsMargins(16, 20, 16, 16);
     sideLayout->setSpacing(8);
@@ -479,14 +515,6 @@ void MainWindow::buildUi(){
     }
     sideLayout->addWidget(navigation_, 1);
     sideLayout->addSpacing(8);
-    auto *sideBarCaption = new QLabel(
-        remoteMode_
-            ? tr("远程服务端模式 · 数据来自 TCP 快照")
-            : tr("本地数据模式 · 数据自动持久化"),
-        sideBar);
-    sideBarCaption->setObjectName("sideBarCaption");
-    sideBarCaption->setWordWrap(true);
-    sideLayout->addWidget(sideBarCaption);
 
     auto *contentArea = new QWidget(shellSplitter_);
     contentArea->setObjectName("contentArea");
@@ -495,7 +523,15 @@ void MainWindow::buildUi(){
     contentLayout->setSpacing(0);
 
     auto *topHeader = new QFrame(contentArea);
+    topHeader_ = topHeader;
     topHeader->setObjectName("topHeader");
+#ifdef Q_OS_MAC
+    if (glassMode_){
+        topHeader->setAttribute(Qt::WA_TranslucentBackground);
+        topHeader->setAttribute(Qt::WA_NoSystemBackground);
+        topHeader->setAutoFillBackground(false);
+    }
+#endif
     auto *topHeaderLayout = new QHBoxLayout(topHeader);
     topHeaderLayout->setContentsMargins(26, 16, 26, 15);
     topHeaderLayout->setSpacing(12);
@@ -513,8 +549,12 @@ void MainWindow::buildUi(){
     connectionLabel_->setObjectName("connectionBadge");
     userLabel_ = new QLabel(tr("管理员：%1").arg(currentUser_), topHeader);
     userLabel_->setObjectName("userBadge");
+    auto *headerRecognitionButton = new QPushButton(tr("识别车牌"), topHeader);
+    headerRecognitionButton->setObjectName("headerRecognitionButton");
+    headerRecognitionButton->setToolTip(tr("选择照片识别车牌，审阅后填入车辆作业输入框"));
     auto *logoutButton = new QPushButton(tr("退出登录"), topHeader);
     logoutButton->setProperty("variant", "danger");
+    topHeaderLayout->addWidget(headerRecognitionButton);
     topHeaderLayout->addWidget(connectionLabel_);
     topHeaderLayout->addWidget(userLabel_);
     topHeaderLayout->addWidget(logoutButton);
@@ -524,15 +564,29 @@ void MainWindow::buildUi(){
     pages_->setObjectName("contentPages");
     contentLayout->addWidget(pages_, 1);
 
-    auto createCard = [](QWidget *parent){
+    auto createCard = [this](QWidget *parent){
         auto *card = new QFrame(parent);
         card->setObjectName("contentCard");
+#ifdef Q_OS_MAC
+        if (glassMode_){
+            card->setAttribute(Qt::WA_TranslucentBackground);
+            card->setAttribute(Qt::WA_NoSystemBackground);
+            card->setAutoFillBackground(false);
+        }
+#endif
         return card;
     };
-    auto createMetricCard = [](QWidget *parent, const QString &title, const QString &hint,
-                               QLabel **value){
+    auto createMetricCard = [this](QWidget *parent, const QString &title, const QString &hint,
+                                   QLabel **value){
         auto *card = new QFrame(parent);
         card->setObjectName("metricCard");
+#ifdef Q_OS_MAC
+        if (glassMode_){
+            card->setAttribute(Qt::WA_TranslucentBackground);
+            card->setAttribute(Qt::WA_NoSystemBackground);
+            card->setAutoFillBackground(false);
+        }
+#endif
         auto *layout = new QVBoxLayout(card);
         layout->setContentsMargins(16, 14, 16, 14);
         layout->setSpacing(4);
@@ -641,7 +695,9 @@ void MainWindow::buildUi(){
     auto *revenueTitle = new QLabel(tr("近 7 天收入趋势"), revenueCard);
     revenueTitle->setObjectName("cardTitle");
     sevenDayRevenueChart_ = new LineChartWidget(revenueCard);
+    sevenDayRevenueChart_->setObjectName(QStringLiteral("sevenDayRevenueChart"));
     sevenDayRevenueChart_->setUnit(QStringLiteral(" 元"));
+    sevenDayRevenueChart_->setValueDecimals(2);
     revenueLayout->addWidget(revenueTitle);
     revenueLayout->addWidget(sevenDayRevenueChart_, 1);
     dashboardChartsBottom->addWidget(revenueCard, 1);
@@ -781,6 +837,7 @@ void MainWindow::buildUi(){
     operationHint->setObjectName("sectionHint");
     operationHint->setWordWrap(true);
     auto *operationForm = new QFormLayout;
+    operationForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     operationForm->setHorizontalSpacing(16);
     operationForm->setVerticalSpacing(12);
     plateInput_ = new QLineEdit(operationCard);
@@ -798,9 +855,13 @@ void MainWindow::buildUi(){
     vehicleTypeInput_ = new QComboBox(operationCard);
     vehicleTypeInput_->addItems({tr("轿车"), tr("摩托车"), tr("卡车"), tr("电动车")});
     vehicleTypeInput_->setObjectName("vehicleTypeInput");
+    vehicleTypeInput_->setMinimumWidth(220);
+    vehicleTypeInput_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     strategyInput_ = new QComboBox(operationCard);
     strategyInput_->addItems({tr("加权代价（推荐）"), tr("最近车位")});
     strategyInput_->setObjectName("strategyInput");
+    strategyInput_->setMinimumWidth(220);
+    strategyInput_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     operationForm->addRow(tr("车牌"), plateRow);
     operationForm->addRow(tr("车辆类型"), vehicleTypeInput_);
     operationForm->addRow(tr("分配策略"), strategyInput_);
@@ -918,6 +979,7 @@ void MainWindow::buildUi(){
     arrivalInput_->setCalendarPopup(true);
     arrivalInput_->setMinimumDateTime(QDateTime::currentDateTime());
     arrivalInput_->setToolTip(tr("预约到场时间：当前时间之后、最多提前 7 天"));
+    arrivalInput_->setMinimumWidth(190);
     bookButton_ = new QPushButton(tr("预约车位"), bookingFormCard);
     bookButton_->setObjectName("bookButton");
     bookButton_->setProperty("variant", "primary");
@@ -954,22 +1016,34 @@ void MainWindow::buildUi(){
             .arg(bookingPolicy.gracePeriod.count()),
         bookingTableCard);
     bookingPolicyLabel->setObjectName("sectionHint");
-    bookingsTable_ = new QTableWidget(bookingTableCard);
-    bookingsTable_->setObjectName("bookingsTable");
-    bookingsTable_->setColumnCount(8);
-    bookingsTable_->setHorizontalHeaderLabels(
-        {tr("编号"), tr("车牌"), tr("车位"), tr("创建时间"), tr("到场时间"), tr("宽限截止"), tr("定金(元)"), tr("状态")});
-    bookingsTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    bookingsTable_->verticalHeader()->setVisible(false);
-    bookingsTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    bookingsTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    bookingsTable_->setAlternatingRowColors(true);
-    bookingsTable_->setMinimumHeight(260);
+    const QStringList bookingColumns{
+        tr("编号"), tr("车牌"), tr("车位"), tr("创建时间"), tr("到场时间"),
+        tr("宽限截止"), tr("定金(元)"), tr("状态")};
+    // macOS 下优先用原生 NSScrollView + NSTableView，否则回退 QTableWidget。
+    bookingsHost_ = new QWidget(bookingTableCard);
+    bookingsHost_->setMinimumHeight(260);
+    nativeBookingsHandle_ = smartpark_ui::applyNativeRecordTable(bookingsHost_, bookingColumns);
+    if (nativeBookingsHandle_ == nullptr){
+        bookingsTable_ = new QTableWidget(bookingTableCard);
+        bookingsTable_->setObjectName("bookingsTable");
+        bookingsTable_->setColumnCount(8);
+        bookingsTable_->setHorizontalHeaderLabels(bookingColumns);
+        bookingsTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+        bookingsTable_->verticalHeader()->setVisible(false);
+        bookingsTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        bookingsTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+        bookingsTable_->setAlternatingRowColors(true);
+        bookingsTable_->setMinimumHeight(260);
+    }
     depositLabel_ = new QLabel(bookingTableCard);
     depositLabel_->setObjectName("statusInfo");
     depositLabel_->setWordWrap(true);
     bookingTableLayout->addWidget(bookingPolicyLabel);
-    bookingTableLayout->addWidget(bookingsTable_, 1);
+    if (nativeBookingsHandle_ != nullptr){
+        bookingTableLayout->addWidget(bookingsHost_, 1);
+    } else{
+        bookingTableLayout->addWidget(bookingsTable_, 1);
+    }
     bookingTableLayout->addWidget(depositLabel_);
     bookingImpactLabel_ = new QLabel(bookingTableCard);
     bookingImpactLabel_->setObjectName("sectionHint");
@@ -993,11 +1067,13 @@ void MainWindow::buildUi(){
     recordFromInput_->setDisplayFormat(QStringLiteral("yyyy-MM-dd HH:mm"));
     recordFromInput_->setCalendarPopup(true);
     recordFromInput_->setDateTime(QDateTime::currentDateTime().addDays(-7));
+    recordFromInput_->setMinimumWidth(190);
     recordToInput_ = new QDateTimeEdit(recordsCard);
     recordToInput_->setObjectName("recordToInput");
     recordToInput_->setDisplayFormat(QStringLiteral("yyyy-MM-dd HH:mm"));
     recordToInput_->setCalendarPopup(true);
     recordToInput_->setDateTime(QDateTime::currentDateTime().addDays(1));
+    recordToInput_->setMinimumWidth(190);
     auto *queryButton = new QPushButton(tr("查询"), recordsCard);
     queryButton->setObjectName("queryRecordsButton");
     queryButton->setProperty("variant", "primary");
@@ -1010,22 +1086,34 @@ void MainWindow::buildUi(){
     filterLayout->addWidget(queryButton);
     filterLayout->addWidget(resetFilterButton);
     filterLayout->addStretch(1);
-    recordsTable_ = new QTableWidget(recordsCard);
-    recordsTable_->setObjectName("recordsTable");
-    recordsTable_->setColumnCount(7);
-    recordsTable_->setHorizontalHeaderLabels(
-        {tr("车牌"), tr("车位"), tr("入场时间"), tr("离场时间"), tr("时长(分钟)"), tr("费用(元)"), tr("状态")});
-    recordsTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    recordsTable_->verticalHeader()->setVisible(false);
-    recordsTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    recordsTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    recordsTable_->setAlternatingRowColors(true);
-    recordsTable_->setMinimumHeight(400);
+    const QStringList recordColumns{
+        tr("车牌"), tr("车辆类型"), tr("车位"), tr("入场时间"), tr("离场时间"),
+        tr("时长(分钟)"), tr("费用(元)"), tr("状态")};
+    // macOS 下优先用原生 NSScrollView + NSTableView，否则回退 QTableWidget。
+    recordsHost_ = new QWidget(recordsCard);
+    recordsHost_->setMinimumHeight(400);
+    nativeRecordsHandle_ = smartpark_ui::applyNativeRecordTable(recordsHost_, recordColumns);
+    if (nativeRecordsHandle_ == nullptr){
+        recordsTable_ = new QTableWidget(recordsCard);
+        recordsTable_->setObjectName("recordsTable");
+        recordsTable_->setColumnCount(8);
+        recordsTable_->setHorizontalHeaderLabels(recordColumns);
+        recordsTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+        recordsTable_->verticalHeader()->setVisible(false);
+        recordsTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        recordsTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+        recordsTable_->setAlternatingRowColors(true);
+        recordsTable_->setMinimumHeight(400);
+    }
     recordsLabel_ = new QLabel(recordsCard);
     recordsLabel_->setObjectName("statusInfo");
     recordsLabel_->setWordWrap(true);
     recordsCardLayout->addLayout(filterLayout);
-    recordsCardLayout->addWidget(recordsTable_, 1);
+    if (nativeRecordsHandle_ != nullptr){
+        recordsCardLayout->addWidget(recordsHost_, 1);
+    } else{
+        recordsCardLayout->addWidget(recordsTable_, 1);
+    }
     recordsCardLayout->addWidget(recordsLabel_);
     recordsTrendLabel_ = new QLabel(recordsCard);
     recordsTrendLabel_->setObjectName("sectionHint");
@@ -1282,6 +1370,7 @@ void MainWindow::buildUi(){
     connect(logoutAction, &QAction::triggered, this, &MainWindow::requestLogout);
     connect(quitAction, &QAction::triggered, qApp, &QCoreApplication::quit);
     connect(logoutButton, &QPushButton::clicked, this, &MainWindow::requestLogout);
+    connect(headerRecognitionButton, &QPushButton::clicked, this, &MainWindow::recognizePlateImage);
     connect(allocateButton_, &QPushButton::clicked, this, &MainWindow::allocateVehicle);
     connect(recognizePlateButton_, &QPushButton::clicked, this, &MainWindow::recognizePlateImage);
     connect(updateVehicleTypeButton_, &QPushButton::clicked,
@@ -1329,11 +1418,9 @@ void MainWindow::buildUi(){
     });
 
     if (remoteMode_){
-        // 历史曲线 / 流量 / 预测需要停车记录数据合同，远程快照不提供：
-        // 隐藏对应卡片，保留 KPI、构成 / 类型 / 分区压力等快照可算的图表。
+        // 预测与流量仍缺少远程数据合同；收入由管理员快照提供。
         forecastCard_->setVisible(false);
         flowCard_->setVisible(false);
-        revenueCard_->setVisible(false);
         flow7Card_->setVisible(false);
         goBookingsButton_->setVisible(false);
         strategyInput_->setEnabled(false);
@@ -1349,6 +1436,35 @@ void MainWindow::buildUi(){
 
 void MainWindow::showEvent(QShowEvent *event){
     QMainWindow::showEvent(event);
+#ifdef Q_OS_MAC
+    if (glassMode_){
+        QTimer::singleShot(0, this, [this]{
+            if (!vibrancyActive_){
+                vibrancyActive_ = smartpark_ui::applyNativeVibrancy(this, false);
+            }
+            if (vibrancyActive_ && sideBar_ != nullptr &&
+                !sideBar_->property("nativeVibrancy").toBool() &&
+                smartpark_ui::applyNativeSidebarVibrancy(sideBar_)){
+                sideBar_->setProperty("nativeVibrancy", true);
+                sideBar_->style()->unpolish(sideBar_);
+                sideBar_->style()->polish(sideBar_);
+                sideBar_->update();
+            }
+            if (vibrancyActive_ && topHeader_ != nullptr &&
+                smartpark_ui::applyNativeHeaderVibrancy(topHeader_) &&
+                !topHeader_->property("nativeVibrancy").toBool()){
+                topHeader_->setProperty("nativeVibrancy", true);
+                topHeader_->style()->unpolish(topHeader_);
+                topHeader_->style()->polish(topHeader_);
+                topHeader_->update();
+            }
+            applyPageVibrancy();
+        });
+    }
+#endif
+    smartpark_ui::applyNativePopupButton(vehicleTypeInput_);
+    smartpark_ui::applyNativePopupButton(strategyInput_);
+    smartpark_ui::applyNativePopupButton(bookingVehicleTypeInput_);
     if (pages_ != nullptr && pages_->currentIndex() == 1){
         fitMapView();
     }
@@ -1381,12 +1497,60 @@ void MainWindow::changePage(int index){
         return;
     }
     pages_->setCurrentIndex(index);
+    if (index == 0){
+        if (remoteMode_){
+            if (session_ != nullptr){
+                requestSnapshot();
+            }
+        } else if (revenueDate_ != QDate::currentDate()){
+            revenueDate_ = QDate::currentDate();
+            refreshDashboard();
+        }
+    }
+#ifdef Q_OS_MAC
+    if (glassMode_ && vibrancyActive_){
+        QTimer::singleShot(0, this, [this]{ applyPageVibrancy(); });
+    }
+#endif
+    if (index == 2){
+        smartpark_ui::applyNativePopupButton(vehicleTypeInput_);
+        smartpark_ui::applyNativePopupButton(strategyInput_);
+    } else if (index == 4){
+        smartpark_ui::applyNativePopupButton(bookingVehicleTypeInput_);
+    }
     const auto *item = navigation_->item(index);
     pageTitleLabel_->setText(item->data(Qt::UserRole).toString());
     pageSubtitleLabel_->setText(item->data(Qt::UserRole + 1).toString());
     if (index == 1){
         fitMapView();
     }
+}
+
+void MainWindow::applyPageVibrancy(){
+#ifdef Q_OS_MAC
+    if (!glassMode_ || !vibrancyActive_ || pages_ == nullptr){
+        return;
+    }
+    QWidget *page = pages_->currentWidget();
+    if (page == nullptr){
+        return;
+    }
+    const auto cards = page->findChildren<QFrame *>();
+    for (QFrame *card : cards){
+        const QString name = card->objectName();
+        if ((name != QStringLiteral("contentCard") &&
+             name != QStringLiteral("metricCard")) || !card->isVisible()){
+            continue;
+        }
+        if (smartpark_ui::applyNativeContentVibrancy(card) &&
+            !card->property("nativeVibrancy").toBool()){
+            card->setProperty("nativeVibrancy", true);
+            card->style()->unpolish(card);
+            card->style()->polish(card);
+            card->update();
+        }
+    }
+#endif
 }
 
 void MainWindow::requestLogout(){
@@ -1655,10 +1819,10 @@ void MainWindow::refreshInsights(){
         const int available = std::max(0, totalSpots - occupied - reserved - disabled);
 
         QVector<DonutSlice> slices;
-        slices.push_back({tr("占用"), static_cast<double>(occupied), QColor(180, 35, 24)});
-        slices.push_back({tr("预留"), static_cast<double>(reserved), QColor(181, 71, 8)});
-        slices.push_back({tr("空闲"), static_cast<double>(available), QColor(15, 118, 110)});
-        slices.push_back({tr("停用"), static_cast<double>(disabled), QColor(102, 112, 133)});
+        slices.push_back({tr("占用"), static_cast<double>(occupied), QColor(180, 35, 24, 140)});
+        slices.push_back({tr("预留"), static_cast<double>(reserved), QColor(181, 71, 8, 140)});
+        slices.push_back({tr("空闲"), static_cast<double>(available), QColor(15, 118, 110, 140)});
+        slices.push_back({tr("停用"), static_cast<double>(disabled), QColor(102, 112, 133, 140)});
         compositionChart_->setCenterTitle(tr("总车位"));
         compositionChart_->setCenterValue(QString::number(totalSpots));
         compositionChart_->setSlices(slices);
@@ -1688,10 +1852,10 @@ void MainWindow::refreshInsights(){
         }
 
         QVector<DonutSlice> typeSlices;
-        typeSlices.push_back({tr("普通"), static_cast<double>(normal), QColor(15, 118, 110)});
-        typeSlices.push_back({tr("无障碍"), static_cast<double>(accessible), QColor(79, 70, 229)});
-        typeSlices.push_back({tr("充电"), static_cast<double>(charging), QColor(2, 106, 162)});
-        typeSlices.push_back({tr("VIP"), static_cast<double>(vip), QColor(124, 58, 237)});
+        typeSlices.push_back({tr("普通"), static_cast<double>(normal), QColor(15, 118, 110, 140)});
+        typeSlices.push_back({tr("无障碍"), static_cast<double>(accessible), QColor(79, 70, 229, 140)});
+        typeSlices.push_back({tr("充电"), static_cast<double>(charging), QColor(2, 106, 162, 140)});
+        typeSlices.push_back({tr("VIP"), static_cast<double>(vip), QColor(124, 58, 237, 140)});
         typeChart_->setCenterTitle(tr("车位类型"));
         typeChart_->setCenterValue(QString::number(normal + accessible + charging + vip));
         typeChart_->setSlices(typeSlices);
@@ -1701,6 +1865,7 @@ void MainWindow::refreshInsights(){
         LineSeries series;
         series.name = tr("预测占用率");
         series.color = theme::chartPrimary();
+        series.color.setAlpha(140);
         series.points.push_back({tr("当前"), insights.currentRate});
         if (forecast30){
             series.points.push_back({tr("30分"), forecast30->predictedRate});
@@ -1754,7 +1919,7 @@ void MainWindow::refreshInsights(){
         if (sevenDayRevenueChart_ != nullptr){
             LineSeries revenueSeries;
             revenueSeries.name = tr("收入");
-            revenueSeries.color = QColor(15, 118, 110);
+            revenueSeries.color = QColor(15, 118, 110, 140);
             for (int i = 0; i < 7; ++i){
                 revenueSeries.points.push_back({dayLabels.at(i), revenue.at(i)});
             }
@@ -1764,10 +1929,10 @@ void MainWindow::refreshInsights(){
         if (sevenDayFlowChart_ != nullptr){
             LineSeries arrivalSeries;
             arrivalSeries.name = tr("入场");
-            arrivalSeries.color = QColor(2, 106, 162);
+            arrivalSeries.color = QColor(2, 106, 162, 140);
             LineSeries departureSeries;
             departureSeries.name = tr("离场");
-            departureSeries.color = QColor(180, 35, 24);
+            departureSeries.color = QColor(180, 35, 24, 140);
             for (int i = 0; i < 7; ++i){
                 arrivalSeries.points.push_back({dayLabels.at(i), arrivals.at(i)});
                 departureSeries.points.push_back({dayLabels.at(i), departures.at(i)});
@@ -1786,10 +1951,10 @@ void MainWindow::refreshInsights(){
             slice.valueText = QString::number(value) + QStringLiteral(" 辆");
             return slice;
         };
-        bars.push_back(trafficBar(tr("1 小时入场"), insights.arrivals60, QColor(15, 118, 110)));
-        bars.push_back(trafficBar(tr("60 分钟离场"), insights.departures60, QColor(180, 35, 24)));
-        bars.push_back(trafficBar(tr("3 小时入场"), insights.arrivals180, QColor(2, 106, 162)));
-        bars.push_back(trafficBar(tr("3 小时离场"), insights.departures180, QColor(124, 58, 237)));
+        bars.push_back(trafficBar(tr("1 小时入场"), insights.arrivals60, QColor(15, 118, 110, 140)));
+        bars.push_back(trafficBar(tr("60 分钟离场"), insights.departures60, QColor(180, 35, 24, 140)));
+        bars.push_back(trafficBar(tr("3 小时入场"), insights.arrivals180, QColor(2, 106, 162, 140)));
+        bars.push_back(trafficBar(tr("3 小时离场"), insights.departures180, QColor(124, 58, 237, 140)));
         flowChart_->setBars(bars);
     }
 
@@ -1798,11 +1963,11 @@ void MainWindow::refreshInsights(){
         bars.reserve(static_cast<int>(insights.zones.size()));
         for (const smartpark::ZoneInsight &zone : insights.zones){
             const double percent = zone.pressure * 100.0;
-            QColor color(15, 118, 110);
+            QColor color(15, 118, 110, 140);
             if (percent >= 90.0){
-                color = QColor(180, 35, 24);
+                color = QColor(180, 35, 24, 140);
             } else if (percent >= 80.0){
-                color = QColor(181, 71, 8);
+                color = QColor(181, 71, 8, 140);
             }
             BarSlice slice;
             slice.label = QString::fromStdString(zone.zone);
@@ -2033,13 +2198,17 @@ void MainWindow::updateStrategy(){
 }
 
 void MainWindow::recognizePlateImage(){
+    const QString sampleDirectory = QStringLiteral(SMARTPARK_PLATE_EXAMPLES_PATH);
+    const QString initialDirectory = QDir(sampleDirectory).exists()
+        ? sampleDirectory : QDir::homePath();
     const QString image = QFileDialog::getOpenFileName(
-        this, tr("选择车辆图片"), QString{}, tr("图片 (*.jpg *.jpeg *.png *.bmp)"));
+        this, tr("选择车辆图片"), initialDirectory, tr("图片 (*.jpg *.jpeg *.png *.bmp)"));
     if (image.isEmpty()){
         return;
     }
     PlateReviewDialog review(image, this);
     if (review.exec() == QDialog::Accepted){
+        navigation_->setCurrentRow(2);
         plateInput_->setText(review.plate());
         statusLabel_->setText(tr("已采用候选车牌 %1，请核对后再操作入场或出场。")
                               .arg(review.plate()));
@@ -2210,6 +2379,12 @@ void MainWindow::releaseVehicle(){
         refreshRecords();
         refreshOccupancy();
         statusLabel_->setText(completionMessage);
+        smartpark_ui::showExitNotification(this,
+            tr("车辆已离场 · %1")
+                .arg(QString::fromStdString(closedRecord->plateNumber())),
+            {tr("车位：%1").arg(QString::fromStdString(closedRecord->spotId())),
+             tr("停车时长：%1").arg(formatStayMinutes(duration.count())),
+             tr("费用：%1 元").arg(closedRecord->fee(), 0, 'f', 2)});
     } else{
         QMessageBox::warning(this, "离场失败",
                              QString("车牌 %1 不存在可离场的在场记录。")
@@ -2222,10 +2397,10 @@ void MainWindow::refreshBookings(){
         return;  // 预约管理页在远程模式隐藏
     }
     const auto &bookings = service_->bookings();
-    bookingsTable_->setRowCount(static_cast<int>(bookings.size()));
-    int row = 0;
+    QVector<QStringList> rows;
+    rows.reserve(static_cast<int>(bookings.size()));
     for (const smartpark::Booking &booking : bookings){
-        const QString cells[] = {
+        rows.append(QStringList{
             QString::fromStdString(booking.id()),
             QString::fromStdString(booking.plateNumber()),
             QString::fromStdString(booking.spotId()),
@@ -2234,13 +2409,22 @@ void MainWindow::refreshBookings(){
             formatTime(booking.arrivalDeadline()),
             QString::number(booking.deposit(), 'f', 2),
             bookingStatusText(booking.status()),
-        };
-        for (int column = 0; column < 8; ++column){
-            auto *item = new QTableWidgetItem(cells[column]);
-            item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-            bookingsTable_->setItem(row, column, item);
+        });
+    }
+
+    if (nativeBookingsHandle_ != nullptr){
+        smartpark_ui::setNativeRecordTableRows(nativeBookingsHandle_, rows);
+    } else if (bookingsTable_ != nullptr){
+        const int rowCount = static_cast<int>(rows.size());
+        bookingsTable_->setRowCount(rowCount);
+        for (int row = 0; row < rowCount; ++row){
+            const QStringList &cells = rows.at(row);
+            for (int column = 0; column < 8; ++column){
+                auto *item = new QTableWidgetItem(cells.at(column));
+                item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+                bookingsTable_->setItem(row, column, item);
+            }
         }
-        ++row;
     }
     depositLabel_->setText(
         QString("预约记录：%1 条 | 待结算定金：%2 元 | 爽约没收定金：%3 元")
@@ -2295,10 +2479,10 @@ void MainWindow::refreshRecords(){
             visible.push_back(&record);
         }
     }
-    recordsTable_->setRowCount(static_cast<int>(visible.size()));
-    int row = 0;
     int parkedCount = 0;
     double feeSum = 0.0;
+    QVector<QStringList> rows;
+    rows.reserve(static_cast<int>(visible.size()));
     for (const smartpark::ParkingRecord *record : visible){
         const bool closed = record->isClosed();
         if (!closed){
@@ -2306,21 +2490,42 @@ void MainWindow::refreshRecords(){
         }
         feeSum += record->fee();
         const auto duration = std::chrono::duration_cast<std::chrono::minutes>(record->duration());
-        const QString cells[] = {
+        rows.append(QStringList{
             QString::fromStdString(record->plateNumber()),
+            QString::fromUtf8(vehicleTypeText(record->vehicleType())),
             QString::fromStdString(record->spotId()),
             formatTime(record->entryTime()),
             closed ? formatTime(*record->exitTime()) : QStringLiteral("在停"),
             QString::number(duration.count()),
             QString::number(record->fee(), 'f', 2),
             closed ? QStringLiteral("已离场") : QStringLiteral("在停"),
-        };
-        for (int column = 0; column < 7; ++column){
-            auto *item = new QTableWidgetItem(cells[column]);
-            item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-            recordsTable_->setItem(row, column, item);
+        });
+    }
+
+    if (nativeRecordsHandle_ != nullptr){
+        smartpark_ui::setNativeRecordTableRows(nativeRecordsHandle_, rows);
+    } else if (recordsTable_ != nullptr){
+        const int rowCount = static_cast<int>(rows.size());
+        recordsTable_->setRowCount(rowCount);
+        for (int row = 0; row < rowCount; ++row){
+            const QStringList &cells = rows.at(row);
+            for (int column = 0; column < 8; ++column){
+                if (column == 0){
+                    // 车牌列：使用可选中复制的文本，方便用户直接拷贝车牌号
+                    auto *plateLabel = new QLabel(cells.at(column), recordsTable_);
+                    plateLabel->setStyleSheet(QStringLiteral("color: %1;")
+                                                  .arg(QString::fromLatin1(theme::Text1)));
+                    plateLabel->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+                    plateLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+                    plateLabel->setContentsMargins(4, 0, 4, 0);
+                    recordsTable_->setCellWidget(row, column, plateLabel);
+                    continue;
+                }
+                auto *item = new QTableWidgetItem(cells.at(column));
+                item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+                recordsTable_->setItem(row, column, item);
+            }
         }
-        ++row;
     }
     if (recordsFilterActive_){
         recordsLabel_->setText(
@@ -2520,6 +2725,12 @@ void MainWindow::startRemoteSession(const QString &password){
             requestSnapshot();
             requestAnalytics();
         } else{
+            snapshotDebounceTimer_.stop();
+            ++snapshotRequestId_;
+            snapshot_ = {};
+            if (sevenDayRevenueChart_ != nullptr){
+                sevenDayRevenueChart_->setSeries({});
+            }
             statusLabel_->setText(tr("与服务端 %1:%2 的连接已断开，正在自动重连。")
                                       .arg(serverHost_).arg(serverPort_));
         }
@@ -2534,10 +2745,21 @@ void MainWindow::startRemoteSession(const QString &password){
     });
     connect(session_, &smartpark::ServerSession::eventReceived, this,
             [this](const QString &event, const QJsonObject &payload){
+        if (event == QStringLiteral("parking.exited")){
+            // 本端与 Gate 侧离场都会广播该事件：离场窗口通知只在这里发一次，
+            // releaseVehicleRemote 的响应不再重复通知。
+            smartpark_ui::showExitNotification(this,
+                tr("车辆已离场 · %1")
+                    .arg(payload.value(QStringLiteral("plate")).toString()),
+                {tr("车位：%1").arg(payload.value(QStringLiteral("spotId")).toString()),
+                 tr("停车时长：%1").arg(formatStayMinutes(
+                     static_cast<qint64>(qRound(payload.value(
+                         QStringLiteral("durationMin")).toDouble())))),
+                 tr("费用：%1 元").arg(payload.value(QStringLiteral("fee")).toDouble(),
+                                       0, 'f', 2)});
+        }
         // 任何服务端事件（入场/离场/预约/补报）都触发去抖快照刷新：
         // 连续事件合并为一次请求，避免请求风暴。
-        Q_UNUSED(event);
-        Q_UNUSED(payload);
         snapshotDebounceTimer_.start();
     });
     session_->start(serverHost_, serverPort_, currentUser_, password);
@@ -2585,10 +2807,18 @@ void MainWindow::requestSnapshot(){
         || session_->state() != smartpark::ServerSession::State::Online){
         return;
     }
+    const quint64 requestId = ++snapshotRequestId_;
     session_->request(QStringLiteral("admin.snapshot"), {},
-                      [this](bool ok, const QString &error,
+                      [this, requestId](bool ok, const QString &error,
                              const QJsonObject &payload){
+        if (requestId != snapshotRequestId_
+            || session_->state() != smartpark::ServerSession::State::Online){
+            return;
+        }
         if (!ok){
+            if (sevenDayRevenueChart_ != nullptr){
+                sevenDayRevenueChart_->setSeries({});
+            }
             statusLabel_->setText(
                 tr("快照获取失败：%1").arg(error));
             return;
@@ -2903,6 +3133,24 @@ void MainWindow::refreshDashboardFromSnapshot(){
         }
         zonePressureChart_->setBars(bars);
     }
+    if (sevenDayRevenueChart_ != nullptr){
+        LineSeries revenueSeries;
+        revenueSeries.name = tr("收入");
+        revenueSeries.color = QColor(15, 118, 110, 140);
+        for (const QJsonValue &item :
+             snapshot_.value(QStringLiteral("dailyRevenue")).toArray()){
+            const QJsonObject day = item.toObject();
+            const QDate date = QDate::fromString(
+                day.value(QStringLiteral("date")).toString(), Qt::ISODate);
+            if (date.isValid()){
+                revenueSeries.points.push_back({date.toString(QStringLiteral("MM-dd")),
+                    day.value(QStringLiteral("fee")).toDouble()});
+            }
+        }
+        sevenDayRevenueChart_->setSeries(
+            revenueSeries.points.size() == 7 ? QVector<LineSeries>{revenueSeries}
+                                              : QVector<LineSeries>{});
+    }
     applyRemoteInsights();
 }
 
@@ -3062,6 +3310,7 @@ void MainWindow::releaseVehicleRemote(){
                 .arg(payload.value(QStringLiteral("spotId")).toString())
                 .arg(payload.value(QStringLiteral("durationMin")).toDouble(), 0, 'f', 0)
                 .arg(payload.value(QStringLiteral("fee")).toDouble(), 0, 'f', 2));
+        // 离场窗口通知由服务端 parking.exited 广播统一触发，此处不再重复。
         requestSnapshot();
     });
 }
