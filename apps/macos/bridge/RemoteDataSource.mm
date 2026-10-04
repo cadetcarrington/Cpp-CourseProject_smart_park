@@ -125,7 +125,7 @@ const std::string &RemoteDataSource::lastError() const noexcept{
 
 double RemoteDataSource::dailyRevenueTotal() const noexcept{
     double sum = 0.0;
-    for (const QJsonValue &item : analytics_.value(QStringLiteral("dailyRevenue")).toArray()){
+    for (const QJsonValue &item : dailyRevenue_){
         sum += item.toObject().value(QStringLiteral("fee")).toDouble();
     }
     return sum;
@@ -282,9 +282,8 @@ bool RemoteDataSource::applySnapshot(const QJsonObject &snapshot, std::string *e
                                        std::move(entrances), std::move(exits));
     spots_ = layout_.spots();
     generatedAtMs_ = snapshot.value(QStringLiteral("generatedAtMs")).toInteger();
-    // dailyRevenue 随快照下发，缓存在 analytics_ 之外的字段里供界面取用。
-    analytics_.insert(QStringLiteral("dailyRevenue"),
-                      snapshot.value(QStringLiteral("dailyRevenue")).toArray());
+    // dailyRevenue 随快照下发：单独存一份，不要塞进 analytics_。
+    dailyRevenue_ = snapshot.value(QStringLiteral("dailyRevenue")).toArray();
     snapshotReady_ = true;
     return true;
 }

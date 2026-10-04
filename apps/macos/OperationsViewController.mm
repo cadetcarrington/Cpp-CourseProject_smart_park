@@ -178,6 +178,12 @@
         _statusLabel.stringValue = @"修改车辆类型前请输入在场车辆车牌。";
         return;
     }
+    // 远程模式没有对应 action：直接说清楚，否则下面会误报成「车辆不在场」。
+    if (!self.bridge->capabilities().vehicleTypeEdit){
+        _statusLabel.stringValue =
+            @"远程模式暂不支持车型更正：请由服务端或 Gate 修正。";
+        return;
+    }
     auto newType = [self selectedType];
     bool ok = self.bridge->updateVehicleType(plate.UTF8String, newType);
     _statusLabel.stringValue = ok
@@ -211,6 +217,13 @@
     NSString *plate = [self plate];
     if (plate.length == 0){
         _statusLabel.stringValue = @"应急入场前请输入车辆车牌。";
+        return;
+    }
+    // 应急生命通道在协议里没有 action，远程模式只能如实说明不可用，
+    // 不能让它落到「无可用车位」——那是另一回事。
+    if (!self.bridge->capabilities().emergencyEnter){
+        _statusLabel.stringValue =
+            @"远程模式不提供应急生命通道入场（协议暂无对应接口），请在服务端操作。";
         return;
     }
     auto result = self.bridge->emergencyEnter(plate.UTF8String, [self selectedType]);

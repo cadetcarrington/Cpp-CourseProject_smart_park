@@ -4,6 +4,7 @@
 #import "DonutChartView.h"
 #import "LineChartView.h"
 #import "bridge/ParkingBridge.h"
+#import "bridge/RemoteDataSource.h"
 
 #include "core/model/ParkingRecord.h"
 #include "core/model/ParkingSpot.h"
@@ -60,6 +61,12 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     LineChartView *_sevenDayFlowChart;
     BarChartView *_flowChart;
     BarChartView *_zonePressureChart;
+
+    // 远程模式下协议/快照覆盖不到的卡片要整张隐藏，不能留一张空白图。
+    NSView *_forecastCard;
+    NSView *_sevenDayFlowCard;
+    NSView *_flowCard;
+    NSView *_zonePressureCard;
 
     NSTextField *_insightLabel;
     NSTextField *_zoneInsightLabel;
@@ -143,7 +150,7 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
         // 「车位类型」卡片暂时下线：取消下面这行注释即可恢复
         // （_typeChart 仍在 refreshMetrics 中照常计算，恢复后立即有数据）。
         // [self cardWithTitle:@"车位类型" content:_typeChart],
-        [self cardWithTitle:@"占用率预测" content:_forecastChart],
+        (_forecastCard = [self cardWithTitle:@"占用率预测" content:_forecastChart]),
     ]];
     [_stack addArrangedSubview:chartRow1];
     [chartRow1.widthAnchor constraintEqualToAnchor:_stack.widthAnchor].active = YES;
@@ -156,7 +163,7 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     [_sevenDayFlowChart setUnit:@" 辆"];
     NSStackView *chartRow2 = [self rowWithViews:@[
         [self cardWithTitle:@"近 7 天收入" content:_sevenDayRevenueChart],
-        [self cardWithTitle:@"近 7 天流量" content:_sevenDayFlowChart],
+        (_sevenDayFlowCard = [self cardWithTitle:@"近 7 天流量" content:_sevenDayFlowChart]),
     ]];
     [_stack addArrangedSubview:chartRow2];
     [chartRow2.widthAnchor constraintEqualToAnchor:_stack.widthAnchor].active = YES;
@@ -165,8 +172,8 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     _flowChart = [BarChartView new];
     _zonePressureChart = [BarChartView new];
     NSStackView *chartRow3 = [self rowWithViews:@[
-        [self cardWithTitle:@"车流统计" content:_flowChart],
-        [self cardWithTitle:@"分区压力" content:_zonePressureChart],
+        (_flowCard = [self cardWithTitle:@"车流统计" content:_flowChart]),
+        (_zonePressureCard = [self cardWithTitle:@"分区压力" content:_zonePressureChart]),
     ]];
     [_stack addArrangedSubview:chartRow3];
     [chartRow3.widthAnchor constraintEqualToAnchor:_stack.widthAnchor].active = YES;
@@ -350,19 +357,50 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     _kpiReserved.stringValue = [NSString stringWithFormat:@"%d", reserved];
 
     const double occupancyRate = total == 0 ? 0.0 : occupied * 100.0 / total;
-    _summaryLabel.stringValue = [NSString stringWithFormat:
-        @"当前占用率 %.1f%%（%d / %d）。累计停车记录 %d 条，累计已结算费用 %.2f 元。\n"
-         "待结算预约定金 %.2f 元；爽约没收定金 %.2f 元。",
-        occupancyRate, occupied, total, b->recordCount(), b->totalRevenue(),
-        b->pendingDeposits(), b->forfeitedDeposits()];
+    const auto caps = b->capabilities();
+    // 远程模式的快照里没有记录数/定金，硬算出来只会是 0——那是在编数字。
+    // 这里按数据源能力如实改写文案（对齐 Qt 版的「远程服务端快照」一行）。
+    if (!caps.records || !caps.deposits){
+        NSString *freshness = @"";
+        if (b->remote() != nullptr && b->remote()->snapshotGeneratedAtMs() > 0){
+            NSDate *generated = [NSDate dateWithTimeIntervalSince1970:
+                b->remote()->snapshotGeneratedAtMs() / 1000.0];
+            NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+            formatter.dateFormat = @"HH:mm:ss";
+            freshness = [NSString stringWithFormat:@"（快照 %@）",
+                         [formatter stringFromDate:generated]];
+        }
+        _summaryLabel.stringValue = [NSString stringWithFormat:
+            @"远程服务端快照%@：%d / %d 车位被占用，占用率 %.1f%%。\n"
+             "记录与定金明细由服务端持有，远程模式不提供。",
+            freshness, occupied, total, occupancyRate];
+    } else{
+        _summaryLabel.stringValue = [NSString stringWithFormat:
+            @"当前占用率 %.1f%%（%d / %d）。累计停车记录 %d 条，累计已结算费用 %.2f 元。\n"
+             "待结算预约定金 %.2f 元；爽约没收定金 %.2f 元。",
+            occupancyRate, occupied, total, b->recordCount(), b->totalRevenue(),
+            b->pendingDeposits(), b->forfeitedDeposits()];
+    }
+    // 数据覆盖不到的卡片整张隐藏。
+    _forecastCard.hidden = !caps.insights;
+    _zonePressureCard.hidden = !caps.insights;
+    _flowCard.hidden = !caps.records;
+    _sevenDayFlowCard.hidden = !caps.records;
 
     const smartpark::ParkingInsights insights = b->insights();
 
-    // 组合占比 Donut
-    const int occupiedN = MAX(0, insights.currentOccupied);
-    const int reservedN = MAX(0, insights.currentReserved);
-    const int disabledN = MAX(0, insights.currentDisabled);
-    const int availableN = MAX(0, total - occupiedN - reservedN - disabledN);
+    // 组合占比 Donut：直接用车位计数。
+    // 原来用 insights.currentXxx，而远程模式下 insights() 是空的（协议只给
+    // analytics.report 文本），会把停满的车场画成「100% 空闲」。
+    int disabledN = 0;
+    for (const smartpark::ParkingSpot &spot : b->spots()){
+        if (spot.status() == smartpark::SpotStatus::Disabled){
+            ++disabledN;
+        }
+    }
+    const int occupiedN = occupied;
+    const int reservedN = reserved;
+    const int availableN = available;
     [_compositionChart setCenterTitle:@"总车位"];
     [_compositionChart setCenterValue:[NSString stringWithFormat:@"%d", total]];
     [_compositionChart setSlices:@[
@@ -414,9 +452,14 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     for (int i = 0; i < 7; ++i){
         [dayLabels addObject:dayLabel(i - 6)];
     }
+    // 收入走 bridge 的统一口径：本地按记录聚合，远程直接取快照 dailyRevenue。
+    const auto sevenDay = b->sevenDayRevenue();
     double revenue[7] = {0};
     double arrivals[7] = {0};
     double departures[7] = {0};
+    for (std::size_t i = 0; i < sevenDay.size() && i < 7; ++i){
+        revenue[i] = sevenDay[i].fee;
+    }
     for (const smartpark::ParkingRecord &record : b->records()){
         int ei = dayIndexFromNow(record.entryTime());
         if (ei >= 0) arrivals[ei] += 1.0;
@@ -424,7 +467,6 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
             int xi = dayIndexFromNow(*record.exitTime());
             if (xi >= 0){
                 departures[xi] += 1.0;
-                if (record.isClosed()) revenue[xi] += record.fee();
             }
         }
     }
