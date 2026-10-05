@@ -218,48 +218,105 @@ OBB 只有几何四角、无法区分上下，需要时可加 `--flip-check`（�
 
 ### 车牌识别准确率基线与两条对齐路线
 
-2026-09-30 用 `examples/plates/` 下 31 省均衡的 200 张 CCPD 整图（`manifest-provinces.csv`，含 tilt/rotate/challenge 等困难子集）复核当前两阶段权重，按整牌精确匹配统计：
+2026-09-30 用 `examples/plates/` 下 31 省均衡的 200 张 CCPD 整图（`manifest-provinces.csv`，含 tilt/rotate/challenge 等困难子集）复核当时的两阶段权重，发现整牌精确匹配只有 **64.5%**；根因是"训练用四角透视矫正裁剪、推理直接裁检测框"的分布断层。2026-10-05 两条对齐路线都训练完成并在同一套 200 张上复核：
 
-| 子集 | 现状（检测框裁剪，当前权重） | 训练同款四角矫正 |
-| --- | --- | --- |
-| ccpd_base 37 张 | 89.2% | 97.3% |
-| ccpd_challenge 45 张 | 82.2% | 84.4% |
-| ccpd_green 33 张 | 81.8% | 90.9% |
-| ccpd_db 15 张 | 73.3% | 80.0% |
-| ccpd_fn 8 张 | 87.5% | 100% |
-| ccpd_rotate 18 张 | 44.4% | **100%** |
-| ccpd_tilt 40 张 | 30.0% | **97.5%** |
-| 合计 200 张 | **69.0%** | **92.5%**（同一识别器，只换裁剪几何） |
+| 方案 | 合计 200 张 | ccpd_tilt 40 | ccpd_rotate 18 | ccpd_base 37 | ccpd_green 33 |
+| --- | --- | --- | --- | --- | --- |
+| 旧：检测框裁剪 + 旧识别器 | 64.5% | 27.5% | 16.7% | 86.5% | 81.8% |
+| 标注四角（上限对照） | 92.5% | 97.5% | 100% | 97.3% | 90.9% |
+| **路线 1：pose 四关键点检测器 + 现有识别器（`quad` 裁剪）** | **93.5%** | **100%** | **100%** | 97.3% | 90.9% |
+| 路线 2：旧检测器 + 运行时裁剪重训识别器（`bbox` 裁剪） | 88.5% | 85.0% | 77.8% | 97.3% | 90.9% |
+| 组合：pose 检测器 + 运行时重训识别器（`bbox` 裁剪） | 89.0% | 82.5% | 88.9% | 97.3% | 87.9% |
 
-结论：识别权重本身没问题，掉点几乎全部来自裁剪几何；误差以省份字为主（62 个错例中 41 个只错省份字，30 个错成"皖"），且错例的识别置信度均值 0.906（54/62 ≥ 0.8），单靠提高阈值挡不住。精选 40 张样例复核为 90.0%，说明这不是模型退化。
+- **路线 1 已作为出厂配置**：`model/weights/smartpark_plate_pose_best.pt`（6 epoch，pose mAP50-95 = 0.9950）放到 `model/weights/` 后，`recognize_plate.py` 会自动优先用它，输出的 `crop` 变成 `quad`、`quad_source` 变成 `keypoints`（GUI 无需改动，Qt/macOS 两端只读原有字段）。
+- 路线 2 的权重留在训练机 `model/runs/plate_rec_runtime/`（20 epoch，best acc 0.9950），配套 `ccpd_rec_runtime/crop_recipe.json`（`mode=bbox`）；要用它就把权重和配方一起放进 `model/weights/`。
+- 剩余误差已经不是几何问题：路线 1 的 12 个错例里 11 个只错省份字（晋→豫/浙/皖/鲁/青/赣/川，识别置信度仍 0.90-0.99），因为 CCPD 训练集以皖牌为主；想把 93.5% 再往上推，需要省份均衡的识别微调数据或省份先验，而不是继续调裁剪。
 
-上表用仓库内评测脚本复现（左列＝真实检测器，右列＝标注四角，只换裁剪几何）：
+#### 省份微调：单省重点 vs 全非皖均衡（2026-10-05）
+
+CCPD 是合肥数据集：皖牌占 92.8%，其余 30 省合计 7.2%，其中晋牌整池只有 **436 张（0.12%）**、在 12.9 万条识别训练样本里只有 **31 条（0.024%）**，模型因此对晋牌的省份字系统性认错。两轮微调（都从出厂识别权重起、3 epoch、lr 1e-4，评测集用过的图片全部排除在训练外）：
+
+| 方案 | 合计 200 张 | 晋牌 100 张 | 非晋 100 张 |
+| --- | --- | --- | --- |
+| 出厂（路线 1） | 93.5% | 92.0% | 95.0% |
+| 单省重点（`--province 晋 --target-share 0.10`，晋占 epoch 10.1%） | 89.5% | 98.0% | 81.0% |
+| **全非皖均衡 + 晋 ×2**（`--balance --per-province-share 0.012 --bias-factor 2.0`，非皖占 28.6%、晋占 1.9%） | **96.0%** | **98.0%** | **94.0%** |
+
+- **均衡版胜出并已作为出厂识别权重**：`model/weights/smartpark_plate_ppocrv5_bal.pdparams`；`recognize_plate.py` 的 `--recognizer` 缺省会优先用它（没有该文件才退回 `..._best.pdparams`）。剩余 8 个错例集中在长尾省份（藏 1 张、青 3 张这类整池样本个位数的省）与新能源绿牌，晋牌只剩 2 个且都只是省份字。
+- 单省重点版权重留在 `model/weights/smartpark_plate_ppocrv5_jin.pdparams` 备查：晋牌同样 98%，但非晋掉到 81%，只在"晋牌占比 ≥70%"的闸口才划算（转折点由 `0.98s+0.81(1-s)` vs `0.92s+0.95(1-s)` 得出，s≈70%）。
+- 复现（两种模式都由 `prepare_recognition_focus.py` 支持，`--province` 可换任意省份）：
+  ```bash
+  sbatch scripts/prepare_recognition_balance.slurm        # 全非皖均衡 + 晋 x2（纯 CPU）
+  sbatch scripts/train_rec.slurm \
+      --config scripts/rec/PP-OCRv5_server_rec_plate.yml \
+      --data "$ROOT/model/datasets/ccpd_rec_balance" \
+      --pretrained "$ROOT/model/weights/smartpark_plate_ppocrv5_best.pdparams" \
+      --output "$ROOT/model/runs/plate_rec_balance" --epochs 3 --lr 0.0001
+  ```
+- 长尾省份（藏/宁/琼/青/吉…）整池只有几张到几十张，过采样垫不高，想稳要补真实数据。
+
+#### 绿牌（新能源）加权：没有收益，且发现评测集污染（2026-10-05）
+
+绿牌是 200 张评测集里最弱的子集，于是又做了一轮绿牌加权：`prepare_recognition_green.py` 把绿牌行的重复倍数从 5× 提到 11×（占 epoch 30.5%，共 20.8 万行），从均衡版权重再微调 3 epoch。结论是**没有改善**：
+
+| 方案 | 合计 200 张 | 晋牌 100 | 非晋 100 | 干净绿牌 16 张 |
+| --- | --- | --- | --- | --- |
+| 出厂（路线 1） | 93.5% | 92.0% | 95.0% | 15/16 |
+| 非皖均衡 | 96.0% | 98.0% | 94.0% | 14/16 |
+| 绿牌加权 | 96.0% | 99.0% | 93.0% | 14/16 |
+
+原因是绿牌可训整图只有 **5,752 张**（CCPD2020 train），重复同一批样本不产生新信息；绿牌要提升只能补真实新能源数据。绿牌加权版与均衡版整体打平（差异 ±1 张，属噪声），权重留在 `model/weights/smartpark_plate_ppocrv5_green.pdparams` 备查，出厂仍用均衡版。
+
+同时发现**评测集本身有污染**：33 张绿牌里有 **17 张的裁剪图出现在 `ccpd_rec` 训练集里**，所以旧模型的绿牌数字（出厂 30/33、均衡 29/33）是偏高的。绿牌加权版已把这 17 张从训练列表剔除（`--exclude-manifest`），它的绿牌成绩是干净的；跨模型比较绿牌时只看"干净 16 张"这一列。
+
+复现（左列＝旧检测器，路线 1 用 `--detector` 指向 pose 权重）：
 
 ```bash
 # 逐图结果写 JSONL，终端按子集汇总整牌精确匹配率
 ~/.smartpark/lpr/bin/python scripts/evaluate_plates.py \
     --manifest examples/plates/manifest-provinces.csv --workers 4
 ~/.smartpark/lpr/bin/python scripts/evaluate_plates.py \
+    --manifest examples/plates/manifest-provinces.csv --workers 4 \
+    --detector model/weights/smartpark_plate_pose_best.pt --tag route1-pose
+~/.smartpark/lpr/bin/python scripts/evaluate_plates.py \
     --manifest examples/plates/manifest-provinces.csv --oracle-corners --workers 4
 ```
 
-两条互补的对齐路线（都需要在训练机 s1 上跑）：
+两条对齐路线在训练机 s1 上的完整命令（已跑通，保留备查）：
 
 ```bash
-# 路线 1（推理侧，推荐）：检测改四角，推理按训练同款透视矫正
-#   obb=四角旋转框；pose=四关键点（带语义顺序，旋转图也能摆正）
+# 路线 1（推理侧，出厂方案）：检测改四关键点，推理按训练同款透视矫正
+#   输出目录会先清空，每个 --task 用各自目录（缺省已按任务名分开）
 "$SMARTPARK_LPR_PY" scripts/prepare_ccpd.py --task pose --no-download \
-    --output "$ROOT/model/datasets/ccpd_yolo"
-sbatch scripts/train_lpr.slurm --task pose --name license_plate_pose
+    --output "$ROOT/model/datasets/ccpd_yolo_pose"
+sbatch scripts/train_lpr.slurm --task pose --name license_plate_pose --imgsz 640 --batch 32 --device 0,1
+# 4 小时上限到点后接着跑（脚本不会自动续投）：
+sbatch scripts/train_lpr.slurm --task pose --name license_plate_pose --resume
 
 # 路线 2（训练侧）：保持现有轴对齐检测器，用"运行时裁剪"重造识别数据集并重训
-sbatch scripts/prepare_recognition.slurm --crop-mode bbox \
-    --output "$ROOT/model/datasets/ccpd_rec_runtime"
-"$SMARTPARK_OCR_PY" scripts/train_rec.py \
+sbatch scripts/prepare_recognition_runtime.slurm     # 纯 CPU 作业，不占 GPU
+sbatch scripts/train_rec.slurm \
     --config scripts/rec/PP-OCRv5_server_rec_plate_runtime.yml \
     --data "$ROOT/model/datasets/ccpd_rec_runtime" \
     --output "$ROOT/model/runs/plate_rec_runtime"
 ```
+
+训练机 s1（inspur 集群）实测环境（2026-10-04 核对）：
+
+| 项 | 值 |
+| --- | --- |
+| Slurm | 26.05.4（RPM 已装并运行，**不需要源码编译**），`ClusterName=inspur-cluster` |
+| 分区 | `gpu`（默认分区），节点 `inspur[1-3]`，每节点 `Gres=gpu:v100:2`，56 核 / 184 GB |
+| 时间上限 | `MaxTime=04:00:00`、`DefaultTime=01:00:00`——**脚本里必须写 `#SBATCH --time`**（缺了只有 1 小时），长训练按 4 小时一段续投 |
+| 仓库 | `/home/inspur/nfs/home/cadetcarrington/Cpp-CourseProject_smart_park` |
+| 环境 | `~/miniforge3/envs/{smartpark-lpr,smartpark-ocr}`（torch 2.6.0 / ultralytics 8.4.142 / paddle 3.1.1，均带 CUDA） |
+| 数据 | `model/datasets/{CCPD2019,CCPD2020,ccpd_yolo,ccpd_yolo_pose,ccpd_rec,ccpd_rec_runtime}` 已就绪 |
+| 出网 | 登录节点到 github.com 超时，**计算节点可访问**；下载初始权重请在 `srun`/`sbatch` 里做 |
+
+现有三份出厂权重都是 s1 上训练产物的副本（sha256 一致）：
+`model/runs/plate_rec/best_accuracy.pdparams` → `model/weights/smartpark_plate_ppocrv5_best.pdparams`，
+`model/runs/license_plate/weights/best.pt` → `model/weights/smartpark_plate_yolo11m_best.pt`，
+`model/runs/license_plate_pose-2/weights/best.pt` → `model/weights/smartpark_plate_pose_best.pt`。
 
 路线 1 训完把检测权重换进 `model/weights/`（`--task` 会自动取
 `model/yolo11m-obb.pt` / `model/yolo11m-pose.pt` 作初始权重，需先放到 `model/`）；
@@ -352,6 +409,15 @@ sbatch scripts/prepare_recognition.slurm --crop-mode bbox \
 11. ⬜ 车牌识别：实现 HyperLPR3 基线，并完成 YOLO11m + PP-OCRv5 中国车牌专用模型训练、评测与 C++ 部署。
 
 ## 最近工作记录
+
+2026-10-05 两条对齐路线训练完成 + 出厂切换：
+
+- 路线 1（pose 四关键点检测器，6 epoch，imgsz 640 / batch 32 / 双卡）：pose mAP50-95 = 0.9950；与现有识别器组合后 200 张整牌精确匹配 **93.5%**（tilt 40/40、rotate 18/18 全对，challenge 88.9%、base 97.3%、green 90.9%），略高于"标注四角"对照上限（92.5%）。权重已作为出厂配置放在 `model/weights/smartpark_plate_pose_best.pt`。
+- `recognize_plate.py` 的 `--detector` 缺省改为"有 pose 权重就用它，否则退回轴对齐框权重"；输出新增 `crop`/`quad_source`/`flip_checked` 诊断字段（Qt 与 macOS 两端只读原有字段，无需改动 GUI）。
+- 路线 2（旧检测器 + 运行时裁剪重训识别器，20 epoch，best acc 0.9950）在同一套 200 张上 **88.5%**（tilt 85.0%、rotate 77.8%），权重留在 s1 的 `model/runs/plate_rec_runtime/`，需要时与 `crop_recipe.json`（`mode=bbox`）一起发布。
+- 剩余误差不再是几何：路线 1 的 12 个错例中 11 个只错省份字（晋→豫/浙/皖/鲁/青/赣/川，识别置信度仍 0.90-0.99），属 CCPD 训练集省份分布偏斜；另有 1 张绿牌漏检。
+- 运维教训：s1 的 `gpu` 分区 `DefaultTime=01:00:00`，slurm 脚本必须显式写 `#SBATCH --time`，否则 1 小时就被砍（已补 `--time=04:00:00`）；`train_lpr.py` 新增 `--resume`（ultralytics 只在 `resume=True` 时续跑）。
+- 评测脚本 `evaluate_plates.py` 支持 `--detector/--recognizer/--config/--crop-recipe/--tag`，可直接对任意权重组合跑同一套 200 张。
 
 2026-09-30（晚）识别准确率归因 + 训练/推理裁剪对齐：
 
