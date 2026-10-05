@@ -24,7 +24,22 @@ ROOT = Path(__file__).resolve().parents[1]
 PROVINCES = "京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼"
 PLATE_PATTERN = re.compile(rf"^[{PROVINCES}][A-HJ-NP-Z][A-HJ-NP-Z0-9]{{5,6}}$")
 DEFAULT_RECIPE_PATH = ROOT / "model/weights/smartpark_plate_crop_recipe.json"
+POSE_DETECTOR = ROOT / "model/weights/smartpark_plate_pose_best.pt"
+BBOX_DETECTOR = ROOT / "model/weights/smartpark_plate_yolo11m_best.pt"
+BALANCED_RECOGNIZER = ROOT / "model/weights/smartpark_plate_ppocrv5_bal.pdparams"
+BASE_RECOGNIZER = ROOT / "model/weights/smartpark_plate_ppocrv5_best.pdparams"
 CROP_MODES = ("auto", "quad", "bbox")
+
+
+def default_detector() -> Path:
+    """四关键点权重优先：有它就能拿四角做训练同款透视矫正；没有则退回轴对齐框权重。"""
+    return POSE_DETECTOR if POSE_DETECTOR.is_file() else BBOX_DETECTOR
+
+
+def default_recognizer() -> Path:
+    """省份均衡微调权重优先（省级 200 张：96.0% vs 出厂 93.5%，晋牌 98% vs 92%）；
+    没有该文件时退回出厂权重。两版权重结构相同，配套 config 通用。"""
+    return BALANCED_RECOGNIZER if BALANCED_RECOGNIZER.is_file() else BASE_RECOGNIZER
 
 
 def valid_plate(text: str) -> bool:
@@ -42,8 +57,12 @@ def parse_paddle_result(content: str, image: Path) -> tuple[str, float]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("image", type=Path)
-    parser.add_argument("--detector", type=Path, default=ROOT / "model/weights/smartpark_plate_yolo11m_best.pt")
-    parser.add_argument("--recognizer", type=Path, default=ROOT / "model/weights/smartpark_plate_ppocrv5_best.pdparams")
+    parser.add_argument("--detector", type=Path, default=None,
+                        help="检测权重；缺省优先 smartpark_plate_pose_best.pt（四关键点，可透视矫正），"
+                             "没有则退回 smartpark_plate_yolo11m_best.pt（轴对齐框）")
+    parser.add_argument("--recognizer", type=Path, default=None,
+                        help="识别权重；缺省优先 smartpark_plate_ppocrv5_bal.pdparams（省份均衡微调），"
+                             "没有则退回 smartpark_plate_ppocrv5_best.pdparams")
     parser.add_argument("--config", type=Path, default=ROOT / "model/weights/smartpark_plate_ppocrv5_config.yml")
     parser.add_argument("--paddleocr", type=Path, default=ROOT / "third_party/PaddleOCR")
     parser.add_argument("--ocr-python", type=Path, default=None)
@@ -191,8 +210,8 @@ def recognize(args: argparse.Namespace) -> dict:
     import plate_geometry
 
     image = args.image.expanduser().resolve()
-    detector = args.detector.expanduser().resolve()
-    recognizer = args.recognizer.expanduser().resolve()
+    detector = (args.detector or default_detector()).expanduser().resolve()
+    recognizer = (args.recognizer or default_recognizer()).expanduser().resolve()
     config = args.config.expanduser().resolve()
     paddleocr = args.paddleocr.expanduser().resolve()
     ocr_python = args.ocr_python or os.environ.get("SMARTPARK_OCR_PY")

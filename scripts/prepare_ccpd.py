@@ -46,7 +46,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ccpd2019", type=Path, default=root / "model/datasets/CCPD2019")
     parser.add_argument("--ccpd2020", type=Path, default=root / "model/datasets/CCPD2020")
-    parser.add_argument("--output", type=Path, default=root / "model/datasets/ccpd_yolo")
+    parser.add_argument("--output", type=Path, default=None,
+                        help="数据集输出目录（会先清空）；缺省 det→ccpd_yolo，obb/pose→ccpd_yolo_<task>")
     parser.add_argument("--task", choices=TASKS, default="det",
                         help="det=轴对齐框；obb=四角旋转框；pose=四关键点（含语义顺序）")
     parser.add_argument("--max-per-split", type=int, default=None, metavar="N",
@@ -54,6 +55,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--green-only", action="store_true", help="convert CCPD2020 green only")
     parser.add_argument("--no-download", action="store_true", help="do not fetch official CCPD2019 split lists")
     return parser.parse_args()
+
+
+def resolve_output(args: argparse.Namespace, root: Path) -> Path:
+    """--output 缺省按任务分目录，避免切换 --task 时把上一个任务的标签集删掉。"""
+    if args.output is not None:
+        return args.output
+    name = "ccpd_yolo" if args.task == "det" else f"ccpd_yolo_{args.task}"
+    return root / "model" / "datasets" / name
 
 
 def images_under(directory: Path) -> list[Path]:
@@ -272,7 +281,7 @@ def main() -> int:
     args = parse_args()
     if args.max_per_split is not None and args.max_per_split < 1:
         raise SystemExit("--max-per-split must be at least 1")
-    output = args.output.expanduser().resolve()
+    output = resolve_output(args, Path(__file__).resolve().parents[1]).expanduser().resolve()
     sources: dict[str, list[Path]] = {name: [] for name in SPLITS}
     notes: list[str] = []
 
