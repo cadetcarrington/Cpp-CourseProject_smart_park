@@ -58,6 +58,16 @@ def parse_args() -> argparse.Namespace:
                         help="用 CCPD 标注四角替代检测器，衡量几何对齐后的识别上限")
     parser.add_argument("--crop", choices=("auto", "quad", "bbox"), default="auto")
     parser.add_argument("--flip-check", action="store_true")
+    parser.add_argument("--detector", type=Path,
+                        default=ROOT / "model/weights/smartpark_plate_yolo11m_best.pt",
+                        help="检测权重；换成四角/关键点模型即可评测推理侧对齐路线")
+    parser.add_argument("--recognizer", type=Path,
+                        default=ROOT / "model/weights/smartpark_plate_ppocrv5_best.pdparams")
+    parser.add_argument("--config", type=Path,
+                        default=ROOT / "model/weights/smartpark_plate_ppocrv5_config.yml")
+    parser.add_argument("--crop-recipe", type=Path, default=None,
+                        help="裁剪配方 JSON，缺省跟随 model/weights/ 下随权重发布的配方")
+    parser.add_argument("--tag", default="", help="结果文件名后缀，便于区分不同权重的评测")
     return parser.parse_args()
 
 
@@ -84,14 +94,15 @@ def evaluate_one(item):
     image = ROOT / "examples/plates" / relative
     args = SimpleNamespace(
         image=image,
-        detector=ROOT / "model/weights/smartpark_plate_yolo11m_best.pt",
-        recognizer=ROOT / "model/weights/smartpark_plate_ppocrv5_best.pdparams",
-        config=ROOT / "model/weights/smartpark_plate_ppocrv5_config.yml",
+        detector=ARGS.detector,
+        recognizer=ARGS.recognizer,
+        config=ARGS.config,
         paddleocr=ROOT / "third_party/PaddleOCR",
         ocr_python=Path(os.environ.get("SMARTPARK_OCR_PY",
                                        os.path.expanduser("~/.smartpark/ocr/bin/python"))),
         dictionary=ROOT / "scripts/rec/ppocrv5_dict.txt",
-        confidence=0.25, crop=ARGS.crop, crop_recipe=None, flip_check=ARGS.flip_check)
+        confidence=0.25, crop=ARGS.crop, crop_recipe=ARGS.crop_recipe,
+        flip_check=ARGS.flip_check)
 
     if ARGS.oracle_corners:
         vertices, bounds = ccpd_geometry(image)
@@ -104,7 +115,8 @@ def evaluate_one(item):
         sys.modules["ultralytics"] = SimpleNamespace(YOLO=stub)
 
     record = {"file": relative, "expected": expected, "subset": subset,
-              "geometry": "oracle" if ARGS.oracle_corners else "detector"}
+              "geometry": "oracle" if ARGS.oracle_corners else "detector",
+              "detector": ARGS.detector.name, "recognizer": ARGS.recognizer.name}
     started = time.time()
     try:
         result = recognize_plate.recognize(args)
@@ -142,9 +154,11 @@ def main() -> int:
     if ARGS.limit:
         items = items[: ARGS.limit]
     geometry = "oracle" if ARGS.oracle_corners else "detector"
-    out = ARGS.out or Path(f"/tmp/smartpark-eval-{geometry}-{ARGS.crop}.jsonl")
+    tag = f"-{ARGS.tag}" if ARGS.tag else ""
+    out = ARGS.out or Path(f"/tmp/smartpark-eval-{geometry}-{ARGS.crop}{tag}.jsonl")
 
-    print(f"images={len(items)} geometry={geometry} crop={ARGS.crop} -> {out}", flush=True)
+    print(f"images={len(items)} geometry={geometry} crop={ARGS.crop} "
+          f"detector={ARGS.detector.name} recognizer={ARGS.recognizer.name} -> {out}", flush=True)
     results = []
     with out.open("w", encoding="utf-8") as handle, Pool(ARGS.workers, initializer=init_worker,
                                                          initargs=(ARGS,)) as pool:
