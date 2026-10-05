@@ -31,6 +31,8 @@ def parse_args():
     parser.add_argument("--project", type=Path, default=root / "model" / "runs")
     parser.add_argument("--name", default="license_plate")
     parser.add_argument("--workers", type=int, default=8, help="data-loader worker processes")
+    parser.add_argument("--resume", action="store_true",
+                        help="从 <project>/<name>/weights/last.pt 续跑（4 小时分区上限下必需）")
     parser.add_argument("--exist-ok", action="store_true", help="overwrite an existing run directory")
     parser.add_argument("--amp", dest="amp", action="store_true", default=True)
     parser.add_argument("--no-amp", dest="amp", action="store_false", help="disable mixed precision")
@@ -38,8 +40,10 @@ def parse_args():
 
 
 def resolve_task_paths(args, root: Path) -> tuple[Path, Path]:
-    task, yaml_name, weight_name = TASKS[args.task]
-    data = args.data or (root / "model" / "datasets" / "ccpd_yolo" / yaml_name)
+    """默认数据/权重按任务取名，与 prepare_ccpd.py 的输出目录约定一致。"""
+    _task, yaml_name, weight_name = TASKS[args.task]
+    directory = "ccpd_yolo" if args.task == "det" else f"ccpd_yolo_{args.task}"
+    data = args.data or (root / "model" / "datasets" / directory / yaml_name)
     weights = args.weights or (root / "model" / weight_name)
     return data, weights
 
@@ -63,10 +67,11 @@ def main():
     expected_task, _, _ = TASKS[args.task]
     project = args.project.expanduser().resolve()
     project.mkdir(parents=True, exist_ok=True)
-    seed_amp_weights(root, weights)
-    os.environ.setdefault("YOLO_OFFLINE", "1")
+    checkpoint = project / args.name / "weights" / "last.pt"
 
-    missing = [str(path) for path in (data, weights) if not path.is_file()]
+    missing = [] if args.resume else [str(path) for path in (data, weights) if not path.is_file()]
+    if args.resume and not checkpoint.is_file():
+        missing.append(str(checkpoint))
     if missing:
         print("缺少训练资产：", file=sys.stderr)
         print("\n".join(missing), file=sys.stderr)
@@ -80,6 +85,14 @@ def main():
         print("请使用 conda 环境 smartpark-lpr，而不是系统 Python。", file=sys.stderr)
         return 2
 
+    if args.resume:
+        # 4 小时分区上限：从上次中断处续跑（ultralytics 要求 resume=True，重投新命令不算续跑）
+        print(f"resuming from {checkpoint}", flush=True)
+        YOLO(str(checkpoint)).train(resume=True)
+        return 0
+
+    seed_amp_weights(root, weights)
+    os.environ.setdefault("YOLO_OFFLINE", "1")
     device = None if args.device == "auto" else args.device
     model = YOLO(str(weights))
     if model.task != expected_task:

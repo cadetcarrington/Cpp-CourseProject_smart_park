@@ -32,6 +32,7 @@ Thumbs.db
 !/model/weights/smartpark_plate_ppocrv5_best.pdparams
 !/model/weights/smartpark_plate_ppocrv5_config.yml
 !/model/weights/smartpark_plate_crop_recipe.json
+!/model/weights/smartpark_plate_pose_best.pt
 /runs/
 /weights/
 scripts/__pycache__/
