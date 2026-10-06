@@ -149,6 +149,7 @@ Scan to open SmartPark H5: http://10.0.0.5:8080/#/claim?t=<票据>
 | `--layout` | 布局文件；不传用内置 60 车位 | — |
 | `--web-root` | H5 静态目录；**不传就不伺服网页** | — |
 | `--advertise` | 对外广播的地址（IP 或域名），横幅与二维码用它 | 自动选取 |
+| `--ws-public-url` | 对外暴露的 WebSocket 地址（如 `wss://域名/ws`），反代/HTTPS 时必填 | 按请求 Host 推导 |
 | `--site-name` | 点位名，扫码后 H5 显示 | SmartPark 停车场 |
 | `--lpr-command` | 识牌命令模板（`%1` 替换为图片路径）；不传用内置 mock | — |
 | `--selftest` | 进程内端到端自测（不联网），跑完退出 | — |
@@ -209,7 +210,7 @@ sudo journalctl -u smartpark -f
 | 端口 | 协议 | 是否必须对外开放 |
 | --- | --- | --- |
 | 8080 | HTTP | **是**（手机访问 H5） |
-| 8081 | WebSocket | **是**（实时推送；关掉推送可不放） |
+| 8081 | WebSocket | 直连部署要放；**反代部署不用放**，把 `/ws` 转进来即可（见 10.2） |
 | 9527 | TCP 自定义协议 | 仅限内网 / 隧道。**明文，不要直接暴露公网** |
 
 ```bash
@@ -291,6 +292,8 @@ ss -lntp | grep -E '8080|8081'
 sudo firewall-cmd --list-ports
 ```
 
+反代之前请先确认直连是通的。
+
 三步都通、只有手机不行的话，问题在手机与服务器之间的链路：
 手机是否在同一网段、路由器是否开了客户端隔离（AP Isolation）、
 服务器上是否有代理工具接管了路由。
@@ -306,19 +309,52 @@ TCP 协议与 HTTP 都没有 TLS。内网 / 实验室环境可以；**公网必�
 - 用 Caddy / Nginx 反代 8080，自动签发证书
 - **9527 不要暴露**，走 SSH 隧道（`ssh -L 9527:localhost:9527 服务器`）或 WireGuard
 
-### 10.2 反代时 WebSocket 地址会错
+### 10.2 反代时要用 --ws-public-url 覆盖 WebSocket 地址
 
-`/api/v1/meta` 返回的 `wsUrl` 是按**请求 Host + 内部 ws 端口**拼的：
+`/api/v1/meta` 默认按**请求 Host + 内部 ws 端口**拼 `wsUrl`：
 
 ```
-ws://<请求Host>:8081/ws
+直连：手机访问 10.0.0.5:8080  →  ws://10.0.0.5:8081/ws      ✓
+反代：手机访问 park.example.com →  ws://park.example.com:8081/ws  ✗
 ```
 
-所以只反代 8080 时，手机会拿到 `ws://域名:8081/ws` —— 8081 没放行就连不上；
-HTTPS 页面下浏览器还会按混合内容拦掉。
+反代场景下这个地址是错的：8081 通常没对外放行，HTTPS 页面下浏览器还会按
+混合内容把它拦掉（`ws://` 出现在 `https://` 页面里）。
 
-**现在的做法**：把 8081 也直接放行，不要藏在反代后面。
-要正经反代需要能覆盖对外 ws 地址（尚未实现）。
+**做法**：反代把 `/ws` 转到内部的 ws 端口，同时用 `--ws-public-url` 告诉服务端
+对外该报什么地址：
+
+```bash
+smartpark_server ... --ws-port 8081 \
+    --ws-public-url wss://park.example.com/ws
+```
+
+Caddy 示例：
+
+```
+park.example.com {
+    reverse_proxy /ws* 127.0.0.1:8081
+    reverse_proxy       127.0.0.1:8080
+}
+```
+
+Nginx 示例：
+
+```nginx
+location /ws {
+    proxy_pass http://127.0.0.1:8081;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+}
+location / {
+    proxy_pass http://127.0.0.1:8080;
+}
+```
+
+> `--ws-port 0`（关闭推送）时不会广播 `wsUrl`，`--ws-public-url` 也就不起作用。
+> 要让反代能连上内部 ws，`--ws-port` 必须是非 0。
 
 ### 10.3 对外地址的选取
 

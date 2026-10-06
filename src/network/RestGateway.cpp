@@ -650,8 +650,14 @@ QHttpServerResponse RestGateway::handleMeta(
     meta.insert(QStringLiteral("httpPort"), httpPort_);
     if (wsPort_ != 0){
         meta.insert(QStringLiteral("wsPort"), wsPort_);
+        // 默认按「请求的 Host + 内部 ws 端口」拼，直连时是对的：手机访问
+        // 10.0.0.5:8080 就拿到 ws://10.0.0.5:8081/ws。
+        // 但反代（尤其 HTTPS）部署下 Host 是对外域名、ws 端口并不对外，
+        // 浏览器要么连不上要么按混合内容拦掉——此时用 --ws-public-url 覆盖。
         meta.insert(QStringLiteral("wsUrl"),
-                    QStringLiteral("ws://%1:%2/ws").arg(host).arg(wsPort_));
+                    options_.wsPublicUrl.isEmpty()
+                        ? QStringLiteral("ws://%1:%2/ws").arg(host).arg(wsPort_)
+                        : options_.wsPublicUrl);
     }
     return QHttpServerResponse(meta);
 }
