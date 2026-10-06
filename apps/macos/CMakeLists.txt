@@ -48,6 +48,10 @@ set(MACOS_ADMIN_SOURCES
     bridge/RemoteDataSource.mm
 )
 
+# 顶层测试（tests/macos_remote_tests）也要复用这份源码，好让「测的就是真界面」。
+# CMake 变量是目录作用域的，导出到父作用域，tests/ 才能看到。
+set(MACOS_ADMIN_SOURCES "${MACOS_ADMIN_SOURCES}" PARENT_SCOPE)
+
 add_executable(smartpark_admin_macos MACOSX_BUNDLE ${MACOS_ADMIN_SOURCES})
 
 target_compile_features(smartpark_admin_macos PRIVATE cxx_std_17)
