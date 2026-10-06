@@ -213,8 +213,9 @@ void keychainDelete(NSString *account){
                                         action:@selector(remoteModeChanged:)];
     _remoteCheck.accessibilityIdentifier = @"smartpark.login.remote";
     _remoteCheck.toolTip =
-        @"勾选后通过 TCP 连接服务端，账号与口令由服务端校验；"
-        @"预约、停车记录与设施配置在远程模式下不提供。";
+        @"勾选后通过 TCP 连接服务端，账号与口令由服务端校验，本机数据库不参与；"
+        @"停车记录与预约随快照下发，与本地模式一致。"
+        @"仅设施配置（布局由服务端 --layout 决定）不可用。";
 
     _hostField = [[NSTextField alloc] init];
     _hostField.placeholderString = @"服务端地址";
