@@ -27,6 +27,11 @@ TimePoint msToTime(qint64 ms){
     return TimePoint{} + std::chrono::milliseconds(ms);
 }
 
+qint64 timeToMs(TimePoint time){
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        time.time_since_epoch()).count();
+}
+
 QJsonObject allocationToPayload(const AllocationResult &result){
     QJsonObject payload;
     payload.insert(QStringLiteral("plateNumber"),
@@ -687,11 +692,52 @@ QJsonObject SmartParkTcpServer::actionAdminSnapshot(const QJsonObject &,
             {QStringLiteral("fee"), fees[i]}});
     }
 
+    // 停车记录与预约：远程模式要能显示「停车记录」「预约管理」两页，
+    // 并在客户端本地算出洞察（预测/分区压力），所以快照把它们一起带上——
+    // 这些数据量很小，多一次拉取比多一套增量接口简单得多。
+    QJsonArray recordsJson;
+    for (const ParkingRecord &record : service_->records()){
+        QJsonObject item;
+        item.insert(QStringLiteral("plate"),
+                    QString::fromStdString(record.plateNumber()));
+        item.insert(QStringLiteral("spotId"),
+                    QString::fromStdString(record.spotId()));
+        item.insert(QStringLiteral("vehicleType"),
+                    protocol::vehicleTypeToString(record.vehicleType()));
+        item.insert(QStringLiteral("entryTimeMs"), timeToMs(record.entryTime()));
+        if (record.exitTime()){
+            item.insert(QStringLiteral("exitTimeMs"), timeToMs(*record.exitTime()));
+        }
+        item.insert(QStringLiteral("fee"), record.fee());
+        recordsJson.append(item);
+    }
+
+    QJsonArray bookingsJson;
+    for (const Booking &booking : service_->bookings()){
+        QJsonObject item;
+        item.insert(QStringLiteral("id"), QString::fromStdString(booking.id()));
+        item.insert(QStringLiteral("plate"),
+                    QString::fromStdString(booking.plateNumber()));
+        item.insert(QStringLiteral("spotId"),
+                    QString::fromStdString(booking.spotId()));
+        item.insert(QStringLiteral("createdAtMs"), timeToMs(booking.createdAt()));
+        item.insert(QStringLiteral("arrivalMs"), timeToMs(booking.arrivalTime()));
+        item.insert(QStringLiteral("deadlineMs"), timeToMs(booking.arrivalDeadline()));
+        item.insert(QStringLiteral("deposit"), booking.deposit());
+        item.insert(QStringLiteral("status"), bookingStatusToInt(booking.status()));
+        bookingsJson.append(item);
+    }
+
     QJsonObject result;
     result.insert(QStringLiteral("dailyRevenue"), dailyRevenue);
     result.insert(QStringLiteral("layout"), layoutJson);
     result.insert(QStringLiteral("spots"), spots);
     result.insert(QStringLiteral("zones"), zones);
+    result.insert(QStringLiteral("records"), recordsJson);
+    result.insert(QStringLiteral("bookings"), bookingsJson);
+    // 定金口径与服务端一致：远程端不再自己猜一个 0。
+    result.insert(QStringLiteral("pendingDeposits"), service_->pendingDeposits());
+    result.insert(QStringLiteral("forfeitedDeposits"), service_->forfeitedDeposits());
     result.insert(QStringLiteral("capacity"),
                   static_cast<int>(service_->spots().size()));
     result.insert(QStringLiteral("occupied"), occupied);

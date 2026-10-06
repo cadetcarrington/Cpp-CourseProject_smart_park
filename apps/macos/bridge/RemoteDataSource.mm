@@ -133,16 +133,14 @@ double RemoteDataSource::dailyRevenueTotal() const noexcept{
 
 ParkingDataSource::Capabilities RemoteDataSource::capabilities() const{
     Capabilities caps;
-    // 协议里只有 parking.enter / parking.leave 两个写 action 能覆盖车辆作业；
-    // 其余能力没有对应 action，如实声明为不可用，由界面隐藏或禁用入口。
+    // 记录、预约、定金随快照下发，洞察在本地用 ParkingInsightEngine 算，
+    // 因此这四项与本地模式一致。
+    // 仍然不可用的只有真正没有协议 action 的：应急入场、车型更正、
+    // 分配策略（服务端统一配置）、布局编辑（服务端 --layout 决定）。
     caps.emergencyEnter = false;
     caps.vehicleTypeEdit = false;
     caps.strategyEdit = false;
-    caps.bookings = false;
-    caps.records = false;
     caps.layoutEditing = false;
-    caps.deposits = false;
-    caps.insights = false;
     caps.layoutText = false;
     return caps;
 }
@@ -277,6 +275,53 @@ bool RemoteDataSource::applySnapshot(const QJsonObject &snapshot, std::string *e
         spots.push_back(std::move(spot));
     }
 
+    // 停车记录：与服务端 admin.snapshot 的字段一一对应。
+    std::vector<ParkingRecord> records;
+    for (const QJsonValue &item : snapshot.value(QStringLiteral("records")).toArray()){
+        const QJsonObject object = item.toObject();
+        const std::string plate =
+            object.value(QStringLiteral("plate")).toString().toStdString();
+        const std::string spotId =
+            object.value(QStringLiteral("spotId")).toString().toStdString();
+        if (plate.empty()){
+            continue;   // ParkingRecord 不接受空车牌
+        }
+        const auto type = protocol::vehicleTypeFromString(
+            object.value(QStringLiteral("vehicleType")).toString());
+        ParkingRecord record(plate, spotId,
+            timeFromMs(object.value(QStringLiteral("entryTimeMs")).toInteger()),
+            type.value_or(VehicleType::Car));
+        if (object.contains(QStringLiteral("exitTimeMs"))){
+            record.close(timeFromMs(object.value(QStringLiteral("exitTimeMs")).toInteger()),
+                         object.value(QStringLiteral("fee")).toDouble());
+        }
+        records.push_back(std::move(record));
+    }
+    records_ = std::move(records);
+
+    std::vector<Booking> bookings;
+    for (const QJsonValue &item : snapshot.value(QStringLiteral("bookings")).toArray()){
+        const QJsonObject object = item.toObject();
+        const std::string plate =
+            object.value(QStringLiteral("plate")).toString().toStdString();
+        if (plate.empty()){
+            continue;
+        }
+        bookings.emplace_back(
+            object.value(QStringLiteral("id")).toString().toStdString(),
+            plate,
+            object.value(QStringLiteral("spotId")).toString().toStdString(),
+            timeFromMs(object.value(QStringLiteral("createdAtMs")).toInteger()),
+            timeFromMs(object.value(QStringLiteral("arrivalMs")).toInteger()),
+            timeFromMs(object.value(QStringLiteral("deadlineMs")).toInteger()),
+            object.value(QStringLiteral("deposit")).toDouble(),
+            bookingStatusFromInt(object.value(QStringLiteral("status")).toInt())
+                .value_or(BookingStatus::Booked));
+    }
+    bookings_ = std::move(bookings);
+    pendingDeposits_ = snapshot.value(QStringLiteral("pendingDeposits")).toDouble();
+    forfeitedDeposits_ = snapshot.value(QStringLiteral("forfeitedDeposits")).toDouble();
+
     layout_ = ParkingLayout::fromParts(siteWidth, siteHeight, std::move(spots),
                                        std::move(regions), std::move(obstacles),
                                        std::move(entrances), std::move(exits));
@@ -286,6 +331,12 @@ bool RemoteDataSource::applySnapshot(const QJsonObject &snapshot, std::string *e
     dailyRevenue_ = snapshot.value(QStringLiteral("dailyRevenue")).toArray();
     snapshotReady_ = true;
     return true;
+}
+
+ParkingInsights RemoteDataSource::insights() const noexcept{
+    // 记录与预约都在手里了，洞察可以直接用与本地模式同一个引擎算，
+    // 不必再单独走 analytics.report（那份是给人看的文本结论）。
+    return ParkingInsightEngine::analyze(spots_, records_, bookings_);
 }
 
 std::optional<AllocationResult> RemoteDataSource::enterVehicle(
