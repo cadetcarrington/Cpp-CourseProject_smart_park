@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "PlateReviewDialog.h"
+#include "DanmakuOverlay.h"
 #include "network/ServerSession.h"
 #include "Theme.h"
 #include "NativeEffects.h"
@@ -36,6 +37,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QFont>
+#include <QGraphicsRectItem>
 #include <QGraphicsTextItem>
 #include <QGraphicsScene>
 #include <QGraphicsView>
@@ -81,6 +83,11 @@
 #include <vector>
 
 namespace{
+// QGraphicsItem::setData 角色号：车位 item 上存 spotId 与闪烁前外观。
+constexpr int kSpotIdRole = 0;
+constexpr int kOrigBrushRole = 1;
+constexpr int kOrigPenRole = 2;
+
 const QString kDefaultLayoutText =
     QString::fromUtf8(smartpark::ParkingLayout::garageDescription());
 
@@ -1176,6 +1183,13 @@ void MainWindow::buildUi(){
     shellLayout->addWidget(shellSplitter_);
     setCentralWidget(centralWidget);
 
+    // 大屏联动 overlay：业务事件弹幕自顶部掠过（远程模式事件驱动）。
+    danmaku_ = new smartpark_ui::DanmakuOverlay(centralWidget);
+    danmaku_->raise();
+    spotFlashTimer_.setInterval(160);
+    connect(&spotFlashTimer_, &QTimer::timeout, this,
+            &MainWindow::tickFlashes);
+
     auto *status = new QStatusBar(this);
     statusLabel_ = new QLabel(tr("就绪：可从左侧选择业务页面。"), status);
     statusLabel_->setObjectName("statusLabel");
@@ -2063,6 +2077,7 @@ void MainWindow::refreshScene(){
                             spot.bounds().width, spot.bounds().height);
         auto *item = scene_->addRect(bounds, QPen(QColor(48, 52, 56), 0.1),
                                      QBrush(stallFillColor(spot)));
+        item->setData(kSpotIdRole, QString::fromStdString(spot.identifier()));
         const QString plate = spot.parkedVehicle()
             ? QString::fromStdString(spot.parkedVehicle()->plateNumber())
             : QString();
@@ -2745,6 +2760,8 @@ void MainWindow::startRemoteSession(const QString &password){
     });
     connect(session_, &smartpark::ServerSession::eventReceived, this,
             [this](const QString &event, const QJsonObject &payload){
+        // 大屏联动：弹幕 + 关联车位闪烁（本地模式无事件流，仅远程模式生效）。
+        announceEvent(event, payload);
         if (event == QStringLiteral("parking.exited")){
             // 本端与 Gate 侧离场都会广播该事件：离场窗口通知只在这里发一次，
             // releaseVehicleRemote 的响应不再重复通知。
@@ -2765,8 +2782,119 @@ void MainWindow::startRemoteSession(const QString &password){
     session_->start(serverHost_, serverPort_, currentUser_, password);
 }
 
-void MainWindow::updateConnectionBadge(){
-    if (session_ == nullptr){
+// 大屏联动：把服务端事件转成顶部弹幕，并让关联车位高亮闪烁 2.6 秒。
+void MainWindow::announceEvent(const QString &event,
+                               const QJsonObject &payload){
+    if (danmaku_ == nullptr){
+        return;
+    }
+    const QString plate = payload.value(QStringLiteral("plate")).toString();
+    const QString spotId = payload.value(QStringLiteral("spotId")).toString();
+    if (event == QStringLiteral("parking.entered")){
+        danmaku_->push(QStringLiteral("🚗 %1 入场 · 车位 %2").arg(plate, spotId),
+                       QColor(72, 199, 142));
+        flashSpot(spotId);
+    } else if (event == QStringLiteral("parking.exited")){
+        danmaku_->push(QStringLiteral("🅿️ %1 离场 · 费用 ¥%2")
+                           .arg(plate).arg(payload.value(QStringLiteral("fee")).toDouble(),
+                                           0, 'f', 2),
+                       QColor(255, 179, 71));
+        flashSpot(spotId);
+    } else if (event == QStringLiteral("reservation.created")){
+        danmaku_->push(QStringLiteral("📅 %1 预约车位 %2").arg(plate, spotId),
+                       QColor(120, 172, 255));
+        flashSpot(spotId);
+    } else if (event == QStringLiteral("reservation.checkin")){
+        danmaku_->push(QStringLiteral("✅ %1 到场核销 · 车位 %2").arg(plate, spotId),
+                       QColor(72, 199, 142));
+        flashSpot(spotId);
+    } else if (event == QStringLiteral("reservation.cancelled")){
+        danmaku_->push(QStringLiteral("↩️ %1 取消预约").arg(plate),
+                       QColor(168, 176, 190));
+    } else if (event == QStringLiteral("payment.paid")){
+        const bool frictionless =
+            payload.value(QStringLiteral("frictionless")).toBool();
+        danmaku_->push(frictionless
+                           ? QStringLiteral("⚡ 无感支付 · %1 扣费 ¥%2")
+                                 .arg(plate)
+                                 .arg(payload.value(QStringLiteral("amount")).toDouble(),
+                                      0, 'f', 2)
+                           : QStringLiteral("💰 %1 缴费 ¥%2")
+                                 .arg(plate)
+                                 .arg(payload.value(QStringLiteral("amount")).toDouble(),
+                                      0, 'f', 2),
+                       QColor(255, 213, 79));
+    } else if (event == QStringLiteral("gate.replayed")){
+        danmaku_->push(QStringLiteral("📥 断线补报完成 %1 条")
+                           .arg(payload.value(QStringLiteral("applied")).toInt()),
+                       QColor(168, 176, 190));
+    }
+}
+
+void MainWindow::flashSpot(const QString &spotId){
+    if (spotId.isEmpty() || scene_ == nullptr){
+        return;
+    }
+    spotFlashUntilMs_.insert(spotId,
+                             QDateTime::currentMSecsSinceEpoch() + 2600);
+    if (!spotFlashTimer_.isActive()){
+        tickFlashes();
+    }
+}
+
+void MainWindow::tickFlashes(){
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    bool anyActive = false;
+    const QList<QGraphicsItem *> items = scene_ != nullptr
+        ? scene_->items() : QList<QGraphicsItem *>{};
+    for (QGraphicsItem *item : items){
+        const QString id = item->data(kSpotIdRole).toString();
+        if (id.isEmpty()){
+            continue;
+        }
+        const auto it = spotFlashUntilMs_.constFind(id);
+        if (it == spotFlashUntilMs_.constEnd()){
+            continue;
+        }
+        auto *rect = dynamic_cast<QGraphicsRectItem *>(item);
+        if (rect == nullptr){
+            spotFlashUntilMs_.erase(it);
+            continue;
+        }
+        if (now >= it.value()){
+            // 闪烁结束：恢复原外观并清除该车位的高亮状态。
+            const QVariant origBrush = item->data(kOrigBrushRole);
+            if (origBrush.isValid()){
+                rect->setBrush(origBrush.value<QBrush>());
+            }
+            const QVariant origPen = item->data(kOrigPenRole);
+            if (origPen.isValid()){
+                rect->setPen(origPen.value<QPen>());
+            }
+            item->setData(kOrigBrushRole, {});
+            item->setData(kOrigPenRole, {});
+            spotFlashUntilMs_.erase(it);
+            continue;
+        }
+        anyActive = true;
+        if (!item->data(kOrigBrushRole).isValid()){
+            item->setData(kOrigBrushRole, rect->brush());
+            item->setData(kOrigPenRole, rect->pen());
+        }
+        const bool on = (now / 160) % 2 == 0;
+        rect->setPen(QPen(on ? QColor(245, 166, 35) : QColor(48, 52, 56),
+                          on ? 0.55 : 0.1));
+        rect->setBrush(on ? QBrush(QColor(255, 213, 79))
+                          : item->data(kOrigBrushRole).value<QBrush>());
+    }
+    if (anyActive){
+        spotFlashTimer_.start();
+    } else{
+        spotFlashTimer_.stop();
+    }
+}
+
+void MainWindow::updateConnectionBadge(){    if (session_ == nullptr){
         return;
     }
     using State = smartpark::ServerSession::State;
@@ -2957,6 +3085,8 @@ void MainWindow::renderMapFromSnapshot(){
         const QString plate = spot.value(QStringLiteral("plate")).toString();
         auto *rect = scene_->addRect(bounds, QPen(QColor(48, 52, 56), 0.1),
                                      QBrush(remoteStatusFillColor(status, type)));
+        rect->setData(kSpotIdRole,
+                      spot.value(QStringLiteral("spotId")).toString());
         const QString vehicle = spot.value(QStringLiteral("vehicleType")).toString();
         rect->setToolTip(QString("%1 | %2 | %3 | %4 | %5")
                              .arg(spot.value(QStringLiteral("spotId")).toString())

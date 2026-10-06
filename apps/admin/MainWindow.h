@@ -35,6 +35,10 @@ namespace smartpark{
 class ServerSession;
 }
 
+namespace smartpark_ui{
+class DanmakuOverlay;
+}
+
 class MainWindow : public QMainWindow{
     Q_OBJECT
 
@@ -98,6 +102,10 @@ private:
     void updateConnectionBadge();
     void setRemoteActionsEnabled(bool enabled);
     void renderMapFromSnapshot();
+    // 大屏联动：事件弹幕 + 关联车位闪烁（docs/rest-api.md 事件广播的展示层）。
+    void announceEvent(const QString &event, const QJsonObject &payload);
+    void flashSpot(const QString &spotId);
+    void tickFlashes();
     void refreshOccupancyFromSnapshot();
     void refreshDashboardFromSnapshot();
     void applyRemoteInsights();
@@ -138,6 +146,9 @@ private:
 
     QGraphicsScene *scene_{nullptr};
     QGraphicsView *mapView_{nullptr};
+    smartpark_ui::DanmakuOverlay *danmaku_{nullptr};
+    QTimer spotFlashTimer_;
+    QHash<QString, qint64> spotFlashUntilMs_;
     QListWidget *navigation_{nullptr};
     QStackedWidget *pages_{nullptr};
     QSplitter *shellSplitter_{nullptr};

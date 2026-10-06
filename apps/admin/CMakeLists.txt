@@ -2,6 +2,7 @@ set(ADMIN_SOURCES
     main.cpp
     MainWindow.h
     MainWindow.cpp
+    DanmakuOverlay.h
     PlateReviewDialog.h
     PlateReviewDialog.cpp
     LoginDialog.h
