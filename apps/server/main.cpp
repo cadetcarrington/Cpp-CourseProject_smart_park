@@ -1032,6 +1032,11 @@ int main(int argc, char **argv){
         QStringLiteral("ws-port"),
         QStringLiteral("WebSocket 推送端口（0=禁用推送）"), QStringLiteral("port"),
         QStringLiteral("8081"));
+    const QCommandLineOption wsPublicUrlOption(
+        QStringLiteral("ws-public-url"),
+        QStringLiteral("对外暴露的 WebSocket 地址（如 wss://park.example.com/ws）。"
+                       "反代/HTTPS 部署时必填，否则前端会去连内部 ws 端口"),
+        QStringLiteral("url"));
     const QCommandLineOption advertiseOption(
         QStringLiteral("advertise"),
         QStringLiteral("对外广播的地址（IP 或域名）：启动横幅与二维码用它，"
@@ -1056,6 +1061,7 @@ int main(int argc, char **argv){
     parser.addOption(httpPortOption);
     parser.addOption(wsPortOption);
     parser.addOption(advertiseOption);
+    parser.addOption(wsPublicUrlOption);
     parser.addOption(webRootOption);
     parser.addOption(lprCommandOption);
     parser.addOption(siteNameOption);
@@ -1090,6 +1096,9 @@ int main(int argc, char **argv){
     }
     if (parser.isSet(siteNameOption)){
         restOptions.siteName = parser.value(siteNameOption);
+    }
+    if (parser.isSet(wsPublicUrlOption)){
+        restOptions.wsPublicUrl = parser.value(wsPublicUrlOption);
     }
     return runServer(app, port, databasePath, layoutPath, restOptions,
                      parser.value(advertiseOption));

@@ -49,6 +49,10 @@ public:
         QString lprCommand;
         // 点位名称：扫码后 H5 会显示「你正在 XXX 设置账户」。
         QString siteName{QStringLiteral("SmartPark 停车场")};
+        // 对外暴露的 WebSocket 地址（如 wss://park.example.com/ws）。
+        // 留空则按「请求 Host + wsPort」推导——直连时正确，反代/HTTPS 时需要覆盖，
+        // 否则浏览器会去连一个没放行的端口，或被混合内容策略拦掉。
+        QString wsPublicUrl;
     };
 
     // 启动时选定的默认点位票据 token（含在终端打印的二维码里）。
