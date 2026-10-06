@@ -19,6 +19,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkInterface>
+#include <QUdpSocket>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QTimer>
@@ -797,13 +798,85 @@ int runSelftest(){
     return failures == 0 ? 0 : 1;
 }
 
-QString localLanAddress(){
-    for (const QHostAddress &address :
-         QNetworkInterface::allAddresses()){
-        if (address.protocol() == QAbstractSocket::IPv4Protocol
-            && !address.isLoopback()){
-            return address.toString();
+// 虚拟接口前缀：这些地址对局域网里的其他设备没有意义。
+// 用它们对外广播，二维码就会指向一个手机永远连不上的地方。
+bool isVirtualInterfaceName(const QString &name){
+    static const char *const kPrefixes[] = {
+        "docker", "br-",   "veth",   "virbr", "vmnet", "bridge",
+        "tun",    "tap",   "utun",   "feth",  "fptun", "ppp",
+        "gif",    "stf",   "awdl",   "llw",   "anpi",  "ipsec",
+    };
+    const QString lower = name.toLower();
+    for (const char *prefix : kPrefixes){
+        if (lower.startsWith(QLatin1String(prefix))){
+            return true;
         }
+    }
+    return false;
+}
+
+// 内核会为「去往某地址」的出站流量挑选源地址。UDP 的 connect 不发包，
+// 只是让内核把选路结果填进来——这是拿默认路由所在地址最省事的办法，
+// 而且跨平台（Qt 没有暴露路由表 API）。
+QString defaultRouteAddress(){
+    QUdpSocket probe;
+    // 用一个不可能真的通信的地址，只为触发选路。
+    probe.connectToHost(QHostAddress(QStringLiteral("10.255.255.255")), 9);
+    if (probe.waitForConnected(200)){
+        const QHostAddress local = probe.localAddress();
+        if (!local.isNull() && !local.isLoopback()
+            && local.protocol() == QAbstractSocket::IPv4Protocol){
+            return local.toString();
+        }
+    }
+    return QString();
+}
+
+// 对外广播用的地址。按可靠性依次退化：
+//   1. --advertise 显式指定（部署时最可靠，多网卡机器建议直接给）
+//   2. 默认路由所在、且不是虚拟接口的地址
+//   3. 第一个非虚拟接口的地址
+//   4. 第一个非回环地址（旧行为）
+//   5. 127.0.0.1
+// 第 2 步要同时满足「是默认路由」和「非虚拟」：装了 VPN 的机器默认路由会指向
+// utun，单看选路结果反而会取到隧道地址。
+QString localLanAddress(const QString &advertised){
+    if (!advertised.isEmpty()){
+        return advertised;
+    }
+    const QString routeAddress = defaultRouteAddress();
+
+    QString firstNonVirtual;
+    QString firstAny;
+    for (const QNetworkInterface &iface : QNetworkInterface::allInterfaces()){
+        if ((iface.flags() & QNetworkInterface::IsUp) == 0
+            || (iface.flags() & QNetworkInterface::IsRunning) == 0){
+            continue;
+        }
+        const bool virtualIface = isVirtualInterfaceName(iface.name());
+        for (const QNetworkAddressEntry &entry : iface.addressEntries()){
+            const QHostAddress address = entry.ip();
+            if (address.protocol() != QAbstractSocket::IPv4Protocol
+                || address.isLoopback() || address.isLinkLocal()){
+                continue;
+            }
+            const QString text = address.toString();
+            if (!routeAddress.isEmpty() && text == routeAddress && !virtualIface){
+                return text;
+            }
+            if (!virtualIface && firstNonVirtual.isEmpty()){
+                firstNonVirtual = text;
+            }
+            if (firstAny.isEmpty()){
+                firstAny = text;
+            }
+        }
+    }
+    if (!firstNonVirtual.isEmpty()){
+        return firstNonVirtual;
+    }
+    if (!firstAny.isEmpty()){
+        return firstAny;
     }
     return QStringLiteral("127.0.0.1");
 }
@@ -834,7 +907,8 @@ void printAccessQr(const QString &url){
 
 int runServer(QCoreApplication &app, quint16 port, const QString &databasePath,
               const QString &layoutPath,
-              const smartpark::RestGateway::Options &restOptions){
+              const smartpark::RestGateway::Options &restOptions,
+              const QString &advertisedAddress){
     smartpark::Persistence persistence(databasePath);
     smartpark::AuditLogService audit(persistence.databaseManager().database());
     smartpark::UserStore users(databasePath);
@@ -894,7 +968,8 @@ int runServer(QCoreApplication &app, quint16 port, const QString &databasePath,
         return 1;
     }
     std::cout << "SmartPark server listening on port " << server.port()
-              << " | REST http://" << localLanAddress().toStdString() << ':'
+              << " | REST http://"
+              << localLanAddress(advertisedAddress).toStdString() << ':'
               << rest.httpPort() << "/api/v1/meta"
               << " | ws " << (rest.wsPort() != 0
                                   ? std::to_string(rest.wsPort())
@@ -906,7 +981,8 @@ int runServer(QCoreApplication &app, quint16 port, const QString &databasePath,
         // 未登录则先注册/登录再绑定车牌。
         const QString token = rest.siteToken();
         const QString base = QStringLiteral("http://%1:%2/")
-                                 .arg(localLanAddress()).arg(rest.httpPort());
+                                 .arg(localLanAddress(advertisedAddress))
+                                 .arg(rest.httpPort());
         printAccessQr(token.isEmpty()
                           ? base
                           : base + QStringLiteral("#/claim?t=") + token);
@@ -956,6 +1032,11 @@ int main(int argc, char **argv){
         QStringLiteral("ws-port"),
         QStringLiteral("WebSocket 推送端口（0=禁用推送）"), QStringLiteral("port"),
         QStringLiteral("8081"));
+    const QCommandLineOption advertiseOption(
+        QStringLiteral("advertise"),
+        QStringLiteral("对外广播的地址（IP 或域名）：启动横幅与二维码用它，"
+                       "多网卡/VPN/Docker 机器建议显式指定"),
+        QStringLiteral("host"));
     const QCommandLineOption webRootOption(
         QStringLiteral("web-root"),
         QStringLiteral("H5 静态页目录（不传则不伺服网页）"), QStringLiteral("dir"));
@@ -974,6 +1055,7 @@ int main(int argc, char **argv){
     parser.addOption(layoutOption);
     parser.addOption(httpPortOption);
     parser.addOption(wsPortOption);
+    parser.addOption(advertiseOption);
     parser.addOption(webRootOption);
     parser.addOption(lprCommandOption);
     parser.addOption(siteNameOption);
@@ -1009,5 +1091,6 @@ int main(int argc, char **argv){
     if (parser.isSet(siteNameOption)){
         restOptions.siteName = parser.value(siteNameOption);
     }
-    return runServer(app, port, databasePath, layoutPath, restOptions);
+    return runServer(app, port, databasePath, layoutPath, restOptions,
+                     parser.value(advertiseOption));
 }
