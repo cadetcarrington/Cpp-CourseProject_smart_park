@@ -1,3 +1,4 @@
+#include <QNetworkProxy>
 #include <QApplication>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
@@ -56,6 +57,14 @@ bool remoteLogin(const QString &host, quint16 port,
 
 int main(int argc, char *argv[]){
     QApplication app(argc, argv);
+
+    // 这是局域网服务/客户端，不该走系统代理。但 Qt 会自动读取 all_proxy /
+    // http_proxy 等环境变量并套用到**所有** socket——包括监听 socket，
+    // 于是 listen() 会直接失败："proxy type is invalid for this operation"。
+    // 集群与 CI 环境常带这些变量（s1 上 all_proxy=socks5h://...），
+    // 所以显式关掉，避免部署时服务端起不来。
+    QNetworkProxy::setApplicationProxy(QNetworkProxy::NoProxy);
+
     QApplication::setApplicationName(QStringLiteral("SmartPark Admin"));
     QApplication::setOrganizationName(QStringLiteral("SmartPark"));
     QApplication::setOrganizationDomain(QStringLiteral("smartpark.local"));
