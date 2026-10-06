@@ -2,6 +2,8 @@
 #include "core/service/AuditLogService.h"
 #include "core/service/ParkingService.h"
 #include "core/service/UserStore.h"
+#include "network/EventHub.h"
+#include "network/RestGateway.h"
 #include "network/SmartParkTcpServer.h"
 #include "network/TcpClient.h"
 
@@ -9,19 +11,128 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QDebug>
+#include <QEventLoop>
 #include <QFile>
+#include <QHostAddress>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
+#include <QNetworkInterface>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QTimer>
 #include <QTemporaryDir>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QWebSocket>
+#include <QUrl>
+
+#include <qrcodegen.hpp>
 
 #include <iostream>
 #include <memory>
 
 namespace{
 constexpr int kSelftestTimeoutMs = 5000;
+
+// 自测用同步 HTTP 探针：HTTP/1.1 + Connection: close，收到响应即断开。
+struct HttpReply{
+    int status{0};
+    QByteArray raw;
+    QJsonObject json;
+};
+
+class HttpProbe{
+public:
+    explicit HttpProbe(quint16 port) : port_(port){}
+
+    HttpReply send(const QString &method, const QString &path,
+                   const QJsonObject &body = {},
+                   const QString &bearer = {}) const{
+        HttpReply reply;
+        QTcpSocket socket;
+        socket.connectToHost(QHostAddress::LocalHost, port_);
+        if (!socket.waitForConnected(3000)){
+            return reply;
+        }
+        const QByteArray payload = body.isEmpty()
+            ? QByteArray{}
+            : QJsonDocument(body).toJson(QJsonDocument::Compact);
+        QByteArray request;
+        request += method.toUtf8();
+        request += ' ';
+        request += path.toUtf8();
+        request += " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n";
+        if (!bearer.isEmpty()){
+            request += "Authorization: Bearer ";
+            request += bearer.toUtf8();
+            request += "\r\n";
+        }
+        if (!payload.isEmpty()){
+            request += "Content-Type: application/json\r\n";
+        }
+        request += "Content-Length: ";
+        request += QByteArray::number(payload.size());
+        request += "\r\n\r\n";
+        request += payload;
+        socket.write(request);
+        // QHttpServer 默认 keep-alive，不等断开：按 Content-Length 判定
+        // 响应完整即返回；超时/断开作为兜底退出。
+        QByteArray received;
+        QEventLoop loop;
+        QTimer::singleShot(kSelftestTimeoutMs, &loop, &QEventLoop::quit);
+        QObject::connect(&socket, &QTcpSocket::disconnected,
+                         &loop, &QEventLoop::quit);
+        QObject::connect(&socket, &QTcpSocket::readyRead, &loop, [&]{
+            received += socket.readAll();
+            const int headerEnd = received.indexOf("\r\n\r\n");
+            if (headerEnd < 0){
+                return;
+            }
+            qint64 contentLength = -1;
+            const QList<QByteArray> headerLines =
+                received.left(headerEnd).split('\n');
+            for (const QByteArray &line : headerLines){
+                const QByteArray trimmed = line.trimmed();
+                if (trimmed.toLower().startsWith("content-length:")){
+                    contentLength = trimmed.mid(15).trimmed().toLongLong();
+                }
+            }
+            const qint64 bodySize =
+                static_cast<qint64>(received.size()) - (headerEnd + 4);
+            if (contentLength >= 0 && bodySize >= contentLength){
+                loop.quit();
+            }
+        });
+        loop.exec();
+        socket.close();
+        reply.raw = received;
+        const int headerEnd = reply.raw.indexOf("\r\n\r\n");
+        if (headerEnd < 0){
+            return reply;
+        }
+        const QByteArray statusLine =
+            reply.raw.left(headerEnd).split('\n').value(0).trimmed();
+        if (statusLine.startsWith("HTTP/")){
+            reply.status = statusLine.mid(9, 3).toInt();
+        }
+        reply.json = QJsonDocument::fromJson(
+            reply.raw.mid(headerEnd + 4)).object();
+        return reply;
+    }
+
+private:
+    quint16 port_;
+};
+
+quint16 freePort(){
+    QTcpServer probe;
+    probe.listen(QHostAddress::LocalHost, 0);
+    const quint16 port = probe.serverPort();
+    probe.close();
+    return port;
+}
+
 
 int runSelftest(){
     // 每次运行使用唯一的临时目录：重复执行 / 并行 CTest 都从干净状态开始。
@@ -287,6 +398,8 @@ int runSelftest(){
     QProcess daemon;
     daemon.start(QCoreApplication::applicationFilePath(),
                  {QStringLiteral("--port"), QStringLiteral("0"),
+                  QStringLiteral("--http-port"), QStringLiteral("0"),
+                  QStringLiteral("--ws-port"), QStringLiteral("0"),
                   QStringLiteral("--db"), directory.filePath(QStringLiteral("daemon.db"))});
     check(daemon.waitForStarted(5000), "daemon process starts");
     const bool announced = daemon.waitForReadyRead(5000);
@@ -318,6 +431,357 @@ int runSelftest(){
         daemon.waitForFinished(3000);
     }
 
+    // ---- REST 网关（docs/rest-api.md）：注册/登录/查询/缴费/预约/指引/WS ----
+    smartpark::RestGateway::Options restOptions;
+    restOptions.httpPort = freePort();
+    restOptions.wsPort = freePort();
+    smartpark::EventHub hub;
+    server.setEventHub(&hub);
+    smartpark::RestGateway rest(service, users, &audit,
+                                persistence.databaseManager().database(),
+                                &hub, restOptions);
+    check(rest.listen(), "rest gateway listens");
+    const HttpProbe http(rest.httpPort());
+    int restFailures = 0;
+    auto restCheck = [&](bool condition, const std::string &what,
+                         const HttpReply &reply){
+        std::cout << (condition ? "  ok  " : "  FAIL ") << what << '\n';
+        if (!condition){
+            std::cout << "       status=" << reply.status
+                      << " body=" << reply.raw.left(300).toStdString() << '\n';
+            ++restFailures;
+        }
+    };
+    const QString plateA = QStringLiteral("晋R10001");
+    const QString plateB = QStringLiteral("晋R10002");
+    const auto enc = [](const QString &text){
+        return QString::fromUtf8(QUrl::toPercentEncoding(text));
+    };
+
+    const auto meta = http.send(QStringLiteral("GET"),
+                                QStringLiteral("/api/v1/meta"));
+    restCheck(meta.status == 200
+                  && meta.json.value(QStringLiteral("paymentMode")).toString()
+                         == QStringLiteral("mock"),
+              "meta advertises mock payment mode", meta);
+
+    const auto registered = http.send(QStringLiteral("POST"),
+                                      QStringLiteral("/api/v1/auth/register"),
+                                      QJsonObject{
+                                          {QStringLiteral("username"),
+                                           QStringLiteral("alice")},
+                                          {QStringLiteral("password"),
+                                           QStringLiteral("secret1")}});
+    restCheck(registered.status == 201, "register returns 201", registered);
+    const auto duplicate = http.send(QStringLiteral("POST"),
+                                     QStringLiteral("/api/v1/auth/register"),
+                                     QJsonObject{
+                                         {QStringLiteral("username"),
+                                          QStringLiteral("alice")},
+                                         {QStringLiteral("password"),
+                                          QStringLiteral("secret1")}});
+    restCheck(duplicate.status == 409, "duplicate register is rejected",
+              duplicate);
+
+    const auto badLogin = http.send(QStringLiteral("POST"),
+                                    QStringLiteral("/api/v1/auth/login"),
+                                    QJsonObject{
+                                        {QStringLiteral("username"),
+                                         QStringLiteral("alice")},
+                                        {QStringLiteral("password"),
+                                         QStringLiteral("wrong!!")}});
+    restCheck(badLogin.status == 401
+                  && badLogin.json.value(QStringLiteral("code")).toString()
+                         == QStringLiteral("AUTH_FAILED"),
+              "wrong password answers AUTH_FAILED without leaking the cause",
+              badLogin);
+
+    const auto aliceLogin = http.send(
+        QStringLiteral("POST"), QStringLiteral("/api/v1/auth/login"),
+        QJsonObject{{QStringLiteral("username"), QStringLiteral("alice")},
+                    {QStringLiteral("password"), QStringLiteral("secret1")}});
+    restCheck(aliceLogin.status == 200
+                  && aliceLogin.json.value(QStringLiteral("user")).toObject()
+                         .value(QStringLiteral("role")).toString()
+                         == QStringLiteral("user"),
+              "alice logs in with role user", aliceLogin);
+    const QString aliceToken = aliceLogin.json.value(QStringLiteral("token"))
+                                   .toString();
+
+    const auto restAnonymous = http.send(
+        QStringLiteral("GET"), QStringLiteral("/api/v1/parking/status"));
+    restCheck(restAnonymous.status == 401,
+              "anonymous status request is rejected", restAnonymous);
+
+    const auto me = http.send(QStringLiteral("GET"), QStringLiteral("/api/v1/me"),
+                              {}, aliceToken);
+    restCheck(me.status == 200
+                  && me.json.value(QStringLiteral("username")).toString()
+                         == QStringLiteral("alice"),
+              "me resolves the bearer token", me);
+
+    const auto restStatus = http.send(
+        QStringLiteral("GET"), QStringLiteral("/api/v1/parking/status"), {},
+        aliceToken);
+    restCheck(restStatus.status == 200
+                  && restStatus.json.value(QStringLiteral("capacity")).toInt()
+                         == 60,
+              "rest parking.status serves capacity", restStatus);
+
+    const auto restEnter = http.send(
+        QStringLiteral("POST"), QStringLiteral("/api/v1/parking/enter"),
+        QJsonObject{{QStringLiteral("plate"), plateA},
+                    {QStringLiteral("vehicleType"), QStringLiteral("car")}},
+        aliceToken);
+    restCheck(restEnter.status == 200
+                  && !restEnter.json.value(QStringLiteral("spotId"))
+                          .toString().isEmpty(),
+              "rest parking.enter allocates a spot", restEnter);
+
+    const auto active = http.send(
+        QStringLiteral("GET"),
+        QStringLiteral("/api/v1/records/%1/active").arg(enc(plateA)), {},
+        aliceToken);
+    restCheck(active.status == 200
+                  && std::abs(active.json.value(QStringLiteral("estimateFee"))
+                                  .toDouble()) < 1e-9,
+              "active record estimates zero fee within free period", active);
+
+    const auto orderCreate = http.send(
+        QStringLiteral("POST"), QStringLiteral("/api/v1/payments/orders"),
+        QJsonObject{{QStringLiteral("kind"), QStringLiteral("parking_fee")},
+                    {QStringLiteral("plate"), plateA}},
+        aliceToken);
+    restCheck(orderCreate.status == 201
+                  && orderCreate.json.value(QStringLiteral("status")).toString()
+                         == QStringLiteral("pending"),
+              "parking_fee order starts pending", orderCreate);
+    const QString orderId =
+        orderCreate.json.value(QStringLiteral("orderId")).toString();
+
+    const auto orderConfirm = http.send(
+        QStringLiteral("POST"),
+        QStringLiteral("/api/v1/payments/orders/%1/confirm").arg(orderId),
+        QJsonObject{}, aliceToken);
+    restCheck(orderConfirm.status == 200
+                  && orderConfirm.json.value(QStringLiteral("order"))
+                         .toObject()
+                         .value(QStringLiteral("status")).toString()
+                         == QStringLiteral("paid")
+                  && orderConfirm.json.value(QStringLiteral("leave"))
+                         .toObject()
+                         .value(QStringLiteral("paidByOrder")).toBool()
+                  && std::abs(orderConfirm.json.value(QStringLiteral("leave"))
+                                  .toObject()
+                                  .value(QStringLiteral("fee"))
+                                  .toDouble()) < 1e-9,
+              "confirm pays the order and settles the exit", orderConfirm);
+
+    const auto idempotent = http.send(
+        QStringLiteral("POST"),
+        QStringLiteral("/api/v1/payments/orders/%1/confirm").arg(orderId),
+        QJsonObject{}, aliceToken);
+    restCheck(idempotent.status == 200
+                  && idempotent.json.value(QStringLiteral("status")).toString()
+                         == QStringLiteral("paid"),
+              "repeated confirm is idempotent", idempotent);
+
+    const auto closedRecords = http.send(
+        QStringLiteral("GET"),
+        QStringLiteral("/api/v1/records?plate=%1&state=closed").arg(enc(plateA)),
+        {}, aliceToken);
+    restCheck(closedRecords.status == 200
+                  && closedRecords.json.value(QStringLiteral("total")).toInt()
+                         == 1,
+              "closed record is queryable after paid exit", closedRecords);
+
+    const qint64 restStartMs = QDateTime::currentMSecsSinceEpoch()
+        + 60 * 60 * 1000;
+    const auto reservationCreate = http.send(
+        QStringLiteral("POST"), QStringLiteral("/api/v1/reservations"),
+        QJsonObject{{QStringLiteral("plate"), plateB},
+                    {QStringLiteral("vehicleType"), QStringLiteral("car")},
+                    {QStringLiteral("startMs"), restStartMs},
+                    {QStringLiteral("durationMin"), 120}},
+        aliceToken);
+    restCheck(reservationCreate.status == 201
+                  && reservationCreate.json.value(QStringLiteral("entryRoute"))
+                         .toObject()
+                         .value(QStringLiteral("points")).isArray()
+                  && reservationCreate.json.value(QStringLiteral("order"))
+                         .toObject()
+                         .value(QStringLiteral("status")).toString()
+                         == QStringLiteral("paid")
+                  && std::abs(reservationCreate.json.value(QStringLiteral("deposit"))
+                                  .toDouble() - 20.0) < 1e-9,
+              "reservation create returns routes and a paid deposit order",
+              reservationCreate);
+    const QString reservationId =
+        reservationCreate.json.value(QStringLiteral("reservationId")).toString();
+
+    const auto openList = http.send(
+        QStringLiteral("GET"),
+        QStringLiteral("/api/v1/reservations?plate=%1&state=open")
+            .arg(enc(plateB)),
+        {}, aliceToken);
+    restCheck(openList.status == 200
+                  && openList.json.value(QStringLiteral("total")).toInt() == 1,
+              "open reservation list finds the new booking", openList);
+
+    const auto guide = http.send(QStringLiteral("GET"),
+                                 QStringLiteral("/api/v1/guide/%1")
+                                     .arg(enc(plateB)),
+                                 {}, aliceToken);
+    restCheck(guide.status == 200
+                  && guide.json.value(QStringLiteral("source")).toString()
+                         == QStringLiteral("reservation"),
+              "guide serves the expected route for a reservation", guide);
+
+    const auto cancel = http.send(
+        QStringLiteral("POST"),
+        QStringLiteral("/api/v1/reservations/%1/cancel").arg(reservationId),
+        QJsonObject{}, aliceToken);
+    const auto afterCancel = http.send(
+        QStringLiteral("GET"),
+        QStringLiteral("/api/v1/reservations?plate=%1&state=open")
+            .arg(enc(plateB)),
+        {}, aliceToken);
+    restCheck(cancel.status == 200
+                  && afterCancel.json.value(QStringLiteral("total")).toInt()
+                         == 0,
+              "cancel releases the reservation", cancel);
+
+    const auto missingOrder = http.send(
+        QStringLiteral("GET"),
+        QStringLiteral("/api/v1/payments/orders/po_missing"), {}, aliceToken);
+    restCheck(missingOrder.status == 404, "unknown order answers 404",
+              missingOrder);
+
+    const auto logout = http.send(QStringLiteral("POST"),
+                                  QStringLiteral("/api/v1/auth/logout"),
+                                  QJsonObject{}, aliceToken);
+    const auto afterLogout = http.send(QStringLiteral("GET"),
+                                       QStringLiteral("/api/v1/me"), {},
+                                       aliceToken);
+    restCheck(logout.status == 200 && afterLogout.status == 401,
+              "logout revokes the token", logout);
+
+    // WebSocket：认证后应实时收到 REST 侧入场的广播事件。
+    const auto wsLogin = http.send(
+        QStringLiteral("POST"), QStringLiteral("/api/v1/auth/login"),
+        QJsonObject{{QStringLiteral("username"), QStringLiteral("alice")},
+                    {QStringLiteral("password"), QStringLiteral("secret1")}});
+    const QString wsToken =
+        wsLogin.json.value(QStringLiteral("token")).toString();
+    QWebSocket wsClient;
+    QEventLoop wsAuthLoop;
+    QEventLoop wsEventLoop;
+    int wsPhase = 0;                 // 1 = 等 auth 应答；2 = 等入场事件
+    QEventLoop *wsActiveLoop = nullptr;
+    bool wsAuthed = false;
+    bool wsSawEntered = false;
+    QTimer::singleShot(5000, &wsAuthLoop, &QEventLoop::quit);
+    QTimer::singleShot(5000, &wsEventLoop, &QEventLoop::quit);
+    QObject::connect(&wsClient, &QWebSocket::connected, &wsAuthLoop, [&]{
+        wsClient.sendTextMessage(QString::fromUtf8(QJsonDocument(
+            QJsonObject{{QStringLiteral("type"), QStringLiteral("auth")},
+                        {QStringLiteral("token"), wsToken}})
+                         .toJson(QJsonDocument::Compact)));
+    });
+    QObject::connect(&wsClient, &QWebSocket::textMessageReceived, &wsAuthLoop,
+                     [&](const QString &message){
+        const QJsonObject frame =
+            QJsonDocument::fromJson(message.toUtf8()).object();
+        if (frame.value(QStringLiteral("type")).toString()
+                == QStringLiteral("auth")
+            && frame.value(QStringLiteral("ok")).toBool()){
+            wsAuthed = true;
+        } else if (frame.value(QStringLiteral("event")).toString()
+                       == QStringLiteral("parking.entered")){
+            wsSawEntered = true;
+        }
+        if (wsActiveLoop != nullptr
+            && ((wsPhase == 1 && wsAuthed) || (wsPhase == 2 && wsSawEntered))){
+            wsActiveLoop->quit();
+        }
+    });
+    wsClient.open(QUrl(QStringLiteral("ws://127.0.0.1:%1/ws").arg(rest.wsPort())));
+    wsPhase = 1;
+    wsActiveLoop = &wsAuthLoop;
+    wsAuthLoop.exec();
+    check(wsAuthed, "websocket authenticates with bearer token");
+    if (wsAuthed){
+        const auto wsTrigger = http.send(
+            QStringLiteral("POST"), QStringLiteral("/api/v1/parking/enter"),
+            QJsonObject{{QStringLiteral("plate"), QStringLiteral("晋R10003")},
+                        {QStringLiteral("vehicleType"), QStringLiteral("car")}},
+            wsToken);
+        wsPhase = 2;
+        wsActiveLoop = &wsEventLoop;
+        wsEventLoop.exec();
+        check(wsSawEntered && wsTrigger.status == 200,
+              "websocket receives parking.entered broadcast from rest action");
+    }
+    wsClient.close();
+
+    // ---- M2/M3：二维码 / 无感支付 / 拍照识牌 mock / 订单列表 ----
+    const auto qr = http.send(QStringLiteral("GET"),
+                              QStringLiteral("/api/v1/qr?text=http%3A%2F%2Fdemo"));
+    restCheck(qr.status == 200 && qr.raw.contains("<svg")
+                  && qr.raw.contains("image/svg+xml"),
+              "qr endpoint renders an svg", qr);
+
+    const auto lpr = http.send(
+        QStringLiteral("POST"), QStringLiteral("/api/v1/lpr/recognize"),
+        QJsonObject{{QStringLiteral("image"),
+                     QString::fromLatin1(
+                         QByteArray("demo-image-bytes").toBase64())}},
+        wsToken);
+    restCheck(lpr.status == 200
+                  && lpr.json.value(QStringLiteral("source")).toString()
+                         == QStringLiteral("mock")
+                  && lpr.json.value(QStringLiteral("plate")).toString().size() == 7,
+              "lpr mock returns a stable demo plate", lpr);
+
+    // 无感支付：开通 -> REST 入场 -> REST 离场 -> 自动生成已支付订单。
+    const QString frPlate = QStringLiteral("晋R30001");
+    const auto frOn = http.send(
+        QStringLiteral("POST"), QStringLiteral("/api/v1/me/frictionless"),
+        QJsonObject{{QStringLiteral("plate"), frPlate},
+                    {QStringLiteral("enabled"), true}},
+        wsToken);
+    const auto frEnter = http.send(
+        QStringLiteral("POST"), QStringLiteral("/api/v1/parking/enter"),
+        QJsonObject{{QStringLiteral("plate"), frPlate},
+                    {QStringLiteral("vehicleType"), QStringLiteral("car")}},
+        wsToken);
+    check(frOn.status == 200 && frEnter.status == 200,
+          "frictionless plate enabled and car entered");
+    const auto frLeave = http.send(
+        QStringLiteral("POST"), QStringLiteral("/api/v1/parking/leave"),
+        QJsonObject{{QStringLiteral("plate"), frPlate}},
+        wsToken);
+    const auto frOrders = http.send(
+        QStringLiteral("GET"),
+        QStringLiteral("/api/v1/payments/orders?plate=%1&status=paid")
+            .arg(enc(frPlate)),
+        {}, wsToken);
+    restCheck(frLeave.status == 200 && frOrders.status == 200
+                  && frOrders.json.value(QStringLiteral("total")).toInt() == 1
+                  && frOrders.json.value(QStringLiteral("orders")).toArray()
+                         .at(0).toObject()
+                         .value(QStringLiteral("amount")).toDouble() < 1e-9,
+              "frictionless exit auto-charges (zero fee in free period)",
+              frOrders);
+    const auto frOff = http.send(
+        QStringLiteral("POST"), QStringLiteral("/api/v1/me/frictionless"),
+        QJsonObject{{QStringLiteral("plate"), frPlate},
+                    {QStringLiteral("enabled"), false}},
+        wsToken);
+    restCheck(frOff.status == 200, "frictionless can be disabled", frOff);
+
+    failures += restFailures;
+
     // 审计链完整性
     const auto auditResult = audit.verifyChain();
     check(auditResult.ok, "audit hash chain stays consistent");
@@ -332,8 +796,44 @@ int runSelftest(){
     return failures == 0 ? 0 : 1;
 }
 
+QString localLanAddress(){
+    for (const QHostAddress &address :
+         QNetworkInterface::allAddresses()){
+        if (address.protocol() == QAbstractSocket::IPv4Protocol
+            && !address.isLoopback()){
+            return address.toString();
+        }
+    }
+    return QStringLiteral("127.0.0.1");
+}
+
+// 启动横幅打印 H5 接入地址的 ASCII 二维码：答辩现场手机直接扫。
+void printAccessQr(const QString &url){
+    const qrcodegen::QrCode code =
+        qrcodegen::QrCode::encodeText(url.toUtf8().constData(),
+                                      qrcodegen::QrCode::Ecc::MEDIUM);
+    const int size = code.getSize();
+    std::cout << "\nScan to open SmartPark H5: " << url.toStdString() << "\n";
+    for (int y = -2; y < size + 2; y += 2){
+        std::cout << "  ";
+        for (int x = -2; x < size + 2; ++x){
+            // 两行并一行：终端字符高约为宽的两倍，保持二维码比例。
+            const bool dark = x >= 0 && x < size && y >= 0 && y < size
+                && code.getModule(x, y);
+            const bool darkNext = x >= 0 && x < size && y + 1 >= 0
+                && y + 1 < size && code.getModule(x, y + 1);
+            std::cout << (dark && darkNext ? "\u2588\u2588"
+                          : dark ? "\u2580\u2580"
+                                 : darkNext ? "\u2584\u2584" : "  ");
+        }
+        std::cout << '\n';
+    }
+    std::cout << std::flush;
+}
+
 int runServer(QCoreApplication &app, quint16 port, const QString &databasePath,
-              const QString &layoutPath){
+              const QString &layoutPath,
+              const smartpark::RestGateway::Options &restOptions){
     smartpark::Persistence persistence(databasePath);
     smartpark::AuditLogService audit(persistence.databaseManager().database());
     smartpark::UserStore users(databasePath);
@@ -380,9 +880,43 @@ int runServer(QCoreApplication &app, quint16 port, const QString &databasePath,
                   << server.lastError().toStdString() << '\n';
         return 1;
     }
+    // REST/WS 网关与 TCP 服务端同进程共享 ParkingService；事件经 EventHub
+    // 同步广播到两条入口。TCP 9527 协议不变，旧终端零改动。
+    smartpark::EventHub hub;
+    server.setEventHub(&hub);
+    smartpark::RestGateway rest(*service, users, &audit,
+                                persistence.databaseManager().database(),
+                                &hub, restOptions);
+    if (!rest.listen()){
+        std::cerr << "rest gateway listen failed: "
+                  << rest.lastError().toStdString() << '\n';
+        return 1;
+    }
     std::cout << "SmartPark server listening on port " << server.port()
+              << " | REST http://" << localLanAddress().toStdString() << ':'
+              << rest.httpPort() << "/api/v1/meta"
+              << " | ws " << (rest.wsPort() != 0
+                                  ? std::to_string(rest.wsPort())
+                                  : std::string("disabled"))
               << " | db: " << databasePath.toStdString()
               << " | spots: " << service->spots().size() << '\n' << std::flush;
+    if (restOptions.httpPort != 0){
+        // 扫码进入「设置账户」流程：票随码走，H5 拿到后先确认扫的是哪个点位，
+        // 未登录则先注册/登录再绑定车牌。
+        const QString token = rest.siteToken();
+        const QString base = QStringLiteral("http://%1:%2/")
+                                 .arg(localLanAddress()).arg(rest.httpPort());
+        printAccessQr(token.isEmpty()
+                          ? base
+                          : base + QStringLiteral("#/claim?t=") + token);
+    }
+    if (!restOptions.lprCommand.isEmpty()){
+        std::cout << "LPR backend: script mode (" << restOptions.lprCommand.toStdString()
+                  << ")\n" << std::flush;
+    } else {
+        std::cout << "LPR backend: mock (--lpr-command to enable script mode)\n"
+                  << std::flush;
+    }
     return app.exec();
 }
 } // namespace
@@ -405,11 +939,35 @@ int main(int argc, char **argv){
     const QCommandLineOption layoutOption(QStringLiteral("layout"),
                                           QStringLiteral("布局文件（缺省内置 60 位布局）"),
                                           QStringLiteral("path"));
+    const QCommandLineOption httpPortOption(
+        QStringLiteral("http-port"),
+        QStringLiteral("REST 网关监听端口（0=系统随机分配）"), QStringLiteral("port"),
+        QStringLiteral("8080"));
+    const QCommandLineOption wsPortOption(
+        QStringLiteral("ws-port"),
+        QStringLiteral("WebSocket 推送端口（0=禁用推送）"), QStringLiteral("port"),
+        QStringLiteral("8081"));
+    const QCommandLineOption webRootOption(
+        QStringLiteral("web-root"),
+        QStringLiteral("H5 静态页目录（不传则不伺服网页）"), QStringLiteral("dir"));
+    const QCommandLineOption siteNameOption(
+        QStringLiteral("site-name"),
+        QStringLiteral("点位名称（扫码后 H5 显示，用于区分多个车场）"),
+        QStringLiteral("name"), QStringLiteral("SmartPark 停车场"));
+    const QCommandLineOption lprCommandOption(
+        QStringLiteral("lpr-command"),
+        QStringLiteral("拍照识牌命令模板（%1 替换为临时图片路径；不传用 mock）"),
+        QStringLiteral("command"));
     const QCommandLineOption selftestOption(QStringLiteral("selftest"),
                                             QStringLiteral("运行进程内端到端自测并退出"));
     parser.addOption(portOption);
     parser.addOption(dbOption);
     parser.addOption(layoutOption);
+    parser.addOption(httpPortOption);
+    parser.addOption(wsPortOption);
+    parser.addOption(webRootOption);
+    parser.addOption(lprCommandOption);
+    parser.addOption(siteNameOption);
     parser.addOption(selftestOption);
     parser.process(app);
 
@@ -428,5 +986,19 @@ int main(int argc, char **argv){
         ? parser.value(layoutOption)
         : QString();
 
-    return runServer(app, port, databasePath, layoutPath);
+    smartpark::RestGateway::Options restOptions;
+    restOptions.httpPort =
+        static_cast<quint16>(parser.value(httpPortOption).toUShort());
+    restOptions.wsPort =
+        static_cast<quint16>(parser.value(wsPortOption).toUShort());
+    if (parser.isSet(webRootOption)){
+        restOptions.webRoot = parser.value(webRootOption);
+    }
+    if (parser.isSet(lprCommandOption)){
+        restOptions.lprCommand = parser.value(lprCommandOption);
+    }
+    if (parser.isSet(siteNameOption)){
+        restOptions.siteName = parser.value(siteNameOption);
+    }
+    return runServer(app, port, databasePath, layoutPath, restOptions);
 }

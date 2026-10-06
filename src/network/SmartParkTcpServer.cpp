@@ -5,6 +5,7 @@
 #include "core/service/ParkingService.h"
 #include "core/service/ReservationService.h"
 #include "core/service/UserStore.h"
+#include "network/EventHub.h"
 #include "network/Protocol.h"
 
 #include <QDateTime>
@@ -68,6 +69,10 @@ quint16 SmartParkTcpServer::port() const{
 
 const QString &SmartParkTcpServer::lastError() const noexcept{
     return lastError_;
+}
+
+void SmartParkTcpServer::setEventHub(EventHub *hub) noexcept{
+    hub_ = hub;
 }
 
 void SmartParkTcpServer::timerEvent(QTimerEvent *event){
@@ -216,6 +221,9 @@ void SmartParkTcpServer::broadcastEvent(const QString &event,
         if (it.value().authenticated){
             it.key()->write(frame);
         }
+    }
+    if (hub_ != nullptr){
+        hub_->publish(event, payload);
     }
 }
 

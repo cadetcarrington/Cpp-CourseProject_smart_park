@@ -15,6 +15,7 @@ namespace smartpark{
 class ParkingService;
 class AuditLogService;
 class UserStore;
+class EventHub;
 
 // SmartPark TCP 服务端（协议 v1，见 docs/tcp-protocol.md）。
 // 单线程事件驱动：所有会话共享一个 ParkingService，避免多线程锁库。
@@ -36,6 +37,8 @@ public:
     bool listen();
     quint16 port() const;
     const QString &lastError() const noexcept;
+    // 设置事件枢纽后，广播事件同步发布给 REST/WS 订阅方；不影响 TCP 行为。
+    void setEventHub(EventHub *hub) noexcept;
 
 protected:
     void timerEvent(QTimerEvent *event) override;
@@ -81,6 +84,7 @@ private:
     ParkingService *service_;
     AuditLogService *audit_;
     UserStore *users_;
+    EventHub *hub_{nullptr};
     Options options_;
     class QTcpServer *server_{nullptr};
     QHash<QTcpSocket *, Session> sessions_;
