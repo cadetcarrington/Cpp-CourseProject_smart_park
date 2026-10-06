@@ -125,8 +125,12 @@ sudo -u smartpark /opt/smartpark/bin/smartpark_server \
     --db /opt/smartpark/data/smartpark.db \
     --layout /opt/smartpark/garage-6f.txt \
     --web-root /opt/smartpark/web \
+    --advertise 10.0.0.5 \
     --site-name "XX 停车场"
 ```
+
+> `--advertise` 建议显式给：多网卡 / VPN / Docker 环境下自动选取虽然会跳过虚拟
+> 接口，但把对外地址写死最不容易出错。详见 10.3。
 
 启动后会打印局域网访问地址、**带点位票据的二维码**，以及数据库与车位数量：
 
@@ -144,6 +148,7 @@ Scan to open SmartPark H5: http://10.0.0.5:8080/#/claim?t=<票据>
 | `--db` | SQLite 路径；不传则用 `~/.local/share/smartpark/smartpark.db` | — |
 | `--layout` | 布局文件；不传用内置 60 车位 | — |
 | `--web-root` | H5 静态目录；**不传就不伺服网页** | — |
+| `--advertise` | 对外广播的地址（IP 或域名），横幅与二维码用它 | 自动选取 |
 | `--site-name` | 点位名，扫码后 H5 显示 | SmartPark 停车场 |
 | `--lpr-command` | 识牌命令模板（`%1` 替换为图片路径）；不传用内置 mock | — |
 | `--selftest` | 进程内端到端自测（不联网），跑完退出 | — |
@@ -174,6 +179,7 @@ ExecStart=/opt/smartpark/bin/smartpark_server \
     --db /opt/smartpark/data/smartpark.db \
     --layout /opt/smartpark/garage-6f.txt \
     --web-root /opt/smartpark/web \
+    --advertise 10.0.0.5 \
     --site-name "XX 停车场"
 Restart=on-failure
 RestartSec=3
@@ -314,14 +320,42 @@ HTTPS 页面下浏览器还会按混合内容拦掉。
 **现在的做法**：把 8081 也直接放行，不要藏在反代后面。
 要正经反代需要能覆盖对外 ws 地址（尚未实现）。
 
-### 10.3 对外地址可能取错
+### 10.3 对外地址的选取
 
-启动横幅与二维码用的地址取自「第一个非回环 IPv4」。
-服务器上只要有 Docker 网桥、VPN（`utun*`）、虚拟网卡，就可能取到那些地址，
-二维码随之指向一个别人连不上的 IP。
+启动横幅与二维码的地址按下面的顺序确定：
 
-**验证方法**：看启动横幅那行地址是不是你期望的对外地址；不是的话，
-现在就手动把二维码里的 IP 换成正确的，或在反代层解决。
+1. `--advertise <IP或域名>` —— **显式指定，多网卡机器推荐直接用这个**
+2. 默认路由所在、且**不是虚拟接口**的地址
+3. 第一个非虚拟接口的地址
+4. 第一个非回环地址（兜底）
+5. `127.0.0.1`
+
+第 2 步要求「是默认路由」**且**「非虚拟」两个条件同时成立：装了 VPN 的机器
+默认路由会指向 `utun*`，只看选路结果反而会取到隧道地址。
+
+虚拟接口（`docker*`、`br-*`、`veth*`、`tun*`、`utun*`、`feth*`、`bridge*`、
+`vmnet*`、`awdl*` 等）一律跳过——它们的地址对局域网里的其他设备没有意义。
+
+**仍然建议显式指定**。以 s1 为例，一台机器上就有 6 个非回环 IPv4：
+
+```
+ens41f3          10.108.17.55      ← 真实以太网，默认路由
+ibp134s0         172.168.1.1       ← InfiniBand，也有默认路由
+br-64f66944c369  172.18.0.1        ← Docker
+br-3dabe6f7598b  172.19.0.1        ← Docker
+docker0          172.17.0.1        ← Docker
+tun0             10.144.0.1        ← VPN
+```
+
+自动选取能挑对，但**部署时把对外地址写死最省心**：
+
+```bash
+smartpark_server ... --advertise 10.108.17.55
+# 或者用域名（反代场景）
+smartpark_server ... --advertise park.example.com
+```
+
+验证方法：看启动横幅那行地址是不是你期望的对外地址。
 
 ### 10.4 SQLite 单写者
 
