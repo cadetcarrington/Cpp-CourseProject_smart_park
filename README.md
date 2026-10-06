@@ -464,6 +464,17 @@ sbatch scripts/train_rec.slurm \
 ./build/qt/apps/user/smartpark_user --port 9527
 ```
 
+手机端（H5 用户端）与服务端同源伺服，加 `--web-root apps/webclient` 即启用，
+启动横幅会打印带点位票据的二维码，扫码即进入「设置账户」流程：
+
+```sh
+./build/qt/apps/server/smartpark_server --port 9527 --http-port 8080 --ws-port 8081 \
+    --db /tmp/smartpark-p2-demo.db --web-root apps/webclient --site-name "演示车场"
+```
+
+> 部署到服务器（无 GUI 构建、systemd、防火墙、客户端接入、已知限制）见
+> [`docs/deploy-server.md`](docs/deploy-server.md)。
+
 新数据库演示账号 `admin`、`gate`、`user` 的密码均为 `smartpark`。Gate 输入车牌直接入场（服务端自动核销匹配且处于到场窗口的预约），可输入 `status`、`fault on|off`、`reset`、`pass`、`quit`；用户端输入 `status`、`reserve <车牌> [偏移分钟 时长分钟]`、`cancel <车牌>`。出口另开一个 Gate 进程并设置 `--mode exit` 和独立队列文件。离线仅为模拟放行，重连补报可能因车位冲突被拒，失败事件继续保留供人工处理。
 
 2026-09-27 P1：TCP 协议与服务端落地（里程碑 9 完成）：
