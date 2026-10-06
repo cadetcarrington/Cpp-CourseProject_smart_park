@@ -64,8 +64,10 @@ public:
     const std::vector<ParkingSpot> &spots() const noexcept override { return spots_; }
     const std::vector<ParkingRecord> &records() const noexcept override { return records_; }
     const std::vector<Booking> &bookings() const noexcept override { return bookings_; }
-    ParkingInsights insights() const noexcept override { return ParkingInsights{}; }
+    ParkingInsights insights() const noexcept override;
     double totalRevenue() const noexcept override { return dailyRevenueTotal(); }
+    double pendingDeposits() const noexcept override { return pendingDeposits_; }
+    double forfeitedDeposits() const noexcept override { return forfeitedDeposits_; }
 
     std::optional<AllocationResult> enterVehicle(
         const std::string &plate, VehicleType type) override;
@@ -91,8 +93,12 @@ private:
     std::unique_ptr<ServerSession> session_;
     ParkingLayout layout_;
     std::vector<ParkingSpot> spots_;
-    std::vector<ParkingRecord> records_;   // 远程模式不提供，恒为空
-    std::vector<Booking> bookings_;        // 同上
+    // 随快照下发的记录与预约：远程模式据此显示「停车记录」「预约管理」，
+    // 并在本地用 ParkingInsightEngine 算出预测与分区压力。
+    std::vector<ParkingRecord> records_;
+    std::vector<Booking> bookings_;
+    double pendingDeposits_{0.0};
+    double forfeitedDeposits_{0.0};
     QJsonObject analytics_;
     // 快照随带的 7 日收入。单独存一份：analytics.report 的应答会整体替换
     // analytics_，混在一起会在报告到达后把收入数据抹掉。
