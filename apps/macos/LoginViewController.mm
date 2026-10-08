@@ -89,6 +89,13 @@ void keychainDelete(NSString *account){
 @interface LoginViewController () <NSTextFieldDelegate>
 @end
 
+// 远程模式的默认服务端。这是本项目当前部署（s1）的地址；换部署不需要改代码，
+// 因为填过一次之后会按 NSUserDefaults 记住上次用的地址与端口。
+static NSString *const kDefaultRemoteHost = @"10.108.17.55";
+static const NSInteger kDefaultRemotePort = 9527;
+static NSString *const kRemoteHostDefaultsKey = @"smartpark.remote.host";
+static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
+
 @implementation LoginViewController{
     // 远程模式控件（勾选后才显示地址/端口行）。
     NSButton *_remoteCheck;
@@ -219,13 +226,18 @@ void keychainDelete(NSString *account){
 
     _hostField = [[NSTextField alloc] init];
     _hostField.placeholderString = @"服务端地址";
-    _hostField.stringValue = @"127.0.0.1";
+    // 默认填好部署地址：勾上「连接远程服务端」就能直接登录，不用再手输。
+    NSUserDefaults *remoteDefaults = [NSUserDefaults standardUserDefaults];
+    NSString *rememberedHost = [remoteDefaults stringForKey:kRemoteHostDefaultsKey];
+    const NSInteger rememberedPort = [remoteDefaults integerForKey:kRemotePortDefaultsKey];
+    _hostField.stringValue = rememberedHost.length > 0 ? rememberedHost : kDefaultRemoteHost;
     _hostField.accessibilityIdentifier = @"smartpark.login.host";
     _hostField.delegate = self;
 
     _portField = [[NSTextField alloc] init];
     _portField.placeholderString = @"端口";
-    _portField.stringValue = @"9527";
+    _portField.stringValue = [NSString stringWithFormat:@"%ld",
+        (long)(rememberedPort > 0 ? rememberedPort : kDefaultRemotePort)];
     _portField.accessibilityIdentifier = @"smartpark.login.port";
     _portField.delegate = self;
 
@@ -608,6 +620,10 @@ void keychainDelete(NSString *account){
             return;
         }
         [self persistRememberedUser:userName password:password];
+        // 记住这次用的地址端口，下次启动直接带出来。
+        NSUserDefaults *remoteDefaults = [NSUserDefaults standardUserDefaults];
+        [remoteDefaults setObject:host forKey:kRemoteHostDefaultsKey];
+        [remoteDefaults setInteger:port forKey:kRemotePortDefaultsKey];
         void (^remoteCallback)(NSString *, NSString *, NSInteger, NSString *) =
             self.onAuthenticated;
         if (remoteCallback != nil){
