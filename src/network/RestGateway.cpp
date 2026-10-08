@@ -151,24 +151,11 @@ RestGateway::RestGateway(ParkingService &service, UserStore &users,
     , database_(database)
     , options_(options){
     ensureOrderSchema();
-    ensureFrictionlessSchema();
     loadOrders();
     setupHttp();
     if (hub_ != nullptr){
         connect(hub_, &EventHub::eventOccurred,
                 this, &RestGateway::broadcastWs);
-        // 无感支付：任何入口（Gate 出口/REST 离场）广播 parking.exited 后，
-        // 已开通车牌自动生成已支付订单并广播 payment.paid。
-        connect(hub_, &EventHub::eventOccurred, this,
-                [this](const QString &name, const QJsonObject &payload){
-            if (name != QStringLiteral("parking.exited")){
-                return;
-            }
-            const QString plate =
-                payload.value(QStringLiteral("plate")).toString();
-            const double fee = payload.value(QStringLiteral("fee")).toDouble();
-            autoChargeOnExit(plate, fee);
-        });
     }
     ensureSiteSchema();
     siteToken_ = ensureDefaultSiteTicket();
@@ -335,7 +322,7 @@ void RestGateway::setupHttp(){
                      return handleGuide(plate, request);
                  });
     // 以下三个端点中，qr 免认证（<img> 无法携带 Bearer）；
-    // orders 列表与 frictionless/lpr 走标准鉴权。
+    // orders 列表与 lpr 走标准鉴权。
     http_->route(QStringLiteral("/api/v1/qr"), QHttpServerRequest::Method::Get,
                  [this](const QHttpServerRequest &request){
                      return handleQr(request);
@@ -344,16 +331,6 @@ void RestGateway::setupHttp(){
                  QHttpServerRequest::Method::Get,
                  [this](const QHttpServerRequest &request){
                      return handleOrderList(request);
-                 });
-    http_->route(QStringLiteral("/api/v1/me/frictionless"),
-                 QHttpServerRequest::Method::Get,
-                 [this](const QHttpServerRequest &request){
-                     return handleFrictionlessList(request);
-                 });
-    http_->route(QStringLiteral("/api/v1/me/frictionless"),
-                 QHttpServerRequest::Method::Post,
-                 [this](const QHttpServerRequest &request){
-                     return handleFrictionlessToggle(request);
                  });
     http_->route(QStringLiteral("/api/v1/lpr/recognize"),
                  QHttpServerRequest::Method::Post,
@@ -1638,7 +1615,7 @@ QString RestGateway::newOrderId(){
     return QStringLiteral("po_") + randomHex(6);
 }
 
-// ---- 二维码 / 无感支付 / 拍照识牌 ----
+// ---- 二维码 / 拍照识牌 ----
 
 QHttpServerResponse RestGateway::handleQr(
     const QHttpServerRequest &request) const{
@@ -1777,8 +1754,7 @@ void RestGateway::ensureSiteSchema(){
         lastError_ = query.lastError().text();
         return;
     }
-    // 用户绑定的车牌。与无感支付车牌分开：这里是「这台车属于这个人」，
-    // 无感支付是「这台车离场自动扣费」，两者可以不同。
+    // 用户绑定的车牌：这台车属于这个人（扫码绑定后用来自动填表）。
     QSqlQuery plates(database_);
     if (!plates.exec(QStringLiteral(
             "CREATE TABLE IF NOT EXISTS user_plates ("
@@ -1819,134 +1795,6 @@ QString RestGateway::ensureDefaultSiteTicket(){
         return QString();
     }
     return token;
-}
-
-void RestGateway::ensureFrictionlessSchema(){
-    QSqlQuery query(database_);
-    if (!query.exec(QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS frictionless_plates ("
-            "username TEXT NOT NULL,"
-            "plate TEXT NOT NULL,"
-            "created_at_ms INTEGER NOT NULL,"
-            "PRIMARY KEY(username, plate))"))){
-        lastError_ = query.lastError().text();
-    }
-}
-
-QString RestGateway::frictionlessOwner(const QString &plate) const{
-    QSqlQuery query(database_);
-    query.prepare(QStringLiteral(
-        "SELECT username FROM frictionless_plates WHERE plate = :plate"
-        " ORDER BY created_at_ms LIMIT 1"));
-    query.bindValue(QStringLiteral(":plate"), plate);
-    if (!query.exec() || !query.next()){
-        return QString();
-    }
-    return query.value(0).toString();
-}
-
-void RestGateway::autoChargeOnExit(const QString &plate, double fee){
-    // 免费时段 fee=0 也生成 ¥0 流水：让「自动扣费已发生」在演示中可见。
-    // 订单归属开通者账号，避免「系统」流水对所有用户可见。
-    const QString owner = frictionlessOwner(plate);
-    if (owner.isEmpty()){
-        return;
-    }
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const auto guard = paidLeaveGuard_.constFind(plate);
-    if (guard != paidLeaveGuard_.constEnd() && now - guard.value() < 10 * 60 * 1000){
-        return;  // 收银台刚完成支付，避免重复扣费
-    }
-    PaymentOrder order;
-    order.orderId = newOrderId();
-    order.outTradeNo = QStringLiteral("SP%1%2")
-                           .arg(QDateTime::currentDateTime()
-                                    .toString(QStringLiteral("yyyyMMdd")),
-                                order.orderId.mid(3));
-    order.kind = QStringLiteral("parking_fee");
-    order.username = owner;
-    order.plate = plate;
-    order.amount = fee;
-    order.status = QStringLiteral("paid");
-    order.createdAtMs = now;
-    order.paidAtMs = now;
-    insertOrder(order);
-    if (hub_ != nullptr){
-        hub_->publish(QStringLiteral("payment.paid"),
-                      QJsonObject{{QStringLiteral("orderId"), order.orderId},
-                                  {QStringLiteral("kind"), order.kind},
-                                  {QStringLiteral("plate"), plate},
-                                  {QStringLiteral("amount"), fee},
-                                  {QStringLiteral("frictionless"), true}});
-    }
-}
-
-QHttpServerResponse RestGateway::handleFrictionlessList(
-    const QHttpServerRequest &request){
-    const auto auth = authenticate(request);
-    if (!auth.has_value()){
-        return jsonError(QHttpServerResponder::StatusCode::Unauthorized,
-                         "AUTH_REQUIRED", QStringLiteral("缺少或无效的 Bearer token"));
-    }
-    QSqlQuery query(database_);
-    query.prepare(QStringLiteral(
-        "SELECT plate, created_at_ms FROM frictionless_plates"
-        " WHERE username = :userName ORDER BY created_at_ms"));
-    query.bindValue(QStringLiteral(":userName"), auth->username);
-    QJsonArray plates;
-    if (query.exec()){
-        while (query.next()){
-            plates.append(QJsonObject{
-                {QStringLiteral("plate"), query.value(0).toString()},
-                {QStringLiteral("createdAtMs"), query.value(1).toLongLong()}});
-        }
-    }
-    return QHttpServerResponse(
-        QJsonObject{{QStringLiteral("plates"), plates}});
-}
-
-QHttpServerResponse RestGateway::handleFrictionlessToggle(
-    const QHttpServerRequest &request){
-    const auto auth = authenticate(request);
-    if (!auth.has_value()){
-        return jsonError(QHttpServerResponder::StatusCode::Unauthorized,
-                         "AUTH_REQUIRED", QStringLiteral("缺少或无效的 Bearer token"));
-    }
-    const auto body = bodyJson(request);
-    if (!body.has_value()){
-        return jsonError(QHttpServerResponder::StatusCode::BadRequest,
-                         "VALIDATION", QStringLiteral("请求体必须是 JSON 对象"));
-    }
-    const QString plate =
-        body->value(QStringLiteral("plate")).toString().trimmed();
-    const bool enabled = body->value(QStringLiteral("enabled")).toBool();
-    if (plate.isEmpty()){
-        return jsonError(QHttpServerResponder::StatusCode::BadRequest,
-                         "VALIDATION", QStringLiteral("车牌不能为空"));
-    }
-    QSqlQuery query(database_);
-    if (enabled){
-        query.prepare(QStringLiteral(
-            "INSERT OR IGNORE INTO frictionless_plates(username, plate,"
-            " created_at_ms) VALUES(:userName, :plate, :createdAt)"));
-        query.bindValue(QStringLiteral(":userName"), auth->username);
-        query.bindValue(QStringLiteral(":plate"), plate);
-        query.bindValue(QStringLiteral(":createdAt"),
-                        QDateTime::currentMSecsSinceEpoch());
-    } else{
-        query.prepare(QStringLiteral(
-            "DELETE FROM frictionless_plates"
-            " WHERE username = :userName AND plate = :plate"));
-        query.bindValue(QStringLiteral(":userName"), auth->username);
-        query.bindValue(QStringLiteral(":plate"), plate);
-    }
-    if (!query.exec()){
-        return jsonError(QHttpServerResponder::StatusCode::InternalServerError,
-                         "INTERNAL", query.lastError().text());
-    }
-    return QHttpServerResponse(
-        QJsonObject{{QStringLiteral("plate"), plate},
-                    {QStringLiteral("enabled"), enabled}});
 }
 
 QJsonObject RestGateway::recognizePlate(const QByteArray &imageBytes,

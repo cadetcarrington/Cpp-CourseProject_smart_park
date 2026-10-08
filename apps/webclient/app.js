@@ -224,11 +224,7 @@ function handleEvent(name, payload) {
   else if (name === 'reservation.created') toast(`📅 ${plate || ''} 预约车位 ${payload.spotId || ''}`);
   else if (name === 'reservation.cancelled') toast(`📅 ${plate || ''} 取消预约`);
   else if (name === 'reservation.checkin') toast(`📅 ${plate || ''} 到场核销`);
-  else if (name === 'payment.paid') {
-    toast(payload.frictionless
-      ? `⚡ 无感支付扣费 ${money(payload.amount)}（${plate || ''}）`
-      : `💰 订单已支付 ${money(payload.amount)}`);
-  }
+    else if (name === 'payment.paid') toast(`💰 订单已支付 ${money(payload.amount)}`);
   else if (name === 'gate.replayed') toast(`📥 补报完成 ${payload.applied || 0} 条`);
   if (location.hash === '' || location.hash === '#/home') render();
 }

@@ -2812,17 +2812,10 @@ void MainWindow::announceEvent(const QString &event,
         danmaku_->push(QStringLiteral("↩️ %1 取消预约").arg(plate),
                        QColor(168, 176, 190));
     } else if (event == QStringLiteral("payment.paid")){
-        const bool frictionless =
-            payload.value(QStringLiteral("frictionless")).toBool();
-        danmaku_->push(frictionless
-                           ? QStringLiteral("⚡ 无感支付 · %1 扣费 ¥%2")
-                                 .arg(plate)
-                                 .arg(payload.value(QStringLiteral("amount")).toDouble(),
-                                      0, 'f', 2)
-                           : QStringLiteral("💰 %1 缴费 ¥%2")
-                                 .arg(plate)
-                                 .arg(payload.value(QStringLiteral("amount")).toDouble(),
-                                      0, 'f', 2),
+        danmaku_->push(QStringLiteral("💰 %1 缴费 ¥%2")
+                           .arg(plate)
+                           .arg(payload.value(QStringLiteral("amount")).toDouble(),
+                                0, 'f', 2),
                        QColor(255, 213, 79));
     } else if (event == QStringLiteral("gate.replayed")){
         danmaku_->push(QStringLiteral("📥 断线补报完成 %1 条")
