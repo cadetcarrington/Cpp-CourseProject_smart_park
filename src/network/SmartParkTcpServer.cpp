@@ -78,6 +78,21 @@ const QString &SmartParkTcpServer::lastError() const noexcept{
 
 void SmartParkTcpServer::setEventHub(EventHub *hub) noexcept{
     hub_ = hub;
+    if (hub_ == nullptr){
+        return;
+    }
+    // 补上反方向：REST 入口（网页预约/缴费/入场）的动作只 publish 到 hub，
+    // 原先没有任何人转发给 TCP 客户端，于是远程管理端收不到事件、永远不刷新
+    // 快照——网页上刚建的预约在 macOS 端看不到。这里订阅 hub 转发给 TCP 会话。
+    // 只调 sendToSessions：再 publish 一次会让 WebSocket 收到重复事件。
+    connect(hub_, &EventHub::eventOccurred, this,
+            [this](const QString &name, const QJsonObject &payload,
+                   EventHub::Origin origin){
+        if (origin == EventHub::Origin::Tcp){
+            return;   // 已经由 broadcastEvent 发过了
+        }
+        sendToSessions(name, payload);
+    });
 }
 
 void SmartParkTcpServer::timerEvent(QTimerEvent *event){
@@ -218,8 +233,8 @@ void SmartParkTcpServer::respond(Session &session, const QString &id, bool ok,
     send(session, protocol::makeResponse(id, ok, payload, error));
 }
 
-void SmartParkTcpServer::broadcastEvent(const QString &event,
-                                        const QJsonObject &payload){
+void SmartParkTcpServer::sendToSessions(const QString &event,
+                                       const QJsonObject &payload){
     const QByteArray frame = protocol::encodeFrame(
         protocol::makeEvent(event, payload));
     for (auto it = sessions_.begin(); it != sessions_.end(); ++it){
@@ -227,8 +242,14 @@ void SmartParkTcpServer::broadcastEvent(const QString &event,
             it.key()->write(frame);
         }
     }
+}
+
+void SmartParkTcpServer::broadcastEvent(const QString &event,
+                                        const QJsonObject &payload){
+    sendToSessions(event, payload);
     if (hub_ != nullptr){
-        hub_->publish(event, payload);
+        // 标成 Tcp：本函数已经把事件发给 TCP 客户端了，订阅端别再发一次。
+        hub_->publish(event, payload, EventHub::Origin::Tcp);
     }
 }
 

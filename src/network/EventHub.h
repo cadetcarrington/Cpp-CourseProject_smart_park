@@ -15,12 +15,23 @@ class EventHub : public QObject{
 public:
     explicit EventHub(QObject *parent = nullptr) : QObject(parent){}
 
-    void publish(const QString &name, const QJsonObject &payload){
-        emit eventOccurred(name, payload);
+    // 事件来源。TCP 服务端在处理 TCP 动作时已经**直接**把事件广播给 TCP 客户端了，
+    // 随后才 publish 到 hub 让 WebSocket 也能收到；订阅端据此跳过自己刚发过的那些，
+    // 否则同一条事件会被广播两次。
+    enum class Origin{
+        Tcp,
+        Rest,
+    };
+    Q_ENUM(Origin)
+
+    void publish(const QString &name, const QJsonObject &payload,
+                 Origin origin = Origin::Rest){
+        emit eventOccurred(name, payload, origin);
     }
 
 signals:
-    void eventOccurred(const QString &name, const QJsonObject &payload);
+    void eventOccurred(const QString &name, const QJsonObject &payload,
+                       smartpark::EventHub::Origin origin);
 };
 
 } // namespace smartpark
