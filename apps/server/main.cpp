@@ -726,7 +726,7 @@ int runSelftest(){
     }
     wsClient.close();
 
-    // ---- M2/M3：二维码 / 无感支付 / 拍照识牌 mock / 订单列表 ----
+    // ---- M2/M3：二维码 / 拍照识牌 mock / 订单列表 ----
     const auto qr = http.send(QStringLiteral("GET"),
                               QStringLiteral("/api/v1/qr?text=http%3A%2F%2Fdemo"));
     restCheck(qr.status == 200 && qr.raw.contains("<svg")
@@ -744,43 +744,6 @@ int runSelftest(){
                          == QStringLiteral("mock")
                   && lpr.json.value(QStringLiteral("plate")).toString().size() == 7,
               "lpr mock returns a stable demo plate", lpr);
-
-    // 无感支付：开通 -> REST 入场 -> REST 离场 -> 自动生成已支付订单。
-    const QString frPlate = QStringLiteral("晋R30001");
-    const auto frOn = http.send(
-        QStringLiteral("POST"), QStringLiteral("/api/v1/me/frictionless"),
-        QJsonObject{{QStringLiteral("plate"), frPlate},
-                    {QStringLiteral("enabled"), true}},
-        wsToken);
-    const auto frEnter = http.send(
-        QStringLiteral("POST"), QStringLiteral("/api/v1/parking/enter"),
-        QJsonObject{{QStringLiteral("plate"), frPlate},
-                    {QStringLiteral("vehicleType"), QStringLiteral("car")}},
-        wsToken);
-    check(frOn.status == 200 && frEnter.status == 200,
-          "frictionless plate enabled and car entered");
-    const auto frLeave = http.send(
-        QStringLiteral("POST"), QStringLiteral("/api/v1/parking/leave"),
-        QJsonObject{{QStringLiteral("plate"), frPlate}},
-        wsToken);
-    const auto frOrders = http.send(
-        QStringLiteral("GET"),
-        QStringLiteral("/api/v1/payments/orders?plate=%1&status=paid")
-            .arg(enc(frPlate)),
-        {}, wsToken);
-    restCheck(frLeave.status == 200 && frOrders.status == 200
-                  && frOrders.json.value(QStringLiteral("total")).toInt() == 1
-                  && frOrders.json.value(QStringLiteral("orders")).toArray()
-                         .at(0).toObject()
-                         .value(QStringLiteral("amount")).toDouble() < 1e-9,
-              "frictionless exit auto-charges (zero fee in free period)",
-              frOrders);
-    const auto frOff = http.send(
-        QStringLiteral("POST"), QStringLiteral("/api/v1/me/frictionless"),
-        QJsonObject{{QStringLiteral("plate"), frPlate},
-                    {QStringLiteral("enabled"), false}},
-        wsToken);
-    restCheck(frOff.status == 200, "frictionless can be disabled", frOff);
 
     failures += restFailures;
 

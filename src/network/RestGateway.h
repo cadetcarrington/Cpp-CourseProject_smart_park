@@ -136,9 +136,6 @@ private:
     QHttpServerResponse handleSiteResolve(const QHttpServerRequest &request) const;
     QHttpServerResponse handlePlateList(const QHttpServerRequest &request);
     QHttpServerResponse handlePlateBind(const QHttpServerRequest &request);
-    // 无感支付（先离场后付 mock）：开通/关闭车牌与列表。
-    QHttpServerResponse handleFrictionlessList(const QHttpServerRequest &request);
-    QHttpServerResponse handleFrictionlessToggle(const QHttpServerRequest &request);
     // 拍照识牌：POST /api/v1/lpr/recognize {image: base64}
     QHttpServerResponse handleLprRecognize(const QHttpServerRequest &request);
 
@@ -171,14 +168,11 @@ private:
     PaymentOrder *findOrder(const QString &orderId);
     static QString newOrderId();
 
-    // ---- 无感支付与拍照识牌 ----
-    void ensureFrictionlessSchema();
+    // ---- 拍照识牌 ----
     void ensureSiteSchema();
     // 确保存在一个可用点位票据并返回其 token（没有则新建）。
     // 票据落库，因此服务端重启后张贴出去的二维码依然有效。
     QString ensureDefaultSiteTicket();
-    QString frictionlessOwner(const QString &plate) const;
-    void autoChargeOnExit(const QString &plate, double fee);
     QJsonObject recognizePlate(const QByteArray &imageBytes, QString *note);
 
     // ---- WebSocket 推送与定时扫描 ----

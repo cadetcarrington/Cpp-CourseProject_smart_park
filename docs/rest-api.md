@@ -99,8 +99,6 @@ WebSocket 接口。网关与 TCP v1（见 `docs/tcp-protocol.md`）**同进程�
 | `GET /api/v1/payments/orders/{id}` | Bearer | 订单状态（收银台轮询） | —（新增） |
 | `POST /api/v1/payments/orders/{id}/confirm` | Bearer | 模拟支付确认（幂等） | —（新增） |
 | `GET /api/v1/qr?text=...` | **免** | 文本转二维码 SVG（供 `<img>` 引用） | —（新增） |
-| `GET /api/v1/me/frictionless` | Bearer | 无感支付已开通车牌列表 | —（新增） |
-| `POST /api/v1/me/frictionless` | Bearer | 开通/关闭车牌无感支付 | —（新增） |
 | `POST /api/v1/lpr/recognize` | Bearer | 拍照识牌 {image: base64} → {plate,...} | —（新增，脚本/mock 可插拔） |
 | `GET /api/v1/guide/{plate}` | Bearer | 车位指引/反向寻车路线 | —（新增，复用 GridPlanner） |
 | `GET /ws` | 升级 | WebSocket 事件推送 | 事件广播 |
@@ -157,16 +155,6 @@ v1 实现：`POST /api/v1/reservations` 创建预约时，服务端即时收取�
 订单与 `deposit_payments` 表并存：后者仍是核心层定金事实流水
 （Charge/Refund/Forfeit/Apply），前者是网关层支付过程流水（下单/支付/
 超时/退款），两者以 `reservation_id` / `plate` 关联，答辩可讲清两层职责。
-
-### 5.4 无感支付（先离场后付 mock）
-
-`POST /api/v1/me/frictionless` 开通车牌（`frictionless_plates` 表）。
-任何入口广播 `parking.exited`（Gate 出口抬杆或 REST 离场）时，网关为
-已开通车牌自动生成 `status=paid` 的 parking_fee 订单（金额取离场事件
-费用，免费时段 ¥0 也落单以示流程可见），归属开通者账号，并广播
-`payment.paid`（含 `frictionless:true`）。收银台完成支付后的 10 分钟内
-同车牌离场不重复扣费（防双扣护栏）。H5「更多」页开关 + 缴费页订单列表，
-Admin 大屏弹幕同步显示「⚡ 无感支付」。
 
 ## 5b. 拍照识牌（LPR，可插拔后端）
 

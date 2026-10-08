@@ -267,7 +267,7 @@ ORDN=$(api GET "/payments/orders?pageSize=8" "$UT" | jlen orders)
 echo
 echo "=== H. 二维码 / 车牌 ==="
 chk "服务端生成二维码" "$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$B/qr?text=hello")" 200
-chk "无感支付车牌绑定" "$(code POST /me/frictionless "$UT" "$(jbody plate 京A66666)")" 200
+chk "无感支付接口已移除（404）" "$(code POST /me/frictionless "$UT" "$(jbody plate 京A66666)")" 404
 
 echo
 echo "=== I. WebSocket 实时推送 ==="
