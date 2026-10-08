@@ -55,6 +55,11 @@
 
     LoginViewController *login = [[LoginViewController alloc]
         initWithUserStore:userStore_.get()];
+    if (_launchRemoteHost.length > 0){
+        [login prefillRemoteHost:_launchRemoteHost
+                            port:_launchRemotePort
+                            user:_launchUserName];
+    }
     __weak AppDelegate *weakSelf = self;
     login.onAuthenticated = ^(NSString *userName, NSString *remoteHost,
                               NSInteger remotePort, NSString *remotePassword){
