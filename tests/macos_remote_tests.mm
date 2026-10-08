@@ -254,13 +254,16 @@ int main(int argc, char **argv){
         expect(![visible containsObject:@6], "「设施配置」页仍隐藏");
 
         struct PageCheck{ NSInteger index; const char *name; NSString *needle; };
+        // 自带服务端时数据是自己造的，可以断言到具体车牌；指向外部服务端时
+        // 对方可能是个空库，只能断言页面框架渲染出来了。
+        NSString *recordsNeedle = external ? @"停车记录" : @"京A1000";
         const PageCheck checks[] = {
             {0, "仪表盘",   @"总车位"},
             {1, "车位地图", @"车位"},
             {2, "车辆作业", @"车牌"},
             {3, "当前车位", @"车位"},
             {4, "预约管理", @"预约"},
-            {5, "停车记录", @"京A1000"},
+            {5, "停车记录", recordsNeedle},
         };
         for (const PageCheck &check : checks){
             [sidebar selectIndex:check.index];
