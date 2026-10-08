@@ -63,6 +63,9 @@ private:
     void send(Session &session, const QJsonObject &message);
     void respond(Session &session, const QString &id, bool ok,
                  const QJsonObject &payload = {}, const QString &error = {});
+    // 只发给已认证的 TCP 会话。
+    void sendToSessions(const QString &event, const QJsonObject &payload);
+    // 发给 TCP 会话，同时发布到 hub（供 WebSocket 订阅）。
     void broadcastEvent(const QString &event, const QJsonObject &payload);
     void kickIdleSessions();
 

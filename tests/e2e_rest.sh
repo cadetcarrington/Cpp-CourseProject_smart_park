@@ -334,6 +334,71 @@ echo "$WSRES" | grep -q "AUTH_OK" && ok "WebSocket 认证" || no "WebSocket 认�
 echo "$WSRES" | grep -q "PUSH_OK" && ok "实时事件推送收到" || no "未收到实时推送"
 
 echo
+echo "=== I2. 跨入口事件：REST 动作要能到 TCP 客户端 ==="
+# 这条曾经是坏的：REST 入口的动只 publish 到 EventHub，而 TCP 服务端没有订阅 hub，
+# 于是网页上刚建的预约在 macOS 管理端（TCP）看不到——远程模式靠事件触发重拉快照。
+TCPEVT=$(python3 - "$TCP_PORT" "$HTTP_PORT" "$UT" <<'PY'
+import json, socket, struct, sys, threading, time, urllib.request
+tcp, http, token = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+def send(sock, obj):
+    data = json.dumps(obj, ensure_ascii=False).encode()
+    sock.sendall(struct.pack('>I', len(data)) + data)
+def recv(sock):
+    head = b''
+    while len(head) < 4:
+        chunk = sock.recv(4 - len(head))
+        if not chunk: return None
+        head += chunk
+    n = struct.unpack('>I', head)[0]
+    body = b''
+    while len(body) < n:
+        chunk = sock.recv(n - len(body))
+        if not chunk: return None
+        body += chunk
+    return json.loads(body.decode())
+try:
+    s = socket.create_connection(('127.0.0.1', tcp), timeout=10)
+except OSError as e:
+    print('TCP_CONNECT_FAIL:' + str(e)); sys.exit(0)
+# 注意：TCP 协议的登录字段是 user/pass，与 REST 的 username/password 不同
+send(s, {'type': 'request', 'id': '1', 'action': 'login',
+         'payload': {'user': 'gate', 'pass': 'smartpark'}})
+resp = recv(s)
+if not resp or not resp.get('ok'):
+    print('TCP_LOGIN_FAIL:' + str(resp)[:80]); sys.exit(0)
+print('TCP_LOGIN_OK')
+
+def trigger():
+    time.sleep(0.5)
+    start = int((time.time() + 45 * 60) * 1000)
+    body = json.dumps({'plate': '京A77788', 'vehicleType': 'car',
+                       'startMs': start, 'durationMin': 60}).encode()
+    req = urllib.request.Request(
+        'http://127.0.0.1:%d/api/v1/reservations' % http, data=body,
+        headers={'Content-Type': 'application/json',
+                 'Authorization': 'Bearer ' + token})
+    try: urllib.request.urlopen(req, timeout=5).read()
+    except Exception: pass
+threading.Thread(target=trigger, daemon=True).start()
+
+s.settimeout(6)
+try:
+    for _ in range(6):
+        msg = recv(s)
+        if msg and msg.get('type') == 'event' and msg.get('event') == 'reservation.created':
+            print('CROSS_EVENT_OK'); break
+    else:
+        print('CROSS_EVENT_TIMEOUT')
+except Exception as e:
+    print('CROSS_EVENT_ERR:' + str(e)[:60])
+PY
+)
+echo "$TCPEVT" | sed 's/^/    /'
+echo "$TCPEVT" | grep -q "TCP_LOGIN_OK" && ok "TCP 客户端登录" || no "TCP 客户端登录失败"
+echo "$TCPEVT" | grep -q "CROSS_EVENT_OK" && ok "REST 创建预约的事件到达 TCP 客户端" \
+    || no "TCP 客户端收不到 REST 入口的事件"
+
+echo
 echo "=== J. TCP 协议（道闸 / 用户端） ==="
 if [ -x "$GATE" ]; then
     chk "道闸自测" "$("$GATE" --selftest 2>&1 | grep -c 'PASS')" 1
