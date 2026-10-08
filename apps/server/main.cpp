@@ -949,6 +949,9 @@ int runServer(QCoreApplication &app, quint16 port, const QString &databasePath,
 
     smartpark::SmartParkTcpServer::Options options;
     options.port = port;
+    // 车牌识别只在服务端跑：远程管理端通过 lpr.recognize 把照片发过来，
+    // 不在客户端拉模型做推理。用同一个 --lpr-command 配置。
+    options.lprCommand = restOptions.lprCommand;
     smartpark::SmartParkTcpServer server(*service, &audit, &users, options);
     if (!server.listen()){
         std::cerr << "server listen failed: "

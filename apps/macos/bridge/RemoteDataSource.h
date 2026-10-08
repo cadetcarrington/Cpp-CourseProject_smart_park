@@ -70,6 +70,9 @@ public:
         return reservations_;
     }
     ReservationRuleView reservationRule() const noexcept override { return reservationRule_; }
+    void recognizePlateRemotely(const QByteArray &imageBytes,
+                                std::function<void(PlateRecognition)> done) override;
+    bool supportsRemoteRecognition() const noexcept override { return true; }
     double pendingDeposits() const noexcept override { return pendingDeposits_; }
     double forfeitedDeposits() const noexcept override { return forfeitedDeposits_; }
 

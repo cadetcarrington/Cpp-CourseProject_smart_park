@@ -28,6 +28,9 @@ public:
         quint16 port{9527};
         int heartbeatTimeoutMs{60000};   // 超过该时长无任何帧即判定掉线
         int maxLoginFails{5};
+        // 车牌识别命令模板（%1 = 图片路径）。留空则用由图片哈希生成的 mock 车牌。
+        // 识别只在服务端跑：远程管理端把照片发过来，不在本地拉模型推理。
+        QString lprCommand;
     };
 
     SmartParkTcpServer(ParkingService &service, AuditLogService *audit,
@@ -83,6 +86,7 @@ private:
     QJsonObject actionGateReplay(const QJsonObject &payload, bool *ok, QString *error);
     // 管理端专用全量快照：布局几何 + 车位明细 + 计数，仅 admin 账号可调用。
     QJsonObject actionAdminSnapshot(const QJsonObject &payload, bool *ok, QString *error);
+    QJsonObject actionLprRecognize(const QJsonObject &payload, bool *ok, QString *error);
 
     ParkingService *service_;
     AuditLogService *audit_;

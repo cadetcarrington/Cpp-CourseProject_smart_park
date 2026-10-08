@@ -279,6 +279,12 @@
         _statusLabel.stringValue = @"识别仍在进行，请等待或先取消。";
         return;
     }
+    // 远程模式：识别在服务端跑。本机不再拉模型、也不需要 Python 识别环境——
+    // 服务端有 --lpr-command 配好的检测+OCR，客户端只负责把照片发过去。
+    if (self.bridge != nullptr && self.bridge->supportsRemoteRecognition()){
+        [self runRemoteRecognitionForImage:imagePath];
+        return;
+    }
     NSString *detectorPython = [self resolvePython:"SMARTPARK_LPR_PY" fallbackDir:"lpr"];
     NSString *ocrPython = [self resolvePython:"SMARTPARK_OCR_PY" fallbackDir:"ocr"];
     const char *override = getenv("SMARTPARK_LPR_SCRIPT");
@@ -352,6 +358,63 @@
             [task terminate];
         }
     });
+}
+
+// 把照片发给服务端识别（异步，不阻塞界面）。
+- (void)runRemoteRecognitionForImage:(NSString *)imagePath{
+    NSData *data = [NSData dataWithContentsOfFile:imagePath];
+    if (data.length == 0){
+        _statusLabel.stringValue = @"无法读取所选图片。";
+        return;
+    }
+    if (data.length > 6 * 1024 * 1024){
+        _statusLabel.stringValue = @"图片超过 6MB，请换一张小一点的。";
+        return;
+    }
+    _statusLabel.stringValue = @"正在由服务端识别车牌，请稍候…";
+    QByteArray bytes(reinterpret_cast<const char *>(data.bytes),
+                     static_cast<int>(data.length));
+    ParkingBridge *bridge = self.bridge;
+    __weak OperationsViewController *weakSelf = self;
+    bridge->recognizePlateRemotely(bytes, [weakSelf](smartpark::ParkingDataSource::PlateRecognition outcome){
+        dispatch_async(dispatch_get_main_queue(), ^{
+            OperationsViewController *controller = weakSelf;
+            if (controller == nil){
+                return;
+            }
+            [controller presentRemoteRecognition:outcome];
+        });
+    });
+}
+
+- (void)presentRemoteRecognition:(smartpark::ParkingDataSource::PlateRecognition)outcome{
+    if (!outcome.ok){
+        _statusLabel.stringValue = [NSString stringWithFormat:@"服务端识别失败：%s",
+            outcome.error.c_str()];
+        return;
+    }
+    NSString *plate = [NSString stringWithUTF8String:outcome.plate.c_str()];
+    if (plate.length == 0){
+        _statusLabel.stringValue = @"服务端未识别到车牌。";
+        return;
+    }
+    // mock 后端是按图片哈希编的车牌，必须说清楚，别让人当成真识别结果。
+    const bool mock = outcome.backend == "mock";
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = mock ? @"服务端返回候选车牌（模拟识别）" : @"服务端识别到候选车牌";
+    alert.informativeText = [NSString stringWithFormat:
+        @"车牌：%@\n识别置信度 %.1f%% · 后端 %s%@\n是否采用该车牌？",
+        plate, outcome.confidence * 100.0, outcome.backend.c_str(),
+        mock ? @"\n（服务端未配置 --lpr-command，这是演示用结果）" : @""];
+    [alert addButtonWithTitle:@"采用"];
+    [alert addButtonWithTitle:@"取消"];
+    [alert beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse response){
+        if (response == NSAlertFirstButtonReturn){
+            _plateField.stringValue = plate;
+            _statusLabel.stringValue = [NSString stringWithFormat:
+                @"已采用服务端识别的车牌 %@，请核对后再操作入场或出场。", plate];
+        }
+    }];
 }
 
 - (void)handleRecognitionOutput:(NSString *)output error:(NSString *)error exitCode:(int)exitCode{

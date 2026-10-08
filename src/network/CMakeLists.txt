@@ -4,6 +4,8 @@ add_library(smartpark_network STATIC
     EventHub.h
     ServerSession.cpp
     ServerSession.h
+    PlateRecognition.cpp
+    PlateRecognition.h
     Protocol.cpp
     Protocol.h
     RestGateway.cpp
