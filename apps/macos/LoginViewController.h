@@ -18,6 +18,10 @@ class UserStore;
 // 非 nil 时界面应通过 bridge 以 TCP 连接该服务端。
 // remotePassword 仅在远程模式下非 nil：主窗口要再建一条 TCP 会话，
 // 必须重新登录一次，因此需要口令（与 Qt 版 ServerSession 同样只留在内存）。
+// 由启动参数预填：勾上「连接远程服务端」并填好地址/端口/账号，
+// 用户只需补口令即可登录——部署后一条命令直达，不用每次手填。
+- (void)prefillRemoteHost:(NSString *)host port:(NSInteger)port user:(NSString *)user;
+
 @property (nonatomic, copy) void (^onAuthenticated)(NSString *userName,
                                                     NSString *remoteHost,
                                                     NSInteger remotePort,

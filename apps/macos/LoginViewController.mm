@@ -401,6 +401,23 @@ void keychainDelete(NSString *account){
     }
 }
 
+// 启动参数预填：勾上远程模式、填好地址端口账号，焦点直接落在口令框。
+- (void)prefillRemoteHost:(NSString *)host port:(NSInteger)port user:(NSString *)user{
+    if (host.length == 0){
+        return;
+    }
+    _hostField.stringValue = host;
+    if (port > 0){
+        _portField.stringValue = [NSString stringWithFormat:@"%ld", (long)port];
+    }
+    if (user.length > 0){
+        _userNameField.stringValue = user;
+    }
+    _remoteCheck.state = NSControlStateValueOn;
+    [self remoteModeChanged:_remoteCheck];   // 显示地址/端口行
+    [_passwordField becomeFirstResponder];   // 只剩口令要填
+}
+
 // 远程登录：连服务端并用同一个 login action 校验账号口令。
 // ServerSession 是异步的，这里用局部 run loop 等结果（与 Gate 端
 // TcpClient::request 同样的取舍）；超时按失败处理，不假装成功。

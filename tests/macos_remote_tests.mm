@@ -18,6 +18,7 @@
 #include "core/service/UserStore.h"
 #include "network/SmartParkTcpServer.h"
 
+#import "LoginViewController.h"
 #import "MainWindowController.h"
 #import "TextUtil.h"   // smartpark_ui::toNSString：中文安全的 QString -> NSString
 
@@ -84,6 +85,9 @@ static bool viewContainsText(NSView *root, NSString *needle){
 
 // ParkingBridge 是 C++ 类，@property(assign) 存的是裸指针，KVC 不保证能装箱，
 // 直接按 ivar 偏移读更可靠。
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-bridge-casts-disallowed-in-nonarc"
+
 static void *readPointerIvar(id object, const char *name){
     Ivar ivar = class_getInstanceVariable([object class], name);
     if (ivar == nullptr){
@@ -91,6 +95,8 @@ static void *readPointerIvar(id object, const char *name){
     }
     return *(void **)((char *)(__bridge void *)object + ivar_getOffset(ivar));
 }
+
+#pragma clang diagnostic pop
 
 int main(int argc, char **argv){
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -273,6 +279,33 @@ int main(int argc, char **argv){
             std::snprintf(label, sizeof(label), "「%s」页渲染出「%s」", check.name,
                           [check.needle UTF8String]);
             expect(viewContainsText(main.contentViewController.view, check.needle), label);
+        }
+    }
+
+    // ---- 启动参数预填（--remote host:port / --user）----
+    // 部署后一条命令直达：登录界面应勾好远程模式、填好地址端口账号。
+    @autoreleasepool{
+        QTemporaryDir loginDir;
+        std::unique_ptr<smartpark::UserStore> loginUsers;
+        if (loginDir.isValid()){
+            loginUsers = std::make_unique<smartpark::UserStore>(
+                loginDir.filePath(QStringLiteral("login.db")));
+            LoginViewController *login = [[LoginViewController alloc]
+                initWithUserStore:loginUsers.get()];
+            (void)login.view;   // 触发界面构建
+            [login prefillRemoteHost:@"10.108.17.55" port:9527 user:@"admin"];
+
+            NSButton *check = (__bridge NSButton *)readPointerIvar(login, "_remoteCheck");
+            NSTextField *host = (__bridge NSTextField *)readPointerIvar(login, "_hostField");
+            NSTextField *port = (__bridge NSTextField *)readPointerIvar(login, "_portField");
+            NSTextField *user = (__bridge NSTextField *)readPointerIvar(login, "_userNameField");
+            NSStackView *row = (__bridge NSStackView *)readPointerIvar(login, "_remoteRow");
+
+            expect(check.state == NSControlStateValueOn, "预填后「连接远程服务端」已勾选");
+            expect([host.stringValue isEqualToString:@"10.108.17.55"], "预填后地址正确");
+            expect([port.stringValue isEqualToString:@"9527"], "预填后端口正确");
+            expect([user.stringValue isEqualToString:@"admin"], "预填后账号正确");
+            expect(row.hidden == NO, "预填后地址/端口行已显示");
         }
     }
 
