@@ -1074,22 +1074,33 @@ function drawLayout(canvas, opts = {}) {
     }
   });
   // 出入口
-  ctx.font = `${Math.max(9, 10 * scale)}px sans-serif`;
-  // 出入口就在场地边缘（x=0 / x=siteWidth），标签按 -8 偏移会跑到画布外被裁掉。
-  // 这里把文字夹回画布内，圆点仍在真实坐标上。
+  // 字号和圆点都用固定尺寸，不乘 scale。之前写的是 10 * scale、3 * scale，
+  // 而 scale 是把场地塞进画布的倍率（这张图约 6.9），于是标签变成 69px 的巨字、
+  // 圆点半径 21px，在顶边糊成一团还被裁掉。出入口标记是「图例」性质的东西，
+  // 不随底图缩放才对。
+  const gateRadius = 5;
+  ctx.font = '11px sans-serif';
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
   const drawGate = (p, text, color) => {
+    // 贴边的出入口（x=0 / y=0）圆点会有一半在画布外，这里把圆心也夹回来。
+    const cx = Math.min(Math.max(X(p.x), gateRadius + 1), W - gateRadius - 1);
+    const cy = Math.min(Math.max(Y(p.y), gateRadius + 1), H - gateRadius - 1);
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.arc(X(p.x), Y(p.y), Math.max(4, 3 * scale), 0, Math.PI * 2);
+    ctx.arc(cx, cy, gateRadius, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = '#fff';
     const half = ctx.measureText(text).width / 2;
-    const tx = Math.min(Math.max(X(p.x) - half, 2), Math.max(2, W - half * 2 - 2));
-    const ty = Math.min(Math.max(Y(p.y) - 8, 12), H - 4);
-    ctx.fillText(text, tx, ty);
+    const tx = Math.min(Math.max(cx - half, 2), Math.max(2, W - half * 2 - 2));
+    // 标签默认压在圆点上方；顶上放不下就改放下方，避免又被裁掉。
+    let ty = cy - gateRadius - 7;
+    if (ty < 8) ty = cy + gateRadius + 7;
+    ctx.fillText(text, tx, Math.min(ty, H - 8));
   };
   (layout.entrances || []).forEach((p, i) => drawGate(p, '入' + (i + 1), '#fdda54'));
   (layout.exits || []).forEach((p, i) => drawGate(p, '出' + (i + 1), '#f97066'));
+  ctx.textBaseline = 'alphabetic';
 
   const points = opts.routePoints;
   if (!points || !points.length) return;
