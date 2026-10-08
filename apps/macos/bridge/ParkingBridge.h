@@ -42,6 +42,9 @@ public:
     const std::vector<smartpark::ParkingSpot> &spots() const noexcept override;
     const std::vector<smartpark::ParkingRecord> &records() const noexcept override;
     const std::vector<smartpark::Booking> &bookings() const noexcept override;
+    // 时段预约（Reservation，0.7）：网页 H5 与用户端 CLI 创建的那种。
+    const std::vector<smartpark::Reservation> &reservations() const noexcept override;
+    ReservationRuleView reservationRule() const noexcept override;
     smartpark::ParkingInsights insights() const noexcept override;
     double pendingDeposits() const noexcept override;
     double forfeitedDeposits() const noexcept override;

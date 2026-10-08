@@ -8,6 +8,7 @@
 #include "core/persistence/Persistence.h"
 #include "core/service/ParkingInsightEngine.h"
 #include "core/service/ParkingService.h"
+#include "core/service/ReservationService.h"
 
 #include <QSqlDatabase>
 #include <QSqlError>
@@ -236,6 +237,28 @@ const std::vector<smartpark::Booking> &ParkingBridge::bookings() const noexcept{
     }
     static const std::vector<smartpark::Booking> empty;
     return service_ ? service_->bookings() : empty;
+}
+
+const std::vector<smartpark::Reservation> &ParkingBridge::reservations() const noexcept{
+    if (remote_){
+        return remote_->reservations();
+    }
+    static const std::vector<smartpark::Reservation> empty;
+    return service_ ? service_->reservations().reservations() : empty;
+}
+
+ParkingBridge::ReservationRuleView ParkingBridge::reservationRule() const noexcept{
+    if (remote_){
+        return remote_->reservationRule();
+    }
+    ReservationRuleView view;
+    if (service_){
+        const smartpark::ReservationRule &rule = service_->reservations().rule();
+        view.deposit = rule.deposit;
+        view.maxAdvanceDays = rule.maxAdvanceDays;
+        view.gracePeriodMin = static_cast<int>(rule.gracePeriod.count());
+    }
+    return view;
 }
 
 smartpark::ParkingInsights ParkingBridge::insights() const noexcept{
