@@ -76,8 +76,11 @@
 
     _table = [[TableView alloc] initWithFrame:NSMakeRect(0, 0, 800, 300)];
     _table.translatesAutoresizingMaskIntoConstraints = NO;
+    // 末列区分两代预约：本页表单创建的是 Booking（「预约」），
+    // 网页 H5 / 用户端 CLI / 协议 reservation.create 写的是 Reservation（「时段预约」）。
+    // 两者字段一一对应，放在一张表里展示，靠这一列区分。
     [_table setColumns:@[@"编号", @"车牌", @"车位", @"创建时间", @"到场时间",
-                         @"宽限截止", @"定金(元)", @"状态"]];
+                         @"宽限截止", @"定金(元)", @"状态", @"来源"]];
     [root addSubview:_table];
 
     _statusLabel = [NSTextField wrappingLabelWithString:@""];
@@ -264,6 +267,26 @@
             [NSString stringWithUTF8String:smartpark_ui::formatTime(booking.arrivalDeadline()).c_str()],
             [NSString stringWithFormat:@"%.2f", booking.deposit()],
             [NSString stringWithUTF8String:smartpark_ui::bookingStatusText(booking.status())],
+            @"预约",
+        ]];
+    }
+    // 时段预约：网页端预约写的就是这一种。之前这个页面只显示上面的 Booking，
+    // 于是网页上刚建的预约在管理端完全看不到。
+    for (const smartpark::Reservation &reservation : self.bridge->reservations()){
+        auto time = [](smartpark::Reservation::TimePoint t){
+            return smartpark_ui::formatTime(
+                smartpark::ParkingRecord::TimePoint(t.time_since_epoch()));
+        };
+        [rows addObject:@[
+            [NSString stringWithUTF8String:reservation.id().c_str()],
+            [NSString stringWithUTF8String:reservation.plateNumber().c_str()],
+            [NSString stringWithUTF8String:reservation.spotId().c_str()],
+            [NSString stringWithUTF8String:time(reservation.createdAt()).c_str()],
+            [NSString stringWithUTF8String:time(reservation.startTime()).c_str()],
+            [NSString stringWithUTF8String:time(reservation.graceDeadline()).c_str()],
+            [NSString stringWithFormat:@"%.2f", reservation.deposit()],
+            [NSString stringWithUTF8String:smartpark_ui::reservationStatusText(reservation.status())],
+            @"时段预约",
         ]];
     }
     [_table setRows:rows];

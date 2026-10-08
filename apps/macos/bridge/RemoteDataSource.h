@@ -66,6 +66,10 @@ public:
     const std::vector<Booking> &bookings() const noexcept override { return bookings_; }
     ParkingInsights insights() const noexcept override;
     double totalRevenue() const noexcept override { return dailyRevenueTotal(); }
+    const std::vector<smartpark::Reservation> &reservations() const noexcept override {
+        return reservations_;
+    }
+    ReservationRuleView reservationRule() const noexcept override { return reservationRule_; }
     double pendingDeposits() const noexcept override { return pendingDeposits_; }
     double forfeitedDeposits() const noexcept override { return forfeitedDeposits_; }
 
@@ -97,6 +101,9 @@ private:
     // 并在本地用 ParkingInsightEngine 算出预测与分区压力。
     std::vector<ParkingRecord> records_;
     std::vector<Booking> bookings_;
+    // 时段预约（Reservation，0.7）：网页/CLI 创建的那种，见 ParkingDataSource.h 注释。
+    std::vector<smartpark::Reservation> reservations_;
+    ReservationRuleView reservationRule_;
     double pendingDeposits_{0.0};
     double forfeitedDeposits_{0.0};
     QJsonObject analytics_;

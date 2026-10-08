@@ -320,6 +320,43 @@ bool RemoteDataSource::applySnapshot(const QJsonObject &snapshot, std::string *e
     }
     bookings_ = std::move(bookings);
     pendingDeposits_ = snapshot.value(QStringLiteral("pendingDeposits")).toDouble();
+
+    // 时段预约：与服务端 admin.snapshot 的字段一一对应。
+    std::vector<smartpark::Reservation> reservations;
+    for (const QJsonValue &item : snapshot.value(QStringLiteral("reservations")).toArray()){
+        const QJsonObject object = item.toObject();
+        const std::string plate =
+            object.value(QStringLiteral("plate")).toString().toStdString();
+        if (plate.empty()){
+            continue;
+        }
+        const auto type = protocol::vehicleTypeFromString(
+            object.value(QStringLiteral("vehicleType")).toString());
+        reservations.emplace_back(
+            object.value(QStringLiteral("id")).toString().toStdString(),
+            plate,
+            type.value_or(VehicleType::Car),
+            object.value(QStringLiteral("spotId")).toString().toStdString(),
+            timeFromMs(object.value(QStringLiteral("createdAtMs")).toInteger()),
+            timeFromMs(object.value(QStringLiteral("startMs")).toInteger()),
+            timeFromMs(object.value(QStringLiteral("endMs")).toInteger()),
+            timeFromMs(object.value(QStringLiteral("graceDeadlineMs")).toInteger()),
+            object.value(QStringLiteral("deposit")).toDouble(),
+            std::string(),   // chargeTransactionId：管理端不展示
+            reservationStatusFromInt(object.value(QStringLiteral("status")).toInt())
+                .value_or(ReservationStatus::Confirmed),
+            depositStateFromInt(object.value(QStringLiteral("depositState")).toInt())
+                .value_or(DepositState::Pending),
+            ExpectedRoute{},   // 预期路线：管理端不展示
+            object.value(QStringLiteral("accessible")).toBool());
+    }
+    reservations_ = std::move(reservations);
+
+    const QJsonObject rule = snapshot.value(QStringLiteral("reservationRule")).toObject();
+    reservationRule_ = ReservationRuleView{};
+    reservationRule_.deposit = rule.value(QStringLiteral("deposit")).toDouble();
+    reservationRule_.maxAdvanceDays = rule.value(QStringLiteral("maxAdvanceDays")).toInt();
+    reservationRule_.gracePeriodMin = rule.value(QStringLiteral("gracePeriodMin")).toInt();
     forfeitedDeposits_ = snapshot.value(QStringLiteral("forfeitedDeposits")).toDouble();
 
     layout_ = ParkingLayout::fromParts(siteWidth, siteHeight, std::move(spots),

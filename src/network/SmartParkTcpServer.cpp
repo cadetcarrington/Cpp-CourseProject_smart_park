@@ -749,7 +749,43 @@ QJsonObject SmartParkTcpServer::actionAdminSnapshot(const QJsonObject &,
         bookingsJson.append(item);
     }
 
+    // 时段预约（Reservation，0.7 模型）：与 Booking 并存的两代功能。
+    // 网页 H5、用户端 CLI 与 reservation.create 动作都写这张表，而管理端的
+    // 「预约管理」页只显示 Booking——两个功能各写各的，谁也看不见谁。
+    // 快照把它一起带上，管理端才能显示网页上创建的预约。
+    QJsonArray reservationsJson;
+    for (const Reservation &reservation : service_->reservations().reservations()){
+        QJsonObject item;
+        item.insert(QStringLiteral("id"),
+                    QString::fromStdString(reservation.id()));
+        item.insert(QStringLiteral("plate"),
+                    QString::fromStdString(reservation.plateNumber()));
+        item.insert(QStringLiteral("vehicleType"),
+                    protocol::vehicleTypeToString(reservation.vehicleType()));
+        item.insert(QStringLiteral("spotId"),
+                    QString::fromStdString(reservation.spotId()));
+        item.insert(QStringLiteral("createdAtMs"), timeToMs(reservation.createdAt()));
+        item.insert(QStringLiteral("startMs"), timeToMs(reservation.startTime()));
+        item.insert(QStringLiteral("endMs"), timeToMs(reservation.endTime()));
+        item.insert(QStringLiteral("graceDeadlineMs"),
+                    timeToMs(reservation.graceDeadline()));
+        item.insert(QStringLiteral("deposit"), reservation.deposit());
+        item.insert(QStringLiteral("status"), reservationStatusToInt(reservation.status()));
+        item.insert(QStringLiteral("depositState"),
+                    depositStateToInt(reservation.depositState()));
+        item.insert(QStringLiteral("accessible"), reservation.isAccessible());
+        reservationsJson.append(item);
+    }
+    // 预约规则：管理端要显示「定金/最多提前几天/宽限期」。
+    const ReservationRule &rule = service_->reservations().rule();
+
     QJsonObject result;
+    result.insert(QStringLiteral("reservations"), reservationsJson);
+    result.insert(QStringLiteral("reservationRule"),
+                  QJsonObject{{QStringLiteral("deposit"), rule.deposit},
+                              {QStringLiteral("maxAdvanceDays"), rule.maxAdvanceDays},
+                              {QStringLiteral("gracePeriodMin"),
+                               static_cast<int>(rule.gracePeriod.count())}});
     result.insert(QStringLiteral("dailyRevenue"), dailyRevenue);
     result.insert(QStringLiteral("layout"), layoutJson);
     result.insert(QStringLiteral("spots"), spots);

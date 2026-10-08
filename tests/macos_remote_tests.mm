@@ -15,6 +15,7 @@
 #include "core/persistence/Persistence.h"
 #include "core/service/AuditLogService.h"
 #include "core/service/ParkingService.h"
+#include "core/service/ReservationService.h"
 #include "core/service/UserStore.h"
 #include "network/SmartParkTcpServer.h"
 
@@ -159,6 +160,12 @@ int main(int argc, char **argv){
         service->createBooking(
             smartpark::Vehicle("京A10003", smartpark::VehicleType::Electric),
             now + std::chrono::hours(2), now);
+        // 时段预约（Reservation）：网页 H5 创建的是这一种，和上面的 Booking 并存。
+        // 管理端原先只显示 Booking，网页上建的预约完全看不到。
+        service->reservations().create(
+            {std::string("京A20001"), smartpark::VehicleType::Car},
+            now + std::chrono::minutes(45),
+            now + std::chrono::minutes(105), now, false);
 
         smartpark::SmartParkTcpServer::Options options;
         options.port = 0;   // 让内核挑一个空闲端口
@@ -232,6 +239,8 @@ int main(int argc, char **argv){
             expect(bridge->occupiedSpots() == 2, "占用数来自服务端（2 辆在场）");
             expect(bridge->records().size() == 2, "停车记录随快照下发（2 条）");
             expect(bridge->bookings().size() == 1, "预约随快照下发（1 笔）");
+            expect(bridge->reservations().size() == 1,
+                   "时段预约随快照下发（1 笔，网页端创建的那种）");
             expect(bridge->pendingDeposits() > 0.0, "待结算定金非零");
         } else {
             expect(bridge->totalSpots() > 0, "车位总数来自服务端");
@@ -263,12 +272,16 @@ int main(int argc, char **argv){
         // 自带服务端时数据是自己造的，可以断言到具体车牌；指向外部服务端时
         // 对方可能是个空库，只能断言页面框架渲染出来了。
         NSString *recordsNeedle = external ? @"停车记录" : @"京A1000";
+        // 断言到具体预约车牌，光查标题的话空列表也会「通过」。
+        NSString *bookingsNeedle = external ? @"预约" : @"京A10003";
+        // 网页预约写的是 Reservation，这一条断言的是那个模型真的显示出来了。
+        NSString *reservationNeedle = external ? @"预约" : @"京A20001";
         const PageCheck checks[] = {
             {0, "仪表盘",   @"总车位"},
             {1, "车位地图", @"车位"},
             {2, "车辆作业", @"车牌"},
             {3, "当前车位", @"车位"},
-            {4, "预约管理", @"预约"},
+            {4, "预约管理", bookingsNeedle},
             {5, "停车记录", recordsNeedle},
         };
         for (const PageCheck &check : checks){
@@ -280,6 +293,14 @@ int main(int argc, char **argv){
                           [check.needle UTF8String]);
             expect(viewContainsText(main.contentViewController.view, check.needle), label);
         }
+
+        // 「预约管理」页还要显示时段预约（网页端创建的那种）。
+        [sidebar selectIndex:4];
+        spin([]{ return false; }, 450);
+        [main.contentViewController.view layoutSubtreeIfNeeded];
+        expect(viewContainsText(main.contentViewController.view, reservationNeedle),
+               external ? "「预约管理」页渲染出时段预约区块"
+                        : "「预约管理」页显示时段预约 京A20001（网页端创建的那种）");
     }
 
     // ---- 启动参数预填（--remote host:port / --user）----
@@ -306,6 +327,27 @@ int main(int argc, char **argv){
             expect([port.stringValue isEqualToString:@"9527"], "预填后端口正确");
             expect([user.stringValue isEqualToString:@"admin"], "预填后账号正确");
             expect(row.hidden == NO, "预填后地址/端口行已显示");
+
+            // 没有 --remote 时，登录界面应自带默认部署地址，勾上就能登录。
+            // 先摘掉「记住的地址」，测完再还原，避免动到用户自己的设置。
+            NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+            id savedHost = [defaults objectForKey:@"smartpark.remote.host"];
+            id savedPort = [defaults objectForKey:@"smartpark.remote.port"];
+            [defaults removeObjectForKey:@"smartpark.remote.host"];
+            [defaults removeObjectForKey:@"smartpark.remote.port"];
+
+            LoginViewController *plain = [[LoginViewController alloc]
+                initWithUserStore:loginUsers.get()];
+            (void)plain.view;
+            NSTextField *plainHost = (__bridge NSTextField *)readPointerIvar(plain, "_hostField");
+            NSTextField *plainPort = (__bridge NSTextField *)readPointerIvar(plain, "_portField");
+            expect([plainHost.stringValue isEqualToString:@"10.108.17.55"],
+                   "未指定 --remote 时地址默认为 10.108.17.55");
+            expect([plainPort.stringValue isEqualToString:@"9527"],
+                   "未指定 --remote 时端口默认为 9527");
+
+            if (savedHost != nil){ [defaults setObject:savedHost forKey:@"smartpark.remote.host"]; }
+            if (savedPort != nil){ [defaults setObject:savedPort forKey:@"smartpark.remote.port"]; }
         }
     }
 

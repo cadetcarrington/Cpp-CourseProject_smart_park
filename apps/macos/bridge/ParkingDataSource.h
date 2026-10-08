@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/model/Booking.h"
+#include "core/model/Reservation.h"
 #include "core/model/ParkingLayout.h"
 #include "core/model/ParkingRecord.h"
 #include "core/service/ParkingInsightEngine.h"
@@ -47,6 +48,20 @@ public:
     virtual const std::vector<ParkingSpot> &spots() const noexcept = 0;
     virtual const std::vector<ParkingRecord> &records() const noexcept = 0;
     virtual const std::vector<Booking> &bookings() const noexcept = 0;
+
+    // 时段预约（Reservation，0.7 模型）。与上面的 Booking 是并存的两代功能：
+    // 网页 H5、用户端 CLI 与协议 reservation.create 写这张表，管理端的
+    // 「预约管理」页显示的是 Booking。默认空实现，供不提供该能力的实现复用。
+    struct ReservationRuleView{
+        double deposit{0.0};
+        int maxAdvanceDays{0};
+        int gracePeriodMin{0};
+    };
+    virtual const std::vector<smartpark::Reservation> &reservations() const noexcept {
+        static const std::vector<smartpark::Reservation> kEmpty;
+        return kEmpty;
+    }
+    virtual ReservationRuleView reservationRule() const noexcept { return {}; }
     virtual ParkingInsights insights() const noexcept = 0;
 
     // 由 spots() 派生：两种模式共用同一份口径，避免各算一套。

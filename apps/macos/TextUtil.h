@@ -2,6 +2,7 @@
 
 #import <Foundation/Foundation.h>
 
+#include "core/model/Reservation.h"
 #include "core/model/Booking.h"
 #include "core/model/ParkingRecord.h"
 #include "core/model/ParkingSpot.h"
@@ -79,6 +80,20 @@ inline const char *bookingStatusText(smartpark::BookingStatus status){
     default:
         return "已预约";
     }
+}
+
+// 时段预约（Reservation，0.7）的状态文案。
+inline const char *reservationStatusText(smartpark::ReservationStatus status){
+    switch (status){
+    case smartpark::ReservationStatus::PendingPayment: return "待付定金";
+    case smartpark::ReservationStatus::Confirmed:      return "已确认";
+    case smartpark::ReservationStatus::CheckedIn:      return "已到场";
+    case smartpark::ReservationStatus::Completed:      return "已完成";
+    case smartpark::ReservationStatus::Cancelled:      return "已取消";
+    case smartpark::ReservationStatus::NoShow:         return "爽约";
+    case smartpark::ReservationStatus::Expired:        return "支付超时";
+    }
+    return "未知";
 }
 
 inline std::string formatTime(smartpark::ParkingRecord::TimePoint time){
