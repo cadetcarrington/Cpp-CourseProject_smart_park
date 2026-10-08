@@ -261,6 +261,20 @@ ParkingBridge::ReservationRuleView ParkingBridge::reservationRule() const noexce
     return view;
 }
 
+void ParkingBridge::recognizePlateRemotely(
+    const QByteArray &imageBytes, std::function<void(PlateRecognition)> done){
+    if (remote_){
+        remote_->recognizePlateRemotely(imageBytes, std::move(done));
+        return;
+    }
+    // 本地模式由界面自己起识别脚本（沿用原有路径），这里不接管。
+    done(PlateRecognition{false, {}, 0.0, {}, "本地模式请使用本机识别脚本"});
+}
+
+bool ParkingBridge::supportsRemoteRecognition() const noexcept{
+    return remote_ != nullptr;
+}
+
 smartpark::ParkingInsights ParkingBridge::insights() const noexcept{
     if (remote_){
         return remote_->insights();

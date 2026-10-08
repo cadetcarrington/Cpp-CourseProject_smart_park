@@ -370,6 +370,41 @@ bool RemoteDataSource::applySnapshot(const QJsonObject &snapshot, std::string *e
     return true;
 }
 
+void RemoteDataSource::recognizePlateRemotely(
+    const QByteArray &imageBytes, std::function<void(PlateRecognition)> done){
+    PlateRecognition outcome;
+    if (imageBytes.isEmpty()){
+        outcome.error = "图片为空";
+        done(outcome);
+        return;
+    }
+    if (imageBytes.size() > 6 * 1024 * 1024){
+        outcome.error = "图片超过 6MB，服务端不接受";
+        done(outcome);
+        return;
+    }
+    // 识别跑在服务端：客户端不拉模型、不装 Python 环境，只把照片发过去。
+    session_->request(
+        QStringLiteral("lpr.recognize"),
+        QJsonObject{{QStringLiteral("image"),
+                     QString::fromLatin1(imageBytes.toBase64())}},
+        [done](bool ok, const QString &error, const QJsonObject &body){
+        PlateRecognition result;
+        if (!ok){
+            result.error = error.toStdString();
+        } else {
+            result.ok = true;
+            result.plate =
+                body.value(QStringLiteral("plate")).toString().toStdString();
+            result.confidence =
+                body.value(QStringLiteral("confidence")).toDouble();
+            result.backend =
+                body.value(QStringLiteral("backend")).toString().toStdString();
+        }
+        done(result);
+    });
+}
+
 ParkingInsights RemoteDataSource::insights() const noexcept{
     // 记录与预约都在手里了，洞察可以直接用与本地模式同一个引擎算，
     // 不必再单独走 analytics.report（那份是给人看的文本结论）。

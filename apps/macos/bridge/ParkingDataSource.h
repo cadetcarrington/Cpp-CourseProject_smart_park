@@ -62,6 +62,26 @@ public:
         return kEmpty;
     }
     virtual ReservationRuleView reservationRule() const noexcept { return {}; }
+
+    // 服务端车牌识别结果。
+    struct PlateRecognition{
+        bool ok{false};
+        std::string plate;
+        double confidence{0.0};
+        std::string backend;   // script / mock，用来区分真识别与演示结果
+        std::string error;
+    };
+    // 把照片交给服务端识别（异步）。识别要跑检测+OCR，可能几秒，用同步的
+    // 嵌套事件循环会把主线程卡成菊花。默认不支持：本地模式自己起脚本。
+    virtual void recognizePlateRemotely(
+        const QByteArray &imageBytes,
+        std::function<void(PlateRecognition)> done){
+        (void)imageBytes;
+        done(PlateRecognition{false, {}, 0.0, {},
+                              "该数据源不支持服务端识别"});
+    }
+    // 是否支持服务端识别（界面据此决定走远程还是本机脚本）。
+    virtual bool supportsRemoteRecognition() const noexcept { return false; }
     virtual ParkingInsights insights() const noexcept = 0;
 
     // 由 spots() 派生：两种模式共用同一份口径，避免各算一套。

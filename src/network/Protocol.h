@@ -12,7 +12,11 @@ namespace protocol{
 
 constexpr int kProtocolVersion = 1;
 // 单帧 JSON 载荷上限；超限视为恶意/异常连接并断开。
-constexpr int kMaxFrameBytes = 1024 * 1024;
+// 帧上限。原先 1MiB 够用，但 lpr.recognize 要把照片 base64 塞进 payload：
+// 6MB 图片 base64 后约 8MB，加上 JSON 开销再留点余量。
+constexpr int kMaxFrameBytes = 9 * 1024 * 1024;
+// 单张图片的原始字节上限（base64 前），与 REST 的 /api/v1/lpr/recognize 一致。
+constexpr int kMaxImageBytes = 6 * 1024 * 1024;
 
 // 封包：4 字节大端长度前缀 + UTF-8 JSON 载荷。
 QByteArray encodeFrame(const QJsonObject &message);

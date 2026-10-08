@@ -6,6 +6,7 @@
 #include "core/service/ReservationService.h"
 #include "core/service/UserStore.h"
 #include "network/EventHub.h"
+#include "network/PlateRecognition.h"
 #include "network/Protocol.h"
 
 #include <QDateTime>
@@ -209,6 +210,8 @@ void SmartParkTcpServer::dispatch(Session &session, const QString &id,
         } else{
             error = QStringLiteral("仅 Gate 终端可补报");
         }
+    } else if (action == QStringLiteral("lpr.recognize")){
+        result = actionLprRecognize(payload, &ok, &error);
     } else if (action == QStringLiteral("admin.snapshot")){
         if (session.user == QStringLiteral("admin")){
             if (audit_ != nullptr){
@@ -231,6 +234,27 @@ void SmartParkTcpServer::send(Session &session, const QJsonObject &message){
 void SmartParkTcpServer::respond(Session &session, const QString &id, bool ok,
                                  const QJsonObject &payload, const QString &error){
     send(session, protocol::makeResponse(id, ok, payload, error));
+}
+
+QJsonObject SmartParkTcpServer::actionLprRecognize(const QJsonObject &payload,
+                                                   bool *ok, QString *error){
+    const QString imageBase64 = payload.value(QStringLiteral("image")).toString();
+    const QByteArray imageBytes = QByteArray::fromBase64(imageBase64.toLatin1());
+    if (imageBytes.isEmpty() || imageBytes.size() > protocol::kMaxImageBytes){
+        *error = QStringLiteral("image 需为 base64 图片且不超过 %1MB")
+                     .arg(protocol::kMaxImageBytes / (1024 * 1024));
+        return {};
+    }
+    QString note;
+    QJsonObject result = network::recognizePlate(imageBytes, options_.lprCommand, &note);
+    if (result.isEmpty()){
+        *error = QStringLiteral("识别失败：%1").arg(note);
+        return {};
+    }
+    // 让调用方知道这次是真跑脚本还是 mock，别把演示结果当成识别结果。
+    result.insert(QStringLiteral("backend"), note);
+    *ok = true;
+    return result;
 }
 
 void SmartParkTcpServer::sendToSessions(const QString &event,

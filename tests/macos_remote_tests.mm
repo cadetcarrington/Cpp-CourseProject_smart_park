@@ -301,6 +301,34 @@ int main(int argc, char **argv){
         expect(viewContainsText(main.contentViewController.view, reservationNeedle),
                external ? "「预约管理」页渲染出时段预约区块"
                         : "「预约管理」页显示时段预约 京A20001（网页端创建的那种）");
+
+    // ---- 服务端识别：照片发给服务端，本机不跑推理 ----
+    @autoreleasepool{
+        if (bridge != nullptr){
+            // mock 后端按图片内容哈希出车牌，这里只要一段非空字节即可；
+            // 重点是确认这一趟真的经过了服务端（返回了 backend 说明）。
+            QByteArray imageBytes = QByteArrayLiteral("fake-jpeg-bytes-for-test");
+            bool finished = false;
+            smartpark::ParkingDataSource::PlateRecognition outcome;
+            bridge->recognizePlateRemotely(
+                imageBytes,
+                [&finished, &outcome](smartpark::ParkingDataSource::PlateRecognition result){
+                    outcome = result;
+                    finished = true;
+                });
+            spin([&]{ return finished; }, 15000);
+            expect(finished, "服务端识别有应答（异步回调返回）");
+            expect(outcome.ok, "服务端识别成功");
+            expect(!outcome.plate.empty(), "服务端返回了车牌");
+            expect(!outcome.backend.empty(), "返回 backend 说明识别跑在服务端");
+            std::printf("       识别结果：%s（backend=%s，置信度 %.2f）\n",
+                        outcome.plate.c_str(), outcome.backend.c_str(),
+                        outcome.confidence);
+            expect(bridge->supportsRemoteRecognition(),
+                   "远程模式声明支持服务端识别");
+        }
+    }
+
     }
 
     // ---- 启动参数预填（--remote host:port / --user）----
