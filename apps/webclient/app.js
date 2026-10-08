@@ -964,6 +964,19 @@ const SPOT_FILL = {
   vip:        'rgba(124,58,237,.55)',
 };
 
+const SPOT_TYPE_TEXT = { accessible: '无障碍', charging: '充电', vip: 'VIP' };
+
+// 车位上的文字：主行编号；占用时第二行写车牌，非普通车位空闲时写类型。
+// 与 macOS 端 ParkingMapView 的 spotLabel 同一套规则。
+function spotLabelLines(spot) {
+  const lines = [spot.spotId || ''];
+  if (spot.plate) lines.push(spot.plate);
+  else if (spot.status === 0 && spot.type && spot.type !== 'normal') {
+    lines.push(SPOT_TYPE_TEXT[spot.type] || '');
+  }
+  return lines.filter((t) => t);
+}
+
 // SpotStatus: 0 空闲 / 1 占用 / 2 预约 / 3 停用
 function spotFill(spot) {
   if (spot.status === 1) return SPOT_FILL.occupied;
@@ -1032,6 +1045,52 @@ function drawLayout(canvas, opts = {}) {
       ctx.strokeStyle = '#fdda54';
       ctx.lineWidth = 2;
       ctx.strokeRect(X(s.x) - 1, Y(s.y) - 1, s.w * scale + 2, s.h * scale + 2);
+    }
+
+    // 编号：与 macOS 端 drawFittedLabel 一致——从 10px 逐级缩到 5px，
+    // 再放不下就整块不画（宁可没有文字，也不要糊成一团）。
+    // 竖长车位把文字转 90°。
+    const rw = s.w * scale;
+    const rh = s.h * scale;
+    const wants = spotLabelLines(s);
+    const vertical = rh > rw * 1.45;
+    const areaW = (vertical ? rh : rw) - 3;
+    const areaH = (vertical ? rw : rh) - 3;
+    // 先试「编号 + 第二行」。手机屏上车位很小，两行常常放不下——macOS 端
+    // 是放不下就整块不画，桌面画布大还看不出来，手机上会有一半车位没编号。
+    // 所以退化一层：两行不行就只画编号。
+    let lines = wants;
+    let fontSize = 0;
+    const tryFit = (candidate) => {
+      for (let size = 10; size >= 5; size -= 0.5) {
+        ctx.font = `${size}px -apple-system, "PingFang SC", sans-serif`;
+        if (size * 1.15 * candidate.length > areaH) continue;
+        if (candidate.every((t) => ctx.measureText(t).width <= areaW)) return size;
+      }
+      return 0;
+    };
+    if (rw >= 5 && rh >= 5 && wants.length) {
+      fontSize = tryFit(wants);
+      if (!fontSize && wants.length > 1) {
+        lines = [wants[0]];
+        fontSize = tryFit(lines);
+      }
+      if (fontSize) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(X(s.x), Y(s.y), rw, rh);
+        ctx.clip();
+        ctx.translate(X(s.x) + rw / 2, Y(s.y) + rh / 2);
+        if (vertical) ctx.rotate(-Math.PI / 2);
+        ctx.fillStyle = s.status === 1 ? '#fff' : '#000';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const lineHeight = fontSize * 1.15;
+        lines.forEach((t, i) => {
+          ctx.fillText(t, 0, (i - (lines.length - 1) / 2) * lineHeight);
+        });
+        ctx.restore();
+      }
     }
   });
   // 出入口
