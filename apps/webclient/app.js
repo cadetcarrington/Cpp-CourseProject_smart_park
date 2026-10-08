@@ -358,8 +358,8 @@ function viewLogin(root) {
 /* ---------- 首页：余位概览 ---------- */
 
 async function viewHome(root) {
-  root.innerHTML = header(state.user ? '@' + state.user.username : '')
-      + '<div class="card"><div class="empty">加载中…</div></div>';
+  // 首页不显示顶部蓝色标题栏：直接进内容，余位概览本身就说明了这是哪。
+  root.innerHTML = '<div class="card"><div class="empty">加载中…</div></div>';
   let status;
   try { status = await api('GET', '/parking/status'); }
   catch (e) { root.querySelector('.card').innerHTML = `<div class="empty">${esc(e.message || '加载失败')}</div>`; return; }
@@ -868,15 +868,6 @@ function viewMore(root) {
       <div id="lpr-result" style="margin-top:10px"></div>
     </div>
     <div class="card">
-      <h3>无感支付（先离场后付）</h3>
-      <p class="muted" style="margin-bottom:8px">开通后车辆离场自动扣费（演示网关，不产生真实扣款），大屏与手机同步收到扣费事件。</p>
-      <div class="row2">
-        <div class="field" style="margin:0"><input id="fr-plate" placeholder="车牌号" value="${esc(plateHint())}"></div>
-        <button class="btn" id="fr-on" style="margin-top:0">开通</button>
-      </div>
-      <div id="fr-list" style="margin-top:10px"><div class="empty">加载中…</div></div>
-    </div>
-    <div class="card">
       <h3>接入二维码</h3>
       <div style="text-align:center">
         <img alt="接入二维码" width="168" height="168"
@@ -894,9 +885,7 @@ function viewMore(root) {
   root.querySelector('#g-go').onclick = queryGuide;
   root.querySelector('#m-logout').onclick = () => doLogout();
   root.querySelector('#lpr-file').onchange = onLprFile;
-  root.querySelector('#fr-on').onclick = () => toggleFrictionless(true);
   root.querySelector('#lpr-mode').textContent = '';
-  loadFrictionless();
 
   async function onLprFile(event) {
     const file = event.target.files && event.target.files[0];
@@ -934,51 +923,6 @@ function viewMore(root) {
     }
   }
 
-  async function toggleFrictionless(enabled) {
-    const plate = root.querySelector('#fr-plate').value.trim();
-    if (!plate) { toast('请输入车牌号'); return; }
-    try {
-      await api('POST', '/me/frictionless', { plate, enabled });
-      toast(enabled ? `${plate} 已开通无感支付` : `${plate} 已关闭无感支付`);
-      if (enabled) {
-        state.lastPlate = plate;
-        localStorage.setItem('sp_plate', plate);
-      }
-      loadFrictionless();
-    } catch (e) {
-      toast(e.message || '操作失败');
-    }
-  }
-
-  async function loadFrictionless() {
-    const box = root.querySelector('#fr-list');
-    try {
-      const data = await api('GET', '/me/frictionless');
-      if (!data.plates.length) {
-        box.innerHTML = '<div class="empty">暂未开通任何车牌</div>';
-        return;
-      }
-      box.innerHTML = data.plates.map((p) => `
-        <div class="item">
-          <div><div class="t">${esc(p.plate)}</div>
-            <div class="d">${fmtTime(p.createdAtMs)} 开通</div></div>
-          <button class="btn danger sm" data-plate="${esc(p.plate)}">关闭</button>
-        </div>`).join('');
-      box.querySelectorAll('button[data-plate]').forEach((b) => {
-        b.onclick = async () => {
-          try {
-            await api('POST', '/me/frictionless',
-              { plate: b.dataset.plate, enabled: false });
-            toast('已关闭');
-            loadFrictionless();
-          } catch (e) { toast(e.message || '操作失败'); }
-        };
-      });
-    } catch (e) {
-      box.innerHTML = `<div class="empty">${esc(e.message || '加载失败')}</div>`;
-    }
-  }
-
   async function queryGuide() {
     const plate = root.querySelector('#g-plate').value.trim();
     if (!plate) { toast('请输入车牌号'); return; }
@@ -1011,15 +955,34 @@ async function loadLayout() {
   return layoutCache;
 }
 
-const SPOT_COLORS = { 0: '#41d693', 1: '#f97066', 2: '#84caff', 3: '#4a5568' };
+// 与 macOS 端逐值一致（apps/macos/ParkingMapView.mm 的 stallFill）：
+// 占用/预约/停用按状态配色，空闲再按车位类型分色，非占用一律 55% 透明度。
+// 两边同一套停车场，颜色不一致会让人以为是两套数据。
+const SPOT_FILL = {
+  occupied:   'rgba(180,35,24,1)',      // 占用保持不透明
+  reserved:   'rgba(181,71,8,.55)',
+  disabled:   'rgba(102,112,133,.55)',
+  normal:     'rgba(15,118,110,.55)',
+  accessible: 'rgba(79,70,229,.55)',
+  charging:   'rgba(2,106,162,.55)',
+  vip:        'rgba(124,58,237,.55)',
+};
+
+// SpotStatus: 0 空闲 / 1 占用 / 2 预约 / 3 停用
+function spotFill(spot) {
+  if (spot.status === 1) return SPOT_FILL.occupied;
+  if (spot.status === 2) return SPOT_FILL.reserved;
+  if (spot.status === 3) return SPOT_FILL.disabled;
+  return SPOT_FILL[spot.type] || SPOT_FILL.normal;
+}
 
 const LEGEND_HTML = `
   <div class="legend">
-    <span><i style="background:#41d693"></i>空闲</span>
-    <span><i style="background:#f97066"></i>占用</span>
-    <span><i style="background:#84caff"></i>预约</span>
+    <span><i style="background:rgba(15,118,110,.8)"></i>空闲</span>
+    <span><i style="background:rgba(180,35,24,1)"></i>占用</span>
+    <span><i style="background:rgba(181,71,8,.8)"></i>预约</span>
     <span><i style="background:#fdda54"></i>指引路线</span>
-    <span><i style="background:#8b93a7"></i>停用/障碍</span>
+    <span><i style="background:rgba(102,112,133,.8)"></i>停用/障碍</span>
   </div>`;
 
 // 手机屏幕是 2x/3x：canvas 若按 CSS 尺寸做后备存储，浏览器放大后必然发糊。
@@ -1062,8 +1025,10 @@ function drawLayout(canvas, opts = {}) {
   // 车位
   spots.forEach((s) => {
     const highlighted = opts.highlightSpotId === s.spotId;
-    ctx.fillStyle = SPOT_COLORS[s.status] || '#4a5568';
-    ctx.globalAlpha = highlighted ? 1 : 0.85;
+    ctx.fillStyle = spotFill(s);
+    // 透明度已经写进颜色里（与 macOS 一致），这里不再叠加 globalAlpha，
+    // 只让高亮车位完全不透明以示强调。
+    ctx.globalAlpha = highlighted ? 1 : 0.999;
     ctx.fillRect(X(s.x) + 0.5, Y(s.y) + 0.5,
                  Math.max(1, s.w * scale - 1), Math.max(1, s.h * scale - 1));
     ctx.globalAlpha = 1;
