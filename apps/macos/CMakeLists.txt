@@ -1,6 +1,5 @@
-# AppKit 版 macOS 管理端（POC）。
-# 复用 C++17 core（算法/SQLite/Service），仅 UI 层用原生 AppKit 重写，
-# 与 Qt 版（apps/admin）并行，成熟后再删除 Qt 版。
+# AppKit macOS 管理端。
+# UI 使用原生 AppKit，共享 C++17 core（算法/SQLite/Service）与 network。
 
 enable_language(OBJCXX)
 

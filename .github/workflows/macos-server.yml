@@ -1,0 +1,39 @@
+name: macOS and server
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            macos_admin: 'ON'
+          - os: ubuntu-24.04
+            macos_admin: 'OFF'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          modules: 'qthttpserver qtwebsockets'
+          cache: true
+
+      - name: Configure current applications
+        run: >-
+          cmake -S . -B build/ci -DCMAKE_BUILD_TYPE=Release
+          -DSMARTPARK_BUILD_MACOS_ADMIN=${{ matrix.macos_admin }}
+          -DBUILD_TESTING=ON
+
+      - name: Build
+        run: cmake --build build/ci --parallel 4
+
+      - name: Test
+        run: ctest --test-dir build/ci --output-on-failure --timeout 240

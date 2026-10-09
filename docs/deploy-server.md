@@ -72,7 +72,7 @@ cd /path/to/smartpark
 cmake -S . -B build-server \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH="$HOME/Qt/6.8.3/gcc_64" \
-    -DSMARTPARK_BUILD_ADMIN=OFF \
+    -DSMARTPARK_BUILD_MACOS_ADMIN=OFF \
     -DBUILD_TESTING=OFF
 
 cmake --build build-server -j"$(nproc)"
@@ -80,8 +80,10 @@ cmake --build build-server -j"$(nproc)"
 
 两个开关的作用：
 
-- `-DSMARTPARK_BUILD_ADMIN=OFF` — 不构建 Qt Widgets 管理端，**整个构建过程不需要 Widgets**
-- `-DBUILD_TESTING=OFF` — 不构建测试，省掉 Qt6::Test 依赖
+- `-DSMARTPARK_BUILD_MACOS_ADMIN=OFF` — 不构建 AppKit 管理端；Linux 默认关闭。当前分支不再包含 Qt Widgets 管理端。
+- `-DBUILD_TESTING=OFF` — 不构建测试，部署只包含业务应用。
+
+也可用 `server-release` 预设，默认输出到 `build/server-release`。
 
 产物：
 
@@ -89,7 +91,6 @@ cmake --build build-server -j"$(nproc)"
 build-server/apps/server/smartpark_server     ← 服务端（REST + WS + TCP + 静态页）
 build-server/apps/gate/smartpark_gate         ← 道闸终端
 build-server/apps/user/smartpark_user         ← 用户命令行端
-build-server/apps/cli/smartpark_cli           ← 业务演示 CLI（可选）
 ```
 
 ### 布局文件
@@ -231,7 +232,6 @@ sudo ufw allow 8080/tcp && sudo ufw allow 8081/tcp
 | 手机 / 平板 | 浏览器打开 `http://<服务器>:8080/`，或扫启动横幅的二维码 |
 | 道闸终端 | `smartpark_gate --mode entrance --host <服务器> --port 9527 --user gate --pass smartpark` |
 | 用户命令行 | `smartpark_user --host <服务器> --port 9527 --user user --pass smartpark` |
-| Qt 管理端 | `smartpark_admin --server <服务器>:9527`（默认远程模式；`--local` 才是本地库） |
 | macOS 管理端 | 登录页勾「连接远程服务端」，填地址与端口 |
 
 内置账号（**仅新建空库时自动播种**，口令都是 `smartpark`）：
