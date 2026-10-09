@@ -1017,20 +1017,66 @@ function drawLayout(canvas, opts = {}) {
   const { dpr, width: W, height: H } = prepareCanvas(canvas);
   const ctx = canvas.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // 之后一律按 CSS 像素作图
-  const scale = Math.min(W / (layout.siteWidth + 4), H / (layout.siteHeight + 4));
-  const ox = (W - layout.siteWidth * scale) / 2;
-  const oy = (H - layout.siteHeight * scale) / 2;
+  // 车库贴左上角，只留一圈 10px 边距。原来是「4m 余量 + 居中」：四周一圈空白，
+  // 画布越大底图越小。与 macOS 端 mapTransform 同一套规则。
+  const MAP_MARGIN = 10;
+  const scale = Math.min((W - 2 * MAP_MARGIN) / layout.siteWidth,
+                         (H - 2 * MAP_MARGIN) / layout.siteHeight);
+  const ox = MAP_MARGIN;
+  const oy = MAP_MARGIN;
   const X = (x) => ox + x * scale;
   const Y = (y) => oy + y * scale;
 
   ctx.clearRect(0, 0, W, H);
-  // 场地底板
-  ctx.fillStyle = '#17233a';
+  // 场地底板：白。原来是深蓝底（#17233a），没铺车位的地方（各库之间、核心筒
+  // 那一条空档）看着是一块灰；改成白色后与 macOS 端的车位配色口径一致。
+  ctx.fillStyle = '#fff';
   ctx.fillRect(X(0), Y(0), layout.siteWidth * scale, layout.siteHeight * scale);
-  // 障碍物
-  ctx.fillStyle = '#0b1120';
-  (layout.obstacles || []).forEach((o) =>
-    ctx.fillRect(X(o.x), Y(o.y), o.w * scale, o.h * scale));
+  // 5m 网格 + 外墙：与 macOS 端普通布局同一套画法。
+  ctx.strokeStyle = '#e2e7ec';
+  ctx.lineWidth = 1;
+  for (let gx = 5; gx < layout.siteWidth; gx += 5) {
+    ctx.beginPath();
+    ctx.moveTo(X(gx), Y(0));
+    ctx.lineTo(X(gx), Y(layout.siteHeight));
+    ctx.stroke();
+  }
+  for (let gy = 5; gy < layout.siteHeight; gy += 5) {
+    ctx.beginPath();
+    ctx.moveTo(X(0), Y(gy));
+    ctx.lineTo(X(layout.siteWidth), Y(gy));
+    ctx.stroke();
+  }
+  // 区域边界：只描边不填色（区域框含通道，填色会把每条通道染灰）。
+  ctx.strokeStyle = 'rgba(178,186,196,1)';
+  (layout.regions || []).forEach((r) =>
+    ctx.strokeRect(X(r.x), Y(r.y), r.w * scale, r.h * scale));
+  // 障碍物：浅灰底 + 深灰边，放得下就写名字（与 macOS 一致）
+  (layout.obstacles || []).forEach((o) => {
+    const rx = X(o.x);
+    const ry = Y(o.y);
+    const rw = o.w * scale;
+    const rh = o.h * scale;
+    ctx.fillStyle = 'rgba(210,214,218,1)';
+    ctx.fillRect(rx, ry, rw, rh);
+    ctx.strokeStyle = 'rgba(92,96,102,1)';
+    ctx.strokeRect(rx, ry, rw, rh);
+    if (o.name && rw > 24 && rh > 14) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(rx, ry, rw, rh);
+      ctx.clip();
+      ctx.fillStyle = 'rgba(48,52,56,1)';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (let size = 11; size >= 7; size -= 0.5) {
+        ctx.font = `${size}px -apple-system, "PingFang SC", sans-serif`;
+        if (ctx.measureText(o.name).width <= rw - 4) break;
+      }
+      ctx.fillText(o.name, rx + rw / 2, ry + rh / 2);
+      ctx.restore();
+    }
+  });
   // 车位
   spots.forEach((s) => {
     const highlighted = opts.highlightSpotId === s.spotId;
@@ -1093,33 +1139,56 @@ function drawLayout(canvas, opts = {}) {
       }
     }
   });
-  // 出入口
-  // 字号和圆点都用固定尺寸，不乘 scale。之前写的是 10 * scale、3 * scale，
-  // 而 scale 是把场地塞进画布的倍率（这张图约 6.9），于是标签变成 69px 的巨字、
-  // 圆点半径 21px，在顶边糊成一团还被裁掉。出入口标记是「图例」性质的东西，
-  // 不随底图缩放才对。
-  const gateRadius = 5;
-  ctx.font = '11px sans-serif';
+  // 出入口：闸机在哪面墙就画在哪面墙——入场蓝、出场橙，墙上有开口标记，
+  // 文字贴在闸机内侧（永远落在场地里，不会被画布裁掉）。与 macOS 端同一套规则；
+  // 字号固定不乘 scale（scale 是「塞进画布」的倍率，乘上去会变成巨字）。
+  const GATE_IN = '#245cc4';
+  const GATE_OUT = '#d66c14';
+  ctx.font = '11px -apple-system, "PingFang SC", sans-serif';
   ctx.textBaseline = 'middle';
-  ctx.textAlign = 'left';
   const drawGate = (p, text, color) => {
-    // 贴边的出入口（x=0 / y=0）圆点会有一半在画布外，这里把圆心也夹回来。
-    const cx = Math.min(Math.max(X(p.x), gateRadius + 1), W - gateRadius - 1);
-    const cy = Math.min(Math.max(Y(p.y), gateRadius + 1), H - gateRadius - 1);
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(cx, cy, gateRadius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#fff';
+    const cx = X(p.x);
+    const cy = Y(p.y);
+    const dN = p.y;
+    const dS = layout.siteHeight - p.y;
+    const dW = p.x;
+    const dE = layout.siteWidth - p.x;
+    const len = Math.max(8, 2.2 * scale);
+    const thick = Math.max(3, 0.9 * scale);
     const half = ctx.measureText(text).width / 2;
-    const tx = Math.min(Math.max(cx - half, 2), Math.max(2, W - half * 2 - 2));
-    // 标签默认压在圆点上方；顶上放不下就改放下方，避免又被裁掉。
-    let ty = cy - gateRadius - 7;
-    if (ty < 8) ty = cy + gateRadius + 7;
-    ctx.fillText(text, tx, Math.min(ty, H - 8));
+    let marker;
+    let tx;
+    let ty;
+    let align;
+    if (dN <= dS && dN <= dW && dN <= dE) {          // 北墙：文字压在内侧（下方）
+      marker = [cx - len / 2, cy, len, thick];
+      align = 'center'; tx = cx; ty = cy + thick + 5;
+    } else if (dS <= dW && dS <= dE) {               // 南墙：文字压在墙内（上方）
+      marker = [cx - len / 2, cy - thick, len, thick];
+      align = 'center'; tx = cx; ty = cy - thick - 5;
+    } else if (dW <= dE) {                           // 西墙：文字在内侧（右方）
+      marker = [cx, cy - len / 2, thick, len];
+      align = 'left'; tx = cx + thick + 5; ty = cy;
+    } else {                                         // 东墙
+      marker = [cx - thick, cy - len / 2, thick, len];
+      align = 'right'; tx = cx - thick - 5; ty = cy;
+    }
+    ctx.fillStyle = color;
+    ctx.fillRect(marker[0], marker[1], marker[2], marker[3]);
+    ctx.textAlign = align;
+    // 标签不许出画布（center / left / right 三种对齐的边界不同）
+    const textW = half * 2;
+    if (align === 'center') {
+      tx = Math.min(Math.max(tx, half + 2), Math.max(half + 2, W - half - 2));
+    } else if (align === 'left') {
+      tx = Math.min(Math.max(tx, 2), Math.max(2, W - textW - 2));
+    } else {
+      tx = Math.min(Math.max(tx, Math.min(W - 2, textW + 2)), W - 2);
+    }
+    ctx.fillText(text, tx, Math.min(Math.max(ty, 9), H - 9));
   };
-  (layout.entrances || []).forEach((p, i) => drawGate(p, '入' + (i + 1), '#fdda54'));
-  (layout.exits || []).forEach((p, i) => drawGate(p, '出' + (i + 1), '#f97066'));
+  (layout.entrances || []).forEach((p) => drawGate(p, '入口', GATE_IN));
+  (layout.exits || []).forEach((p) => drawGate(p, '出口', GATE_OUT));
   ctx.textBaseline = 'alphabetic';
 
   const points = opts.routePoints;

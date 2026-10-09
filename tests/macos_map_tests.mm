@@ -32,10 +32,11 @@ struct Transform{
 };
 
 Transform expectedTransform(NSSize size, const smartpark::ParkingLayout &layout){
-    const double scale = std::min((size.width - 80.0) / layout.siteWidth(),
-                                  (size.height - 80.0) / layout.siteHeight());
-    return {scale, (size.width - layout.siteWidth() * scale) / 2.0,
-            (size.height - layout.siteHeight() * scale) / 2.0};
+    // 与 ParkingMapView.mm 的 mapTransform 保持一致：贴左上角 + 四周 12px 边距。
+    const double margin = 12.0;
+    const double scale = std::min((size.width - 2.0 * margin) / layout.siteWidth(),
+                                  (size.height - 2.0 * margin) / layout.siteHeight());
+    return {scale, margin, margin};
 }
 
 struct RGB{
@@ -103,9 +104,11 @@ void checkRender(ParkingMapView *view, const ParkingBridge &bridge,
     }
     require(image.pixelsWide == width && image.pixelsHigh == height, "bitmap dimensions mismatch");
     const Transform t = expectedTransform(view.bounds.size, bridge.layout());
-    const NSPoint site = t.point(20.0, 20.0);
-    require(distance(pixel(image, 2, 2), pixel(image, static_cast<int>(site.x), static_cast<int>(site.y))) > 0.20,
-            "map is blank or site background is missing");
+    // 场地底色改成纯白后，视图底色也是白的，「采样场地填充色」这条不再成立；
+    // 改采西墙中点：墙只有真的渲染了才会出现在这个像素上，同样能挡住"空白地图"。
+    const NSPoint wall = t.point(0.0, bridge.layout().siteHeight() / 2.0);
+    require(distance(pixel(image, 2, 2), pixel(image, static_cast<int>(wall.x), static_cast<int>(wall.y))) > 0.20,
+            "map is blank or site wall is missing");
 
     const auto &spots = bridge.spots();
     const auto it = std::find_if(spots.begin(), spots.end(), [](const auto &spot){
