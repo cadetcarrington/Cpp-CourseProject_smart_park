@@ -169,6 +169,8 @@
         result->nearbyOccupiedSpots, result->breakdown.zonePressureCost,
         result->entryRoute.turnCount + result->exitRoute.turnCount,
         result->breakdown.typePenalty, result->score];
+    // 这次分配的路线交给车位图：地图上直接画出进场/出场路线。
+    self.bridge->setPlannedRoute(result->entryRoute, result->exitRoute);
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SmartParkDataChanged" object:nil];
 }
 
@@ -204,6 +206,8 @@
         _statusLabel.stringValue = [NSString stringWithFormat:@"车牌 %@ 不存在可离场的在场记录。", plate];
         return;
     }
+    // 车已离场，之前那条进场路线不再代表任何东西，别留在地图上。
+    self.bridge->clearPlannedRoute();
     auto duration = std::chrono::duration_cast<std::chrono::minutes>(record->duration());
     _statusLabel.stringValue = [NSString stringWithFormat:
         @"离场完成：%@ | 车位 %@ | 时长 %lld 分钟 | 费用 %.2f 元",

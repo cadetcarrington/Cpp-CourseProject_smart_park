@@ -18,12 +18,14 @@
 #include <QJsonArray>
 #include <QJsonValue>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <ctime>
 #include <cstdio>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 
 namespace{
 // 解析布局描述；ParkingLayout 没有可访问的默认构造函数，故用 optional 承载。
@@ -207,6 +209,56 @@ double ParkingBridge::totalRevenue() const noexcept{
     return service_ ? service_->totalRevenue() : 0.0;
 }
 
+void ParkingBridge::setPlannedRoute(const smartpark::Route &entryRoute,
+                                    const smartpark::Route &exitRoute){
+    plannedRoute_.entryRoute = entryRoute;
+    plannedRoute_.exitRoute = exitRoute;
+    // 只有真的有两个点以上才值得画：单点或空路线当作「没有路线」，
+    // 免得车位图上留一段看不见的东西，界面还以为画过了。
+    plannedRoute_.valid = entryRoute.points.size() >= 2
+        || exitRoute.points.size() >= 2;
+}
+
+void ParkingBridge::clearPlannedRoute(){
+    plannedRoute_ = PlannedRoute{};
+}
+
+const ParkingBridge::PlannedRoute &ParkingBridge::plannedRoute() const noexcept{
+    return plannedRoute_;
+}
+
+std::vector<ParkingBridge::PendingReservation>
+ParkingBridge::pendingReservations() const{
+    std::vector<PendingReservation> pending;
+    const std::vector<smartpark::ParkingSpot> &spots = this->spots();
+    for (const smartpark::Reservation &reservation : reservations()){
+        // 只取「已确认/待支付、还没到场」的订单：已到场（CheckedIn）的车位是
+        // Occupied，锁定后的车位是 Reserved，这两种车位图上本来就看得见。
+        if (reservation.status() != smartpark::ReservationStatus::Confirmed
+            && reservation.status() != smartpark::ReservationStatus::PendingPayment){
+            continue;
+        }
+        const auto spot = std::find_if(
+            spots.begin(), spots.end(), [&reservation](const smartpark::ParkingSpot &item){
+                return item.identifier() == reservation.spotId();
+            });
+        if (spot != spots.end()
+            && (spot->status() == smartpark::SpotStatus::Reserved
+                || spot->status() == smartpark::SpotStatus::Occupied)){
+            continue;   // 已经锁位/被占：不再重复标注
+        }
+        PendingReservation item;
+        item.spotId = reservation.spotId();
+        item.plate = reservation.plateNumber();
+        item.vehicleType = reservation.vehicleType();
+        item.start = reservation.startTime();
+        item.end = reservation.endTime();
+        item.accessible = reservation.isAccessible();
+        pending.push_back(std::move(item));
+    }
+    return pending;
+}
+
 const smartpark::ParkingLayout &ParkingBridge::layout() const noexcept{
     if (remote_){
         return remote_->layout();
@@ -256,7 +308,10 @@ ParkingBridge::ReservationRuleView ParkingBridge::reservationRule() const noexce
         const smartpark::ReservationRule &rule = service_->reservations().rule();
         view.deposit = rule.deposit;
         view.maxAdvanceDays = rule.maxAdvanceDays;
+        view.minLeadTimeMin = static_cast<int>(rule.minLeadTime.count());
+        view.minDurationMin = static_cast<int>(rule.minDuration.count());
         view.gracePeriodMin = static_cast<int>(rule.gracePeriod.count());
+        view.lockLeadTimeMin = static_cast<int>(rule.lockLeadTime.count());
     }
     return view;
 }
@@ -351,33 +406,72 @@ void ParkingBridge::setStrategy(smartpark::AllocationStrategy strategy){
     }
 }
 
-std::optional<smartpark::BookingResult> ParkingBridge::bookVehicle(
-    const std::string &plate, smartpark::VehicleType type,
-    smartpark::ParkingRecord::TimePoint arrival){
+std::optional<smartpark::ParkingDataSource::ReservationCreation>
+ParkingBridge::createReservation(const std::string &plate,
+                                 smartpark::VehicleType type,
+                                 smartpark::ParkingRecord::TimePoint start,
+                                 std::chrono::minutes duration, bool accessible){
     if (remote_){
-        return remote_->bookVehicle(plate, type, arrival);
+        return remote_->createReservation(plate, type, start, duration, accessible);
     }
     if (!service_){
+        lastError_ = "停车数据服务不可用";
         return std::nullopt;
     }
-    return service_->createBooking(smartpark::Vehicle(plate, type), arrival);
+    auto created = service_->reservations().create(
+        smartpark::Vehicle(plate, type), start, start + duration,
+        smartpark::ParkingRecord::Clock::now(), accessible);
+    if (!created){
+        // 规则拒绝的原因直接来自核心（提前量/时长/冲突/已在场内…），
+        // 原样上抛，界面不自己编一套说辞。
+        lastError_ = service_->reservations().lastError();
+        return std::nullopt;
+    }
+    lastError_.clear();
+    ReservationCreation result(created->reservation);
+    result.entryRoute = created->allocation.entryRoute;
+    result.exitRoute = created->allocation.exitRoute;
+    result.entranceIndex = created->allocation.entranceIndex;
+    result.exitIndex = created->allocation.exitIndex;
+    return result;
 }
 
-std::optional<smartpark::AllocationResult> ParkingBridge::confirmBooking(const std::string &plate){
+std::optional<smartpark::Reservation> ParkingBridge::checkInReservation(
+    const std::string &plate){
     if (remote_){
-        return remote_->confirmBooking(plate);
+        return remote_->checkInReservation(plate);
     }
     if (!service_){
+        lastError_ = "停车数据服务不可用";
         return std::nullopt;
     }
-    return service_->confirmBooking(plate);
+    const auto arrived = service_->reservations().checkIn(
+        plate, smartpark::ParkingRecord::Clock::now());
+    if (!arrived){
+        lastError_ = service_->reservations().lastError();
+        return std::nullopt;
+    }
+    lastError_.clear();
+    // 到场后订单转 CheckedIn：回读核心里的最新状态，而不是回传请求时的快照。
+    return service_->reservations().findCheckedIn(plate);
 }
 
-bool ParkingBridge::cancelBooking(const std::string &plate){
+bool ParkingBridge::cancelReservation(const std::string &plate){
     if (remote_){
-        return remote_->cancelBooking(plate);
+        return remote_->cancelReservation(plate);
     }
-    return service_ && service_->cancelBooking(plate);
+    if (!service_){
+        lastError_ = "停车数据服务不可用";
+        return false;
+    }
+    const bool ok = service_->reservations().cancel(
+        plate, smartpark::ParkingRecord::Clock::now());
+    if (ok){
+        lastError_.clear();
+    } else{
+        lastError_ = service_->reservations().lastError();
+    }
+    return ok;
 }
 
 smartpark::BillingRule ParkingBridge::billingRule() const{
@@ -385,13 +479,6 @@ smartpark::BillingRule ParkingBridge::billingRule() const{
         return remote_->billingRule();
     }
     return service_ ? service_->billing().rule() : smartpark::BillingRule{};
-}
-
-smartpark::BookingPolicy ParkingBridge::bookingPolicy() const{
-    if (remote_){
-        return remote_->bookingPolicy();
-    }
-    return service_ ? service_->bookingPolicy() : smartpark::BookingPolicy{};
 }
 
 bool ParkingBridge::ready() const noexcept{

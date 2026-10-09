@@ -16,6 +16,7 @@ class ParkingService;
 class AuditLogService;
 class UserStore;
 class EventHub;
+class Reservation;
 
 // SmartPark TCP 服务端（协议 v1，见 docs/tcp-protocol.md）。
 // 单线程事件驱动：所有会话共享一个 ParkingService，避免多线程锁库。
@@ -87,6 +88,9 @@ private:
     // 管理端专用全量快照：布局几何 + 车位明细 + 计数，仅 admin 账号可调用。
     QJsonObject actionAdminSnapshot(const QJsonObject &payload, bool *ok, QString *error);
     QJsonObject actionLprRecognize(const QJsonObject &payload, bool *ok, QString *error);
+    // 预约订单的线上形状：admin.snapshot 的 reservations[] 与
+    // reservation.create / reservation.checkin 的应答共用，字段名只此一处。
+    static QJsonObject reservationToPayload(const Reservation &reservation);
 
     ParkingService *service_;
     AuditLogService *audit_;

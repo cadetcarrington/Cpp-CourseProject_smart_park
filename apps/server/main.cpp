@@ -220,6 +220,17 @@ int runSelftest(){
               && reserved->value(QStringLiteral("payload")).toObject()
                      .value(QStringLiteral("entryPoints")).isArray(),
           "reservation.create returns expected route", reserved.value_or(QJsonObject()));
+    // 管理端表单按 endMs / graceDeadlineMs 提示到场窗口：这两个字段必须由
+    // 服务端下发，客户端不能靠「开始 + 时长」自己猜（规则改了就会脱节）。
+    const QJsonObject reservedPayload =
+        reserved.has_value()
+            ? reserved->value(QStringLiteral("payload")).toObject() : QJsonObject{};
+    check(reservedPayload.value(QStringLiteral("endMs")).toInteger() > startMs
+              && reservedPayload.value(QStringLiteral("graceDeadlineMs")).toInteger()
+                     > startMs
+              && reservedPayload.value(QStringLiteral("spotId")).toString().isEmpty()
+                     == false,
+          "reservation.create returns end/grace deadline", reservedPayload);
 
     // 5. 到场核销：预约 60 分钟后才开始，立即到场应被到场窗口校验拒绝
     //    （正常到场链路由核心测试以注入时间覆盖）。
