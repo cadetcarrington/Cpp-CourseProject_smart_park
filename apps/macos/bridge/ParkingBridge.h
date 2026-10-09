@@ -42,7 +42,8 @@ public:
     const std::vector<smartpark::ParkingSpot> &spots() const noexcept override;
     const std::vector<smartpark::ParkingRecord> &records() const noexcept override;
     const std::vector<smartpark::Booking> &bookings() const noexcept override;
-    // 时段预约（Reservation，0.7）：网页 H5 与用户端 CLI 创建的那种。
+    // 时段预约（Reservation，0.7）：网页 H5、用户端 CLI 与本页表单写的是
+    // 同一种订单；Booking 只作历史数据展示。
     const std::vector<smartpark::Reservation> &reservations() const noexcept override;
     ReservationRuleView reservationRule() const noexcept override;
     void recognizePlateRemotely(const QByteArray &imageBytes,
@@ -63,17 +64,19 @@ public:
     bool updateVehicleType(const std::string &plate, smartpark::VehicleType type) override;
     void setStrategy(smartpark::AllocationStrategy strategy) override;
 
-    // 预约写操作
-    std::optional<smartpark::BookingResult> bookVehicle(
+    // 时段预约写操作（Reservation，0.7）：本地模式转发到 ReservationService，
+    // 远程模式转发到 RemoteDataSource 的协议调用。两代预约模型并存，但管理端
+    // 表单只写新模型（Booking 没有对应的远程 action，见 ParkingDataSource.h）。
+    std::optional<smartpark::ParkingDataSource::ReservationCreation> createReservation(
         const std::string &plate, smartpark::VehicleType type,
-        smartpark::ParkingRecord::TimePoint arrival) override;
-    std::optional<smartpark::AllocationResult> confirmBooking(
+        smartpark::ParkingRecord::TimePoint start, std::chrono::minutes duration,
+        bool accessible) override;
+    std::optional<smartpark::Reservation> checkInReservation(
         const std::string &plate) override;
-    bool cancelBooking(const std::string &plate) override;
+    bool cancelReservation(const std::string &plate) override;
 
     // 计费规则
     smartpark::BillingRule billingRule() const override;
-    smartpark::BookingPolicy bookingPolicy() const override;
 
     // ---- 布局编辑 ----
     // 当前生效的布局描述文本：初始为内置车库布局，成功应用自定义布局后同步更新。
@@ -104,6 +107,34 @@ public:
         double fee{0.0};
     };
     std::vector<DailyRevenueEntry> sevenDayRevenue() const;
+
+    // 最近一次规划出的预期路线（创建预约 / 到场确认 / 入场时由核心或服务端给出）。
+    // 车位地图据此画入场路线（实线）与出场路线（虚线），与 Qt 版 MainWindow 的
+    // lastAllocation_ 展示一致；车辆离场或取消预约后清空，避免画一条过期路线。
+    struct PlannedRoute{
+        smartpark::Route entryRoute;
+        smartpark::Route exitRoute;
+        bool valid{false};
+    };
+    void setPlannedRoute(const smartpark::Route &entryRoute,
+                         const smartpark::Route &exitRoute);
+    void clearPlannedRoute();
+    const PlannedRoute &plannedRoute() const noexcept;
+
+    // 已被预约、但在车位上还看不出来的开放订单（0.7 是延迟锁位：下单不占实体
+    // 车位，要到开始前 lockLeadTime 才把车位变 Reserved）。没有这份视图，
+    // 「网页上预约了，管理端车位图/当前车位却什么都没有」就说不清楚。
+    // 已经锁位（车位 Reserved）或已到场（车位 Occupied）的不在其中——那些
+    // 车位图本来就看得出来。
+    struct PendingReservation{
+        std::string spotId;
+        std::string plate;
+        smartpark::VehicleType vehicleType{smartpark::VehicleType::Car};
+        smartpark::Reservation::TimePoint start;
+        smartpark::Reservation::TimePoint end;
+        bool accessible{false};
+    };
+    std::vector<PendingReservation> pendingReservations() const;
 
     // ---- 远程模式 ----
     // 建立到服务端的 TCP 会话并登录。返回是否已发起；登录与连接结果通过
@@ -136,4 +167,5 @@ private:
     // 布局重建后需要恢复用户选择的分配策略。
     smartpark::AllocationStrategy strategy_{smartpark::AllocationStrategy::WeightedCost};
     bool databaseFailed_{false};
+    PlannedRoute plannedRoute_;
 };

@@ -1,4 +1,4 @@
-# SmartPark 接手说明（2026-10-08）
+# SmartPark 接手说明（2026-10-09）
 
 给下一个终端会话用。**先读这一节，再动代码**；下面是历史归档。
 
@@ -7,11 +7,11 @@
 ```bash
 cd /Users/Zhuanz/Documents/ChatGPT/c++课设/smartpark
 git branch --show-current     # feat/p2-terminals
-git rev-parse --short HEAD    # c4fc9c5
-git status --short | grep -v .mimosa   # 应为空
+git log --oneline -1          # e866a1d（docs: rewrite the handoff）
+git status --short | grep -v .mimosa   # 16 个改动文件：管理端预约表单切 0.7 模型（未提交）
 ```
 
-- **三处 HEAD 完全一致**（本地 / `github` / `origin`=s1，均为 `c4fc9c5`），工作区干净
+- **本轮改动尚未 commit**（16 个文件，见下面「✅ 已完成」一节）。三处 HEAD（本地 / `github` / `origin`=s1）在 `e866a1d` 上一致，工作区有未提交改动
 - 远端有两个：`github`（GitHub）与 `origin`（`s1:~/Cpp-CourseProject_smart_park`，推它即同步到 s1）
 - **测试基线**：`build/qt` 13/13、`build/macos` 13/13、`tests/e2e_rest.sh` 65/65
 
@@ -19,7 +19,7 @@ git status --short | grep -v .mimosa   # 应为空
 
 | 项 | 值 |
 | --- | --- |
-| 服务器 | `10.108.17.55`，PID 2242958 |
+| 服务器 | `10.108.17.55`，PID 3394166（2026-10-09 启用真实识别后） |
 | 端口 | TCP `9527` / HTTP `18080` / WS `18081` |
 | 数据 | `~/smartpark-data/smartpark.db`（新库，75 车位，账号 admin/gate/user，口令 `smartpark`） |
 | 启动脚本 | `~/smartpark-data/start.sh`（已含 Qt 环境变量与参数） |
@@ -64,25 +64,40 @@ http://10.108.17.55:18080/
 - `4eb9303` `--advertise` + 智能选网卡（避开 docker/utun/bridge，默认路由要与非虚拟接口同时成立）。`67c3364` `--ws-public-url` 供反代/HTTPS 部署覆盖 ws 地址。
 - `43672d8` `tests/e2e_rest.sh`（65 项）、`4ce5421` `tests/macos_remote_tests.mm`、`4d492ba` 修复被我改坏的 `smartpark_macos_map_tests`（它表现为 ctest 里的 "Not Run" 而不是 Failed，很容易漏）。
 
-## ⚠️ 下一件事：管理端创建表单切到新模型（未做）
+## ✅ 已完成（2026-10-08 晚）：管理端创建表单切到新模型
 
-**为什么必须做**：`RemoteDataSource` **没有实现** `bookVehicle` / `confirmBooking` / `cancelBooking`，基类默认返回 `nullopt` / `false`：
+**原问题**：`RemoteDataSource` **没有实现** `bookVehicle` / `confirmBooking` / `cancelBooking`，基类默认返回 `nullopt` / `false`：
 
 ```cpp
-virtual std::optional<BookingResult> bookVehicle(...) { return std::nullopt; }   // ParkingDataSource.h
+virtual std::optional<BookingResult> bookVehicle(...) { return std::nullopt; }   // ParkingDataSource.h（已删除）
 ```
 
-**所以远程模式下管理端「创建预约 / 到场确认 / 取消」三个按钮是静默失效的**——点了没反应也不报错。
+远程服务端模式下管理端「创建预约 / 到场确认 / 取消」三个按钮**静默失效**——点了没反应也不报错，于是预约没有路线、到场确认入不了库、记录与车位图都不会变（服务端库里什么都没有）。现已按下面的方案切到 0.7 的时段预约：
 
-而协议里 `reservation.create` / `reservation.cancel` / `reservation.checkin` **三个 action 早就有了**，写的就是新模型。所以切过去既是统一数据，也是**修好这个坏掉的功能**。
+1. `apps/macos/bridge/ParkingDataSource.h` — 预约写操作改成新模型接口：`createReservation(plate, type, start, duration, accessible)` → `ReservationCreation{reservation, entryRoute, exitRoute, 出入口序号}`；`checkInReservation(plate)` → `Reservation`；`cancelReservation(plate)`。`ReservationRuleView` 增加 `minLeadTimeMin / minDurationMin / lockLeadTimeMin`（快照同步下发）；同时删掉已无人调用的 `bookingPolicy()`（远程模式下它只会返回本地默认值，是同一类「静默给错值」陷阱）。
+2. `apps/macos/bridge/RemoteDataSource.mm` — 三个写操作走 `reservation.create / checkin / cancel`，失败把服务端原文写进 `lastError()`，成功立即重拉快照。
+3. `apps/macos/bridge/ParkingBridge.mm` — 本地模式转发到 `service_->reservations()`，错误原因取 `ReservationService::lastError()`。
+4. `apps/macos/BookingViewController.mm` — 表单改为「车牌 + 车型 + 到场时间 + 时长 + 无障碍车位」，默认到场时间 = 当前 + 45 分钟向上取整 15 分钟（与 H5 同口径），成功提示带车位/定金/预期路线/可到场时间段。
+5. `src/network/SmartParkTcpServer.cpp` — `reservation.create` 补 `endMs / graceDeadlineMs / status / exitPoints`，`reservation.checkin` 回带完整订单字段；快照与动作共用 `reservationToPayload`；`parking.enter` 补 `entryPoints / exitPoints / entranceIndex / exitIndex`。
+6. 预期路线画到车位图上：`ParkingBridge::setPlannedRoute / clearPlannedRoute / plannedRoute`（预约创建与「车辆作业」页入场后写入；到场确认沿用创建时那条，不重画；离场/取消后清空），`ParkingMapView` 画入场实线 + 出场虚线（对齐 Qt 版 `lastAllocation_`）。
 
-**改动范围**：
-1. `apps/macos/bridge/ParkingDataSource.h` — 预约写操作改成新模型接口
-2. `apps/macos/bridge/RemoteDataSource.mm` — 3 个写操作走协议 action
-3. `apps/macos/bridge/ParkingBridge.mm` — 本地模式转发到 `service_->reservations()`
-4. `apps/macos/BookingViewController.mm` — 表单字段 `arrivalTime` → `startMs` + `durationMin`（REST 端点的字段名见 `handleReservationCreate`）
+**验证**（本机已跑，实测数字）：`tests/macos_remote_tests.mm` 自带服务端模式下断言「创建 → 路线 → SQLite 入库 → 到场确认 → 车位图转占用 → 记录页出现该车 → 取消退定金 → 提前量不足诚实拒绝」，并**直接点「预约管理」页的按钮**跑一遍「表单 → 服务端 → 快照 → 页面」；`tests/macos_map_tests.mm` 覆盖本地模式同一组接口 + 路线覆盖层像素断言。跨进程用真实 `smartpark_server` 进程连 `--remote`：
 
-**验证**：扩展 `tests/macos_remote_tests.mm`，在自带服务端模式断言「表单创建 → 快照里出现该预约」；再对 s1 跑一次 `--remote`。
+```bash
+SMARTPARK_REMOTE_WRITE_TEST=1 ./build/macos/tests/smartpark_macos_remote_tests \
+    --remote 10.108.17.55 9527 admin smartpark     # 56 项全 OK，连跑两次结果一致
+```
+
+不加 `SMARTPARK_REMOTE_WRITE_TEST` 时对真实服务端只读（免得弄脏别人的库）。本轮最终结果：`build/macos` **13/13**、`build/qt` **13/13**、`tests/e2e_rest.sh` **65/65**；对 s1 连跑两次写路径 56/56 通过、0 失败，跑完服务端占用回到 0、测试车牌只留已结束的历史订单。s1 上仍是旧二进制（`c4fc9c5`），所以这也顺带验了**新客户端连旧服务端**的兼容路径。
+
+**接手验证时又补了两处**（都是真机连跑才暴露的，不是自测能发现的那种）：
+
+1. `tests/macos_remote_tests.mm` — 对外部服务端的写测试现在会自清理（离场写路径那辆车 + 取消表单那笔预约）。原先没有清理：第二次对同一台服务器跑，同一批车牌会撞上「车辆已在场内」/「该车牌已有未结束的时段预约」，**测试自己把自己跑红**（不是产品缺陷，别去改产品代码）。
+2. `RemoteDataSource::checkInReservation` 的旧服务端回退（`findReservationByPlate` → `findCheckInCandidate`）——旧服务端的 `reservation.checkin` 只回 `spotId`，订单状态要从快照缓存补；同一车牌可能有多笔历史订单（跑过几轮的库必然如此），按车牌取第一笔会拿到上一轮的 `Completed`，返回给界面的状态就是错的。现在按「车位号一致 + 状态为 CheckedIn/Confirmed/PendingPayment + 开始时间最晚」挑本次到场的那一笔。新服务端应答里直接带订单字段，不走这条回退。
+
+**2026-10-09 补**：延迟锁位期间的预约原本在「车位图 / 当前车位」完全看不见（车位状态还是「空闲」），网页上预约成功了管理端却像没同步。新增 `ParkingBridge::pendingReservations()`，车位图画橙色虚线框 + 淡橙底、悬停给出预约车牌与「未锁位」说明，当前车位页显示「已预约」+ 预约车牌与时段。改动只在 macOS 客户端，无需重部署服务端。
+
+**仍未做**：Qt 管理端（`apps/admin`）远程模式仍然隐藏「预约管理 / 停车记录」页（README 的远程范围是刻意收窄的）；要在 Qt 端也开放，需要把那些页面从 `service_` 改接到 `admin.snapshot`。
 
 ## 两套预约模型（改代码前必读）
 
@@ -98,8 +113,8 @@ virtual std::optional<BookingResult> bookVehicle(...) { return std::nullopt; }  
 | 写入方 | **只有管理端表单**（本地模式） | 网页 H5、用户端 CLI、协议 `reservation.create` |
 | 表 | `bookings` | `reservations` |
 
-管理端「预约管理」页**两者都显示**，末列「来源」区分。`admin.snapshot` 两个都带。
-`Booking` 现在只剩历史数据 + 管理端本地模式的创建入口——切完表单后 `bookings` 变纯历史。
+管理端「预约管理」页**两者都显示**，末列「来源」区分（新订单「时段预约」，旧记录「预约(历史)」）。`admin.snapshot` 两个都带。
+`Booking` 现在只剩历史数据 + CLI/核心测试的创建入口；管理端表单已切到 `Reservation`，`bookings` 变纯历史、只读展示。
 
 ## 常用命令
 
@@ -110,6 +125,11 @@ cmake --build build/macos && (cd build/macos && ctest)  # 13/13
 tests/e2e_rest.sh --server build/qt/apps/server/smartpark_server \
     --bin-dir build/qt/apps --web-root apps/webclient   # 65/65，约 50 秒
 (cd build/qt && ctest -LE e2e)                          # 跳过端到端
+
+# 连真实部署跑管理端远程模式（只读；要写就加 SMARTPARK_REMOTE_WRITE_TEST=1）
+./build/macos/tests/smartpark_macos_remote_tests --remote 10.108.17.55 9527 admin smartpark
+SMARTPARK_REMOTE_WRITE_TEST=1 ./build/macos/tests/smartpark_macos_remote_tests \
+    --remote 10.108.17.55 9527 admin smartpark     # 56 项，含创建/到场/取消，跑完自清理
 
 # 推到两个远端
 GIT_LFS_SKIP_PUSH=1 git push origin feat/p2-terminals   # s1
@@ -135,12 +155,17 @@ ssh s1 'cd ~/sp-headless && GIT_LFS_SKIP_SMUDGE=1 git fetch --quiet origin feat/
 - **`/reservations` 对非 admin 强制要求 `plate` 参数**（防越权），`/guide/<arg>` 的参数是**车牌**不是预约 ID。
 - **`minLeadTime = gracePeriod = 30 分钟`**：预约要提前 ≥30 分，到场窗口是预约时间 ±30 分。测试取「+30 分 5 秒」可一次验两条规则。
 - **同一个 SQLite 不能同时被本地端和服务端打开**（本地端状态在内存里，看不到服务端写入）。
+- **对着同一台真实服务器跑写测试必须先自清理**：第一版外部写测试留下「一辆在场车 + 一笔未结束预约」，第二次跑同一批车牌就被「车辆已在场内」/「已有未结束的时段预约」挡住 —— 报错的是测试自己，不是产品（`tests/macos_remote_tests.mm` 现在在外部服务端模式下收尾离场 + 取消）。
+- **同一车牌会有多笔历史订单**：按车牌取第一笔会拿到几轮前的旧订单（`Completed`），界面状态跟着错。要按「车牌 + 车位号 + 状态（CheckedIn/Confirmed/PendingPayment）+ 开始时间最晚」挑当前那笔（`RemoteDataSource::findCheckInCandidate`）。
+- **旧服务端（s1 上没重新部署的那种）的应答比新代码少字段**：`reservation.checkin` 只回 `spotId`、快照的 `reservationRule` 没有 `minLeadTimeMin`。客户端必须能回退（快照缓存 + `ReservationRule{}` 默认值），否则「连旧服务端」直接崩在空字段上。
 
 ## 约定
 
 - **`.mimosa/` 不要提交**（30MB DSH 会话产物，在 `8850ae5` 被误提交进历史）。提交时逐文件精确 `git add`，别用 `git add -A`。
 - s1 是 Slurm 登录节点，长期驻留服务建议 `srun` 到计算节点；`10.108.17.55` 是集群内网，集群外设备访问不到。
-- 车牌识别在 s1 上目前返回 **mock**（`backend=mock`）：识别环境（`scripts/lpr`、`scripts/ocr` 的 `.venv`）没建，模型权重也还是 git-lfs 指针（134 字节 vs 真实 126MB）。要真识别需要：传模型 + `uv sync` 两个环境（torch/paddle，数 GB）+ 配 `--lpr-command`。
+- **2026-10-09 已启用 s1 真实车牌识别**（`backend=script`）。服务端启动脚本已配置 `--lpr-command`，复用 `~/Cpp-CourseProject_smart_park/scripts/recognize_plate.py` 及该训练目录的真实 pose / 省份均衡 OCR 权重；检测解释器为 `~/miniforge3/envs/smartpark-lpr/bin/python`，OCR 解释器为 `~/miniforge3/envs/smartpark-ocr/bin/python`，无需重装依赖或向 `sp-headless` 的 LFS 指针目录复制权重。
+- **必须设置 `YOLO_OFFLINE=true`**：s1 的 Ultralytics 导入会在 `is_online()` 的 DNS 探测卡约 58 秒，导致端到端约 69.55 秒、超过服务端 60 秒限制。启用离线模式并将 `OMP_NUM_THREADS / OPENBLAS_NUM_THREADS / MKL_NUM_THREADS` 设为 4 后，命令行实测 14.84 秒；通过 TCP `lpr.recognize` 上传 `examples/plates/blue-01.jpg` 实测 13.66 秒，返回 `plate=皖AMJ570`、`backend=script`、`valid=true`、识别置信度约 0.999996。此为单张样例验证，不代表全量准确率。
+- 启用前启动配置备份：`~/smartpark-data/start.sh.before-lpr-20261009-1626`。已获用户确认后重启服务，沿用原有数据库、布局、端口与二进制；HTTP `/api/v1/meta` 健康检查通过。
 
 ---
 

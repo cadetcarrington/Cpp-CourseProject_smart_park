@@ -43,6 +43,21 @@ QJsonObject allocationToPayload(const AllocationResult &result){
     payload.insert(QStringLiteral("entryTurns"), result.entryRoute.turnCount);
     payload.insert(QStringLiteral("exitTurns"), result.exitRoute.turnCount);
     payload.insert(QStringLiteral("score"), result.score);
+    payload.insert(QStringLiteral("entranceIndex"),
+                   static_cast<int>(result.entranceIndex));
+    payload.insert(QStringLiteral("exitIndex"), static_cast<int>(result.exitIndex));
+    // 路线拐点也下发：管理端远程模式的车位图据此画出进场/出场路线，
+    // 与本地模式（直接拿 AllocationResult）看到的是同一条线。
+    const auto pointArray = [](const Route &route){
+        QJsonArray points;
+        for (const Point &point : route.points){
+            points.append(QJsonObject{{QStringLiteral("x"), point.x},
+                                      {QStringLiteral("y"), point.y}});
+        }
+        return points;
+    };
+    payload.insert(QStringLiteral("entryPoints"), pointArray(result.entryRoute));
+    payload.insert(QStringLiteral("exitPoints"), pointArray(result.exitRoute));
     return payload;
 }
 } // namespace
@@ -444,17 +459,9 @@ QJsonObject SmartParkTcpServer::actionReservationCreate(const QJsonObject &paylo
         *error = QString::fromStdString(service_->reservations().lastError());
         return {};
     }
-    QJsonObject response;
-    response.insert(QStringLiteral("reservationId"),
-                    QString::fromStdString(created->reservation.id()));
-    response.insert(QStringLiteral("spotId"),
-                    QString::fromStdString(created->reservation.spotId()));
-    response.insert(QStringLiteral("deposit"), created->reservation.deposit());
-    response.insert(QStringLiteral("accessible"), created->reservation.isAccessible());
-    response.insert(QStringLiteral("startMs"),
-                    static_cast<qint64>(std::chrono::duration_cast<
-                        std::chrono::milliseconds>(
-                            created->reservation.startTime().time_since_epoch()).count()));
+    // 订单字段与快照共用一份序列化：结束时间、宽限截止、状态都由服务端下发，
+    // 客户端不必用「开始 + 时长」自己补算，到场窗口提示也不会跟服务端规则脱节。
+    QJsonObject response = reservationToPayload(created->reservation);
     const ExpectedRoute &route = created->reservation.expectedRoute();
     response.insert(QStringLiteral("entranceIndex"), static_cast<int>(route.entranceIndex));
     response.insert(QStringLiteral("exitIndex"), static_cast<int>(route.exitIndex));
@@ -468,6 +475,12 @@ QJsonObject SmartParkTcpServer::actionReservationCreate(const QJsonObject &paylo
                                        {QStringLiteral("y"), point.y}});
     }
     response.insert(QStringLiteral("entryPoints"), entryPoints);
+    QJsonArray exitPoints;
+    for (const Point &point : route.exitRoute.points){
+        exitPoints.append(QJsonObject{{QStringLiteral("x"), point.x},
+                                      {QStringLiteral("y"), point.y}});
+    }
+    response.insert(QStringLiteral("exitPoints"), exitPoints);
     QJsonObject eventPayload;
     eventPayload.insert(QStringLiteral("plate"), plate);
     eventPayload.insert(QStringLiteral("spotId"),
@@ -502,12 +515,46 @@ QJsonObject SmartParkTcpServer::actionReservationCheckIn(const QJsonObject &payl
     }
     QJsonObject response;
     response.insert(QStringLiteral("spotId"), QString::fromStdString(arrived->spotId));
+    // 到场后订单转 CheckedIn：把最新订单一起回给客户端，管理端不用再猜
+    // （旧服务端只回 spotId，客户端会退回用快照缓存里的订单）。
+    if (auto checkedIn = service_->reservations().findCheckedIn(plate.toStdString())){
+        const QJsonObject order = reservationToPayload(*checkedIn);
+        for (auto it = order.begin(); it != order.end(); ++it){
+            response.insert(it.key(), it.value());
+        }
+    }
     broadcastEvent(QStringLiteral("reservation.checkin"),
                    QJsonObject{{QStringLiteral("plate"), plate},
                                {QStringLiteral("spotId"),
                                 QString::fromStdString(arrived->spotId)}});
     *ok = true;
     return response;
+}
+
+// 预约订单的线上形状：snapshot 与 create/checkin 应答共用同一份字段名，
+// 避免两处序列化漂移（客户端按同一套字段解析）。
+QJsonObject SmartParkTcpServer::reservationToPayload(const Reservation &reservation){
+    QJsonObject item;
+    item.insert(QStringLiteral("id"), QString::fromStdString(reservation.id()));
+    item.insert(QStringLiteral("reservationId"),
+                QString::fromStdString(reservation.id()));
+    item.insert(QStringLiteral("plate"),
+                QString::fromStdString(reservation.plateNumber()));
+    item.insert(QStringLiteral("vehicleType"),
+                protocol::vehicleTypeToString(reservation.vehicleType()));
+    item.insert(QStringLiteral("spotId"),
+                QString::fromStdString(reservation.spotId()));
+    item.insert(QStringLiteral("createdAtMs"), timeToMs(reservation.createdAt()));
+    item.insert(QStringLiteral("startMs"), timeToMs(reservation.startTime()));
+    item.insert(QStringLiteral("endMs"), timeToMs(reservation.endTime()));
+    item.insert(QStringLiteral("graceDeadlineMs"),
+                timeToMs(reservation.graceDeadline()));
+    item.insert(QStringLiteral("deposit"), reservation.deposit());
+    item.insert(QStringLiteral("status"), reservationStatusToInt(reservation.status()));
+    item.insert(QStringLiteral("depositState"),
+                depositStateToInt(reservation.depositState()));
+    item.insert(QStringLiteral("accessible"), reservation.isAccessible());
+    return item;
 }
 
 QJsonObject SmartParkTcpServer::actionGateReplay(const QJsonObject &payload,
@@ -774,33 +821,13 @@ QJsonObject SmartParkTcpServer::actionAdminSnapshot(const QJsonObject &,
     }
 
     // 时段预约（Reservation，0.7 模型）：与 Booking 并存的两代功能。
-    // 网页 H5、用户端 CLI 与 reservation.create 动作都写这张表，而管理端的
-    // 「预约管理」页只显示 Booking——两个功能各写各的，谁也看不见谁。
-    // 快照把它一起带上，管理端才能显示网页上创建的预约。
+    // 网页 H5、用户端 CLI、reservation.* 动作与管理端「预约管理」页的表单
+    // 写的都是这张表；Booking 只剩历史数据。快照把两者一起带上。
     QJsonArray reservationsJson;
     for (const Reservation &reservation : service_->reservations().reservations()){
-        QJsonObject item;
-        item.insert(QStringLiteral("id"),
-                    QString::fromStdString(reservation.id()));
-        item.insert(QStringLiteral("plate"),
-                    QString::fromStdString(reservation.plateNumber()));
-        item.insert(QStringLiteral("vehicleType"),
-                    protocol::vehicleTypeToString(reservation.vehicleType()));
-        item.insert(QStringLiteral("spotId"),
-                    QString::fromStdString(reservation.spotId()));
-        item.insert(QStringLiteral("createdAtMs"), timeToMs(reservation.createdAt()));
-        item.insert(QStringLiteral("startMs"), timeToMs(reservation.startTime()));
-        item.insert(QStringLiteral("endMs"), timeToMs(reservation.endTime()));
-        item.insert(QStringLiteral("graceDeadlineMs"),
-                    timeToMs(reservation.graceDeadline()));
-        item.insert(QStringLiteral("deposit"), reservation.deposit());
-        item.insert(QStringLiteral("status"), reservationStatusToInt(reservation.status()));
-        item.insert(QStringLiteral("depositState"),
-                    depositStateToInt(reservation.depositState()));
-        item.insert(QStringLiteral("accessible"), reservation.isAccessible());
-        reservationsJson.append(item);
+        reservationsJson.append(reservationToPayload(reservation));
     }
-    // 预约规则：管理端要显示「定金/最多提前几天/宽限期」。
+    // 预约规则：管理端表单据此提示定金、提前量、最短时长与到场窗口。
     const ReservationRule &rule = service_->reservations().rule();
 
     QJsonObject result;
@@ -808,8 +835,14 @@ QJsonObject SmartParkTcpServer::actionAdminSnapshot(const QJsonObject &,
     result.insert(QStringLiteral("reservationRule"),
                   QJsonObject{{QStringLiteral("deposit"), rule.deposit},
                               {QStringLiteral("maxAdvanceDays"), rule.maxAdvanceDays},
+                              {QStringLiteral("minLeadTimeMin"),
+                               static_cast<int>(rule.minLeadTime.count())},
+                              {QStringLiteral("minDurationMin"),
+                               static_cast<int>(rule.minDuration.count())},
                               {QStringLiteral("gracePeriodMin"),
-                               static_cast<int>(rule.gracePeriod.count())}});
+                               static_cast<int>(rule.gracePeriod.count())},
+                              {QStringLiteral("lockLeadTimeMin"),
+                               static_cast<int>(rule.lockLeadTime.count())}});
     result.insert(QStringLiteral("dailyRevenue"), dailyRevenue);
     result.insert(QStringLiteral("layout"), layoutJson);
     result.insert(QStringLiteral("spots"), spots);

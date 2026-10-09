@@ -61,7 +61,14 @@ SmartPark 0.7 已接入 TCP v1 服务端、终端用户端与 Gate 模拟终端�
 
 计费采用“免费时长后向上取整到计费单元”的方式。`ParkingService::leave()` 与 `ParkingService::release()` 会先调用 `BillingService::calculateFee()`，再通过 `ParkingRepository::saveExit()` 在同一事务中写入费用、关闭停车记录并释放车位。
 
-## 预约系统（Booking，已实现第一版）
+## 预约系统（Booking，第一版；当前入口已切到 Reservation）
+
+> **2026-10-08 起：管理端表单与网页 H5、用户端 CLI 统一写 `Reservation`（时段预约）**，
+> 见下节「远程预约系统」。本节的 `Booking` 只作为历史数据保留：`bookings` 表里的
+> 旧记录仍在管理端「预约管理」页只读展示（来源列标注「预约(历史)」），
+> `ParkingService::createBooking/confirmBooking/cancelBooking` 也仍然可用（CLI 与核心测试
+> 仍在使用），但管理端不再创建它 —— `Booking` 在协议里没有对应的 action，
+> 远程模式下按它做的按钮只会静默失败。
 
 预约系统是 SmartPark 的核心业务能力之一，支持用户远程预约车位、预付定金、到场后自动接入停车流程。与入口处的短时预留（`reserve()` + TTL）不同，预约面向“未来一段时间”的确定性车位锁定，并带有定金约束与爽约处理。
 
@@ -409,6 +416,28 @@ sbatch scripts/train_rec.slurm \
 11. ⬜ 车牌识别：实现 HyperLPR3 基线，并完成 YOLO11m + PP-OCRv5 中国车牌专用模型训练、评测与 C++ 部署。
 
 ## 最近工作记录
+
+2026-10-09 延迟锁位期间的预约在车位图/当前车位可见：
+
+- **现象**：在网页 H5 上预约成功后，macOS 管理端的「车位图 / 当前车位」看不到这笔预约（服务端数据是对的）。原因是 0.7 的**延迟锁位**：下单不占实体车位，要到开始时间前 30 分钟（`ReservationRule::lockLeadTime`）才把车位锁成 `Reserved`；在那之前车位状态仍是「空闲」，而这两个页面只按车位状态渲染。
+- `ParkingBridge::pendingReservations()`：把「已确认/待支付、还没到场、目标车位也还没锁位」的订单单独列出来（已锁位/已到场的车位本来就看得出来，不重复标注），本地模式与远程模式共用同一份快照数据。
+- 「车位地图」：这些车位画成**橙色虚线框 + 极淡橙底**（与「已锁位的预订」实心橙、占用红、空闲绿都区分得开），悬停提示写明「空闲（已预约，未锁位）| 预约车牌 | 车型」；页面顶部加图例说明。
+- 「当前车位」：状态显示「已预约」，车牌/车型列显示预约订单上的值，新增「预约时段」列（HH:mm – HH:mm）。
+- 测试：`tests/macos_map_tests.mm` 断言待锁位预约进入 `pendingReservations`、悬停提示带「已预约 + 车牌」、取消后标记像素级消失；`tests/macos_remote_tests.mm` 断言「当前车位」页出现「已预约 · 京A20001 · 预约时段」行、「车位地图」页渲染出图例。
+- 这次改动只在 macOS 客户端，**不需要重新部署服务端**。
+
+2026-10-08（晚）管理端预约表单切到 0.7 模型，修好远程模式下的「预约 → 到场确认」：
+
+- **修了一个静默失效**：`RemoteDataSource` 没有实现 `bookVehicle` / `confirmBooking` / `cancelBooking`，基类默认返回 `nullopt` / `false`。远程服务端模式下管理端「创建预约 / 到场确认 / 取消」三个按钮点了没反应也不报错 —— 预约不产生路线、到场确认入不了库、记录与车位图自然也不会变（服务端库里什么都没有）。
+- `ParkingDataSource` 的预约写入口改成 0.7 的时段预约：`createReservation(plate, type, start, duration, accessible)` / `checkInReservation(plate)` / `cancelReservation(plate)`，返回订单快照 + 规划好的预期路线（`ReservationCreation` 带入场/出场路线与出入口序号）。第一版 `Booking` 的写入口从数据源上移除（协议里没有对应 action，留着只会继续静默失败），`bookings()` 仍只读展示历史。
+- `RemoteDataSource` 三个写操作走协议 `reservation.create / reservation.checkin / reservation.cancel`，失败时把服务端原文放进 `lastError()`（不再什么都不说），成功后立即重拉快照；快照的 `reservationRule` 增加 `minLeadTimeMin / minDurationMin / lockLeadTimeMin`，表单提示因此按服务端的真实规则显示（此前用的是本地 Booking 默认值，跟服务端配置可能不一致）。
+- `ParkingBridge` 本地模式转发到 `ReservationService`（创建/到场/取消，错误原因同样来自核心）；`BookingViewController` 表单改为「车牌 + 车型 + 到场时间 + 时长 + 无障碍车位」，默认到场时间取「当前 + 45 分钟向上取整到 15 分钟格」（与网页 H5 同一口径），成功提示带上车位、定金、预期路线与可到场时间段。
+- 服务端：`reservation.create` 应答补 `endMs / graceDeadlineMs / status / exitPoints`，`reservation.checkin` 应答带上完整订单字段（`reservationToPayload` 与快照共用一份序列化，避免两处字段漂移）；`parking.enter` 应答补 `entryPoints / exitPoints / entranceIndex / exitIndex`，远程模式的车位图因此能画出这次分配的路线。
+- **预期路线画到车位图上**：`ParkingBridge` 记住最近一次规划出的路线（`setPlannedRoute` / `clearPlannedRoute` / `plannedRoute`），`ParkingMapView` 画入场路线（蓝色实线）与出场路线（橙色虚线），与 Qt 版 `MainWindow::lastAllocation_` 的展示一致；创建预约与「车辆作业」页入场后写入，到场确认沿用创建时那条路线（不重画），离场或取消后清空。
+- 测试：`tests/macos_remote_tests.mm` 新增写路径断言 —— 创建预约（含路线规划）、预约与停车记录真的写进 SQLite、到场确认后车位图转占用、记录页出现该车、取消退定金、提前量不足时诚实拒绝，并且**直接点「预约管理」页的按钮**跑一遍「表单 → 服务端 → 快照 → 页面」；`tests/macos_map_tests.mm` 覆盖本地模式的同一组接口与路线覆盖层（画了 3430 px、清空后一个像素不留）。
+- **真机验证**：`build/macos` 13/13、`build/qt` 13/13、`tests/e2e_rest.sh` 65/65；对 s1（`10.108.17.55:9527`，仍是旧二进制，因此顺带验证了新客户端连旧服务端）连跑两次
+  `SMARTPARK_REMOTE_WRITE_TEST=1 smartpark_macos_remote_tests --remote ...`，56 项全过、两次结果一致，跑完服务端占用回到 0、测试车牌只留已结束的历史订单。
+- 真机连跑暴露并修好的两处：① 外部服务端的写测试原先不自清理，第二次跑同一批车牌会撞「车辆已在场内」/「已有未结束的时段预约」而把测试自己跑红，现在收尾会离场并取消表单那笔；② `RemoteDataSource::checkInReservation` 在旧服务端应答（只回 `spotId`）下的回退原先按车牌取第一笔订单，同一车牌有多笔历史订单时会拿到上一轮的 `Completed`，现改为 `findCheckInCandidate`（车位号一致 + 状态为 CheckedIn/Confirmed/PendingPayment + 开始时间最晚）。
 
 2026-10-05 两条对齐路线训练完成 + 出厂切换：
 

@@ -7,10 +7,12 @@
 #include <QTemporaryDir>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace{
 void require(bool condition, const std::string &message){
@@ -144,6 +146,31 @@ void checkHit(ParkingMapView *view, const ParkingBridge &bridge, NSWindow *windo
     std::printf("map %dx%d: stall center and outside hit OK\n",
                 static_cast<int>(view.bounds.size.width), static_cast<int>(view.bounds.size.height));
 }
+// 悬停到「已预约未锁位」的车位上：提示必须说明这是预约、并给出预约车牌，
+// 否则现场会把这个位子当成空闲位。
+void checkPendingHover(ParkingMapView *view, const ParkingBridge &bridge,
+                       NSWindow *window, const std::string &spotId,
+                       const std::string &plate){
+    const auto &spots = bridge.spots();
+    const auto it = std::find_if(spots.begin(), spots.end(), [&spotId](const auto &spot){
+        return spot.identifier() == spotId;
+    });
+    require(it != spots.end(), "pending reservation spot not found");
+    const auto &b = it->bounds();
+    const Transform t = expectedTransform(view.bounds.size, bridge.layout());
+    const NSPoint local = t.point(b.origin.x + b.width / 2.0, b.origin.y + b.height / 2.0);
+    const NSPoint inWindow = [view convertPoint:local toView:nil];
+    NSEvent *event = [NSEvent mouseEventWithType:NSEventTypeMouseMoved
+        location:inWindow modifierFlags:0 timestamp:0 windowNumber:window.windowNumber
+        context:nil eventNumber:0 clickCount:0 pressure:0];
+    require(event != nil, "cannot create mouse event for pending reservation");
+    [view mouseMoved:event];
+    require(view.toolTip != nil, "pending reservation stall produced no tooltip");
+    require([view.toolTip containsString:@"已预约"], "tooltip does not mark the stall as reserved");
+    require([view.toolTip containsString:[NSString stringWithUTF8String:plate.c_str()]],
+            "tooltip does not carry the reserving plate");
+    std::printf("map hover on pending reservation: %s\n", view.toolTip.UTF8String);
+}
 } // namespace
 
 int main(int argc, char **argv){
@@ -153,9 +180,79 @@ int main(int argc, char **argv){
             QTemporaryDir directory;
             require(directory.isValid(), "cannot create temporary database directory");
             ParkingBridge bridge(directory.filePath("map-test.sqlite"));
+            // 预约规划出的路线（下面用来断言车位图真的会画出来）。
+            smartpark::Route plannedEntry;
+            smartpark::Route plannedExit;
+            // 延迟锁位期间「已预约」的目标车位（下面断言车位图标出来了）。
+            std::string pendingSpotId;
             require(bridge.ready() && !bridge.memoryOnly(),
                     "temporary database did not open: " + bridge.lastError());
             require(bridge.totalSpots() > 0, "garage layout has no stalls");
+
+            // 本地模式的预约写路径：与远程模式同一组接口（创建 → 到场 → 取消）。
+            // 表单从第一版 Booking 切到 Reservation 后这里最容易悄悄坏掉，
+            // 所以本地模式也要有一条断言，不能只靠远程集成测试。
+            {
+                const auto rule = bridge.reservationRule();
+                require(rule.minLeadTimeMin > 0 && rule.minDurationMin > 0
+                            && rule.deposit > 0.0,
+                        "local reservation rule is empty");
+                const auto start = smartpark::ParkingRecord::Clock::now()
+                    + std::chrono::minutes(rule.minLeadTimeMin)
+                    + std::chrono::seconds(1);
+                auto created = bridge.createReservation(
+                    "京A70001", smartpark::VehicleType::Car, start,
+                    std::chrono::minutes(60), false);
+                require(created.has_value(),
+                        "local createReservation failed: " + bridge.lastError());
+                require(!created->reservation.spotId().empty()
+                            && !created->entryRoute.points.empty(),
+                        "local reservation did not plan a route");
+                require(!bridge.reservations().empty(),
+                        "created reservation is not listed");
+                // 到场窗口自「开始前 lockLeadTime 分钟」起：等窗口打开再确认。
+                std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+                auto arrived = bridge.checkInReservation("京A70001");
+                require(arrived.has_value(),
+                        "local checkInReservation failed: " + bridge.lastError());
+                require(arrived->status() == smartpark::ReservationStatus::CheckedIn,
+                        "local reservation status is not checked-in");
+                bool occupied = false;
+                for (const smartpark::ParkingSpot &spot : bridge.spots()){
+                    occupied = occupied || (spot.identifier() == arrived->spotId()
+                                            && spot.status() == smartpark::SpotStatus::Occupied);
+                }
+                require(occupied, "local check-in did not occupy the reserved spot");
+                bool recorded = false;
+                for (const smartpark::ParkingRecord &record : bridge.records()){
+                    recorded = recorded || (record.plateNumber() == "京A70001"
+                                            && !record.isClosed());
+                }
+                require(recorded, "local check-in did not create a parking record");
+
+                auto second = bridge.createReservation(
+                    "京A70002", smartpark::VehicleType::Car,
+                    smartpark::ParkingRecord::Clock::now()
+                        + std::chrono::minutes(rule.minLeadTimeMin + 10),
+                    std::chrono::minutes(60), false);
+                require(second.has_value(), "second local reservation failed");
+                require(bridge.cancelReservation("京A70002"),
+                        "local cancelReservation failed: " + bridge.lastError());
+                plannedEntry = created->entryRoute;
+                plannedExit = created->exitRoute;
+                // 再建一笔两小时后开始的预约：它不在锁位窗口内，
+                // 车位状态仍是「空闲」，正好用来验证车位图的「已预约」标记。
+                auto far = bridge.createReservation(
+                    "京A70003", smartpark::VehicleType::Car,
+                    smartpark::ParkingRecord::Clock::now() + std::chrono::hours(2),
+                    std::chrono::minutes(60), false);
+                require(far.has_value(), "far-future reservation failed");
+                pendingSpotId = far->reservation.spotId();
+                require(!bridge.pendingReservations().empty(),
+                        "pending reservation is not exposed for the map");
+                std::printf("local booking flow: create/checkin/cancel OK "
+                            "(spot %s)\n", created->reservation.spotId().c_str());
+            }
 
             [NSApplication sharedApplication];
             NSWindow *window = [[NSWindow alloc]
@@ -171,6 +268,66 @@ int main(int argc, char **argv){
                                 [NSAppearance appearanceNamed:name]);
                 }
                 checkHit(view, bridge, window);
+            }
+            // 「已预约（未锁位）」标记：车位状态还是空闲，但车位图上必须看得出来，
+            // 悬停要给出预约车牌；取消预约后标记消失。
+            if (!pendingSpotId.empty()){
+                NSAppearance *aqua = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+                require(bridge.pendingReservations().size() == 1,
+                        "pending reservation list should hold exactly one order");
+                checkPendingHover(view, bridge, window, pendingSpotId, "京A70003");
+                NSBitmapImageRep *marked = render(view, 960, 600, aqua);
+                require(bridge.cancelReservation("京A70003"),
+                        "cancelling the pending reservation failed");
+                require(bridge.pendingReservations().empty(),
+                        "pending reservation survived cancellation");
+                NSBitmapImageRep *cleared = render(view, 960, 600, aqua);
+                int changed = 0;
+                for (int y = 0; y < 600; ++y){
+                    for (int x = 0; x < 960; ++x){
+                        if (distance(pixel(marked, x, y), pixel(cleared, x, y)) > 0.05){
+                            ++changed;
+                        }
+                    }
+                }
+                require(changed > 30, "pending-reservation marker did not draw anything");
+                std::printf("pending-reservation marker: %d px changed after cancel\n",
+                            changed);
+            } else {
+                require(false, "no pending reservation spot to check");
+            }
+
+            // 预期路线覆盖层：设置路线后车位图上必须多出一条线（与 Qt 版
+            // MainWindow 画 lastAllocation_ 的行为一致），清空后恢复原样。
+            {
+                NSAppearance *aqua = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+                NSBitmapImageRep *plain = render(view, 960, 600, aqua);
+                bridge.setPlannedRoute(plannedEntry, plannedExit);
+                require(bridge.plannedRoute().valid,
+                        "planned route was not stored (nothing to draw)");
+                NSBitmapImageRep *routed = render(view, 960, 600, aqua);
+                int changed = 0;
+                for (int y = 0; y < 600; ++y){
+                    for (int x = 0; x < 960; ++x){
+                        if (distance(pixel(plain, x, y), pixel(routed, x, y)) > 0.05){
+                            ++changed;
+                        }
+                    }
+                }
+                require(changed > 30, "planned route overlay did not draw anything");
+                bridge.clearPlannedRoute();
+                NSBitmapImageRep *cleared = render(view, 960, 600, aqua);
+                int residual = 0;
+                for (int y = 0; y < 600; ++y){
+                    for (int x = 0; x < 960; ++x){
+                        if (distance(pixel(plain, x, y), pixel(cleared, x, y)) > 0.05){
+                            ++residual;
+                        }
+                    }
+                }
+                require(residual == 0, "cleared route left ink on the map");
+                std::printf("route overlay: %d px drawn, %d px left after clear\n",
+                            changed, residual);
             }
             view.bridge = nullptr;
             return 0;

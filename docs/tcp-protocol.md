@@ -58,11 +58,11 @@ DB4403/T 313 智慧停车业务数据与接口规范、北京 DB11/T 3001 ETC �
 | `heartbeat` | `{}` | `{ts}` | 保活 |
 | `parking.status` | `{}` | `{capacity, occupied, available, reserved, zones:[{zone,total,load}]}` | 全场概览 |
 | `spot.list` | `{}` | `{spots:[{spotId, zone, type, status, plate}]}` | 全量车位 |
-| `parking.enter` | `{plate, vehicleType}` | 同 CLI 分配结果（spotId、entryRoute、exitRoute、score） | 入场；广播 `parking.entered` |
+| `parking.enter` | `{plate, vehicleType}` | 同 CLI 分配结果（spotId、entryDistance/exitDistance、entryTurns/exitTurns、score、entranceIndex/exitIndex、entryPoints/exitPoints:[{x,y}]） | 入场；广播 `parking.entered` |
 | `parking.leave` | `{plate}` | `{plate, spotId, durationMin, fee}` | 离场计费；广播 `parking.exited` |
-| `reservation.create` | `{plate, vehicleType, startMs, durationMin, accessible}` | `{reservationId, spotId, deposit, accessible, startMs, entranceIndex, exitIndex, entryDistance, exitDistance, entryTurns, exitTurns, entryPoints:[{x,y}]}` | 时段预约；广播 `reservation.created` |
+| `reservation.create` | `{plate, vehicleType, startMs, durationMin, accessible}` | `{reservationId, spotId, deposit, accessible, startMs, endMs, graceDeadlineMs, status, entranceIndex, exitIndex, entryDistance, exitDistance, entryTurns, exitTurns, entryPoints:[{x,y}], exitPoints:[{x,y}]}` | 时段预约；广播 `reservation.created` |
 | `reservation.cancel` | `{plate}` | `{}` | 取消退定金；广播 `reservation.cancelled` |
-| `reservation.checkin` | `{plate}` | `{spotId}` | 到场核销；广播 `reservation.checkin`；Gate 普通入场直接用 `parking.enter`，自动核销匹配预约 |
+| `reservation.checkin` | `{plate}` | `{spotId, + 订单字段（id/plate/vehicleType/spotId/createdAtMs/startMs/endMs/graceDeadlineMs/deposit/status/depositState/accessible）}` | 到场核销；广播 `reservation.checkin`；Gate 普通入场直接用 `parking.enter`，自动核销匹配预约 |
 | `gate.replay` | `{events:[{kind, plate, vehicleType?, ts}]}` | `{applied, duplicate, skipped, results:[{plate, kind, ok, duplicate?, error?, spotId?, fee?}]}` | Gate 账号补报；`kind=enter|exit`，`ts` 为事件发生时 epoch 毫秒 |
 | `analytics.report` | `{}` | `{model, summary, findings, recommendations}` | 本地分析结论 |
 | `admin.snapshot` | `{}` | `{layout, spots, zones, capacity, occupied, available, reserved, disabled, dailyRevenue, generatedAtMs}` | **仅 `admin` 账号**。管理端远程模式一次性全量快照，见下方说明 |
@@ -72,6 +72,12 @@ exits:[{x,y}], obstacles:[{name,x,y,w,h}], regions:[{x,y,w,h}]}`，其中 `plan`
 为 `garage`（58×42.4 六层车库平面，管理端绘制轴线标注）或 `grid`（通用网格）；
 `spots = [{spotId, zone, type, status, plate?, vehicleType?, x, y, w, h}]`，
 `status` 取值 `0` 空闲 / `1` 占用 / `2` 预订 / `3` 停用，`type` 同车位类型字符串。
+`records = [{plate, spotId, vehicleType, entryTimeMs, exitTimeMs?, fee}]`、
+`bookings = [{id, plate, spotId, createdAtMs, arrivalMs, deadlineMs, deposit, status}]`（第一版预约，历史数据）、
+`reservations = [{id, plate, vehicleType, spotId, createdAtMs, startMs, endMs, graceDeadlineMs, deposit, status, depositState, accessible}]`（时段预约，0.7 模型）、
+`reservationRule = {deposit, maxAdvanceDays, minLeadTimeMin, minDurationMin, gracePeriodMin, lockLeadTimeMin}`。
+管理端「预约管理」页用 `reservations` + `reservationRule` 渲染表单提示，写操作走
+`reservation.create / checkin / cancel`，因此本地模式与远程模式的行为一致。
 `dailyRevenue = [{date, fee}]` 固定七项，日期为服务端本地时区的今天及前六个
 日历日（`yyyy-MM-dd`，从早到晚）；金额为当日离场的已结算停车记录费用之和，
 已扣除预约定金抵扣，不含单独收取或没收的定金。无记录的日期返回 `0`。

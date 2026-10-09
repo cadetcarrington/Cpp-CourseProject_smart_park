@@ -266,6 +266,8 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
         return;
     }
     const NSPoint model = transform.modelPoint(p);
+    const std::vector<ParkingBridge::PendingReservation> pending =
+        self.bridge->pendingReservations();
     for (const smartpark::ParkingSpot &spot : self.bridge->spots()){
         const smartpark::Rectangle &b = spot.bounds();
         if (model.x >= b.origin.x && model.x <= b.origin.x + b.width
@@ -276,13 +278,27 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
             NSString *vehicle = spot.parkedVehicle()
                 ? smartpark_ui::toNSString(vehicleTypeText(spot.parkedVehicle()->type()))
                 : @"-";
+            NSString *status = (spot.status() == smartpark::SpotStatus::Occupied ? @"占用"
+                 : spot.status() == smartpark::SpotStatus::Reserved ? @"预订"
+                 : spot.status() == smartpark::SpotStatus::Disabled ? @"停用" : @"空闲");
+            // 延迟锁位期间车位本身还是「空闲」，但订单已经存在：悬停时说明白，
+            // 否则现场会以为这个位子可以随便停。
+            for (const ParkingBridge::PendingReservation &item : pending){
+                if (item.spotId != spot.identifier()){
+                    continue;
+                }
+                self.toolTip = [NSString stringWithFormat:@"%@ | %@ | %@（已预约，未锁位）| %@ | %@",
+                    smartpark_ui::toNSString(spot.identifier()),
+                    smartpark_ui::toNSString(spotTypeText(spot.type())),
+                    status,
+                    smartpark_ui::toNSString(item.plate),
+                    smartpark_ui::toNSString(vehicleTypeText(item.vehicleType))];
+                return;
+            }
             self.toolTip = [NSString stringWithFormat:@"%@ | %@ | %@ | %@ | %@",
                 smartpark_ui::toNSString(spot.identifier()),
                 smartpark_ui::toNSString(spotTypeText(spot.type())),
-                (spot.status() == smartpark::SpotStatus::Occupied ? @"占用"
-                 : spot.status() == smartpark::SpotStatus::Reserved ? @"预订"
-                 : spot.status() == smartpark::SpotStatus::Disabled ? @"停用" : @"空闲"),
-                plate, vehicle];
+                status, plate, vehicle];
             return;
         }
     }
@@ -412,6 +428,20 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
         }
     }
 
+    // 已预约但还没锁位的车位（0.7 延迟锁位）：车位状态仍是「空闲」，光看填充色
+    // 看不出来，所以额外画一层虚线框 + 淡橙底，与「预订（已锁位）」的实心橙区分开。
+    const std::vector<ParkingBridge::PendingReservation> pending =
+        self.bridge->pendingReservations();
+    auto pendingFor = [&pending](const std::string &spotId)
+        -> const ParkingBridge::PendingReservation *{
+        for (const ParkingBridge::PendingReservation &item : pending){
+            if (item.spotId == spotId){
+                return &item;
+            }
+        }
+        return nullptr;
+    };
+
     // 车位
     for (const smartpark::ParkingSpot &spot : spots){
         NSRect r = rectFor(spot.bounds());
@@ -424,6 +454,49 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
         [p stroke];
 
         drawFittedLabel(spotLabel(spot), r, labelColor(spot.status()));
+
+        if (pendingFor(spot.identifier()) != nullptr){
+            NSBezierPath *ring = [NSBezierPath bezierPathWithRect:NSInsetRect(r, 1.5, 1.5)];
+            const CGFloat pattern[] = {4.0, 3.0};
+            [ring setLineDash:pattern count:2 phase:0.0];
+            [rgba(181, 71, 8, 235) setStroke];
+            ring.lineWidth = 2.0;
+            [ring stroke];
+            // 极淡的橙底：远看能认出「这个位子被约了」，又不至于像已占用。
+            [rgba(181, 71, 8, 38) setFill];
+            NSRectFillUsingOperation(NSInsetRect(r, 2.0, 2.0), NSCompositingOperationSourceOver);
+        }
+    }
+
+    // 最近一次规划出的预期路线：与 Qt 版 MainWindow::lastAllocation_ 的展示一致
+    // —— 入场路线蓝色实线、出场路线橙色虚线。创建预约 / 到场确认 / 入场后由
+    // 对应页面写进 bridge，离场或取消后清空。
+    const ParkingBridge::PlannedRoute &planned = self.bridge->plannedRoute();
+    if (planned.valid){
+        auto strokeRoute = [&](const smartpark::Route &route, NSColor *color,
+                               CGFloat width, BOOL dashed){
+            if (route.points.size() < 2){
+                return;
+            }
+            NSBezierPath *path = [NSBezierPath bezierPath];
+            [path moveToPoint:NSMakePoint(tx(route.points.front().x),
+                                          ty(route.points.front().y))];
+            for (std::size_t i = 1; i < route.points.size(); ++i){
+                [path lineToPoint:NSMakePoint(tx(route.points[i].x),
+                                              ty(route.points[i].y))];
+            }
+            if (dashed){
+                const CGFloat pattern[] = {7.0, 5.0};
+                [path setLineDash:pattern count:2 phase:0.0];
+            }
+            [color setStroke];
+            path.lineWidth = width;
+            path.lineJoinStyle = NSLineJoinStyleRound;
+            path.lineCapStyle = NSLineCapStyleRound;
+            [path stroke];
+        };
+        strokeRoute(planned.entryRoute, rgba(36, 92, 196, 235), 3.0, NO);
+        strokeRoute(planned.exitRoute, rgba(230, 132, 0, 220), 2.0, YES);
     }
 
     // 墙体（带入口/出口缺口）

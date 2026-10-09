@@ -25,8 +25,9 @@ namespace smartpark{
 // 很小，重新拉取比在客户端复刻一遍状态机更不容易出错；代价是事件密集时
 // 请求偏多，对单场演示规模可以接受。
 //
-// 协议里没有对应 action 的能力（预约、停车记录、布局编辑、车型更正、
-// 应急入场）由 capabilities() 声明为 false，界面据此隐藏入口。
+// 协议里没有对应 action 的能力（布局编辑、车型更正、应急入场）由
+// capabilities() 声明为 false，界面据此隐藏入口；预约（reservation.*）、
+// 记录与定金随快照下发，是本数据源真正支持的读写能力。
 class RemoteDataSource : public QObject, public ParkingDataSource{
     Q_OBJECT
 
@@ -83,6 +84,14 @@ public:
     std::optional<ParkingRecord> leaveVehicle(const std::string &plate) override;
     bool updateVehicleType(const std::string &, VehicleType) override { return false; }
 
+    // 时段预约写入走协议 reservation.*：服务端完成时间校验、冲突检查、
+    // 定金收取与路线规划，客户端只提交表单、按应答显示结果。
+    std::optional<ReservationCreation> createReservation(
+        const std::string &plate, VehicleType type, ParkingRecord::TimePoint start,
+        std::chrono::minutes duration, bool accessible) override;
+    std::optional<Reservation> checkInReservation(const std::string &plate) override;
+    bool cancelReservation(const std::string &plate) override;
+
     const std::string &layoutDescription() const noexcept override { return layoutText_; }
     bool memoryOnly() const noexcept override { return false; }
 
@@ -96,6 +105,10 @@ private:
                       QJsonObject *result, QString *error, int timeoutMs = 5000);
     bool applySnapshot(const QJsonObject &snapshot, std::string *error);
     void setError(const QString &text);
+    // 旧服务端的到场应答只有 spotId：从快照缓存里挑出「本次到场的那一笔订单」
+    // （同车牌可能有多笔历史订单，见 .mm 里的说明）。
+    const Reservation *findCheckInCandidate(const std::string &plate,
+                                            const std::string &spotId) const;
 
     std::unique_ptr<ServerSession> session_;
     ParkingLayout layout_;

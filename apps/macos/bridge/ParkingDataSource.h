@@ -17,7 +17,8 @@ namespace smartpark{
 //
 // LocalDataSource 直接驱动核心（Persistence + ParkingService），读写都落在本机
 // 数据库上；RemoteDataSource 走协议 v1 连服务端，admin.snapshot 取全量快照，
-// 之后按广播事件增量刷新，写入走 parking.enter / parking.leave。
+// 之后按广播事件增量刷新，写入走 parking.enter / parking.leave 与
+// reservation.create / reservation.checkin / reservation.cancel。
 //
 // 两种实现对 ViewController 暴露同一组领域对象，界面因此不必到处判断模式。
 // 远程模式覆盖不到的能力由 capabilities() 声明（协议里根本没有对应 action 的
@@ -50,12 +51,15 @@ public:
     virtual const std::vector<Booking> &bookings() const noexcept = 0;
 
     // 时段预约（Reservation，0.7 模型）。与上面的 Booking 是并存的两代功能：
-    // 网页 H5、用户端 CLI 与协议 reservation.create 写这张表，管理端的
-    // 「预约管理」页显示的是 Booking。默认空实现，供不提供该能力的实现复用。
+    // 网页 H5、用户端 CLI、协议 reservation.* 与管理端「预约管理」页的表单
+    // 写的都是这一张表（见文件末尾的写操作），Booking 只剩历史数据。
     struct ReservationRuleView{
         double deposit{0.0};
         int maxAdvanceDays{0};
-        int gracePeriodMin{0};
+        int minLeadTimeMin{0};    // 至少提前多久
+        int minDurationMin{0};    // 最短预约时长
+        int gracePeriodMin{0};    // 到场宽限期（自开始时间起算）
+        int lockLeadTimeMin{0};   // 到场窗口可以从开始前多久打开
     };
     virtual const std::vector<smartpark::Reservation> &reservations() const noexcept {
         static const std::vector<smartpark::Reservation> kEmpty;
@@ -113,7 +117,9 @@ public:
     virtual double pendingDeposits() const noexcept { return 0.0; }
     virtual double forfeitedDeposits() const noexcept { return 0.0; }
     virtual BillingRule billingRule() const { return BillingRule{}; }
-    virtual BookingPolicy bookingPolicy() const { return BookingPolicy{}; }
+    // 这里刻意不暴露第一版 Booking 的策略（deposit/advanceDays/gracePeriod）：
+    // 远程模式下它只能返回本地默认值，界面会照着一份不存在的规则做提示。
+    // 当前规则一律走 reservationRule()（本地取核心、远程取快照）。
 
     // ---- 写操作 ----
     virtual std::optional<AllocationResult> enterVehicle(
@@ -123,14 +129,38 @@ public:
     virtual std::optional<ParkingRecord> leaveVehicle(const std::string &plate) = 0;
     virtual bool updateVehicleType(const std::string &plate, VehicleType type) = 0;
     virtual void setStrategy(AllocationStrategy) {}
-    virtual std::optional<BookingResult> bookVehicle(
-        const std::string &, VehicleType, ParkingRecord::TimePoint){
+
+    // ---- 时段预约写操作（Reservation，0.7 模型）----
+    // 表单提交的是「时间段预约」：网页 H5 / 用户端 CLI / 协议 reservation.*
+    // 与管理端共用同一套规则、同一张表。
+    //
+    // 这里刻意不再提供 Booking（第一版预约）的写入口：它的创建/到场/取消在
+    // 远程模式下没有对应的协议 action，基类默认实现只会静默返回 nullopt ——
+    // 按钮按不动，还不报错。Booking 仅作为历史数据经 bookings() 只读展示。
+    struct ReservationCreation{
+        Reservation reservation;   // 下单成功后的订单快照（服务端/核心的事实）
+        Route entryRoute;          // 下单时规划好的预期入场路线
+        Route exitRoute;
+        std::size_t entranceIndex{0};
+        std::size_t exitIndex{0};
+        // Reservation 没有默认构造：订单快照必须由创建方给出。
+        explicit ReservationCreation(Reservation order)
+            : reservation(std::move(order)){
+        }
+    };
+    // 创建预约：start 需满足规则的提前量与时长；成功即收定金并返回预期路线。
+    // 失败返回 nullopt，原因见 lastError()。
+    virtual std::optional<ReservationCreation> createReservation(
+        const std::string &, VehicleType, ParkingRecord::TimePoint,
+        std::chrono::minutes, bool){
         return std::nullopt;
     }
-    virtual std::optional<AllocationResult> confirmBooking(const std::string &){
+    // 到场确认：预约转到场、占用预约车位并新建停车记录。
+    virtual std::optional<Reservation> checkInReservation(const std::string &){
         return std::nullopt;
     }
-    virtual bool cancelBooking(const std::string &){ return false; }
+    // 取消预约：开始时间之前取消并退回定金。
+    virtual bool cancelReservation(const std::string &){ return false; }
 
     // ---- 布局 ----
     virtual const std::string &layoutDescription() const noexcept = 0;
