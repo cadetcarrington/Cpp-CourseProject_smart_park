@@ -201,16 +201,17 @@ protected:
 
         const int legendRows = std::max(1, static_cast<int>(slices_.size()));
         const int legendHeight = std::min(96, legendRows * 20 + 6);
-        const QRect donutArea = area.adjusted(0, 0, 0, -legendHeight);
+        const QRect donutArea = area.adjusted(0, 20, 0, -legendHeight - 8);
 
         if (donutArea.width() <= 40 || donutArea.height() <= 40){
             return;
         }
 
-        const int side = std::min(donutArea.width(), donutArea.height());
+        const int diameter = std::min(donutArea.width(), donutArea.height());
+        const int ring = std::max(12, diameter / 5);
+        const int side = diameter - ring - 2;
         const QRect donutRect(donutArea.center().x() - side / 2,
                               donutArea.center().y() - side / 2, side, side);
-        const int ring = std::max(12, side / 5);
 
         if (total <= 0.0 || slices_.isEmpty()){
             painter.setPen(QPen(QColor(231, 227, 219), ring, Qt::SolidLine, Qt::FlatCap));
@@ -300,6 +301,15 @@ public:
     void setUnit(const QString &unit){
         unit_ = unit;
         update();
+    }
+
+    void setValueDecimals(int decimals){
+        valueDecimals_ = decimals;
+        update();
+    }
+
+    const QVector<LineSeries> &series() const noexcept{
+        return series_;
     }
 
     void setSeries(const QVector<LineSeries> &series){
@@ -473,7 +483,8 @@ protected:
                 painter.setFont(tickFont);
                 painter.setPen(QColor(61, 58, 51));
                 for (int i = 0; i < series.points.size(); ++i){
-                    const QString text = QString::number(series.points.at(i).value, 'f', 0)
+                    const QString text = QString::number(series.points.at(i).value, 'f',
+                                                         valueDecimals_)
                                          + unit_;
                     const QRect valueRect(mapX(i) - 34, mapY(series.points.at(i).value) - 16,
                                           68, 14);
@@ -503,6 +514,7 @@ protected:
 private:
     QVector<LineSeries> series_;
     QString unit_{QStringLiteral("%")};
+    int valueDecimals_{0};
     double yMin_{0.0};
     double yMax_{0.0};
     bool autoScale_{true};

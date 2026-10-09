@@ -288,7 +288,8 @@ std::optional<AllocationResult> ReservationService::checkIn(
         lastError_ = "预约车位当前不可用（可能被其他车辆占用）";
         return std::nullopt;
     }
-    park_.records_.emplace_back(plateNumber, reservation->spotId(), now);
+    park_.records_.emplace_back(plateNumber, reservation->spotId(), now,
+                                reservation->vehicleType());
     const Reservation rollback = *reservation;
     if (!reservation->checkIn()){
         park_.records_.pop_back();

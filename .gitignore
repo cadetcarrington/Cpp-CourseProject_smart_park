@@ -25,10 +25,34 @@ Makefile
 Thumbs.db
 
 # Machine learning assets and training outputs
-/model/
+/model/*
+!/model/weights/
+/model/weights/*
+!/model/weights/smartpark_plate_yolo11m_best.pt
+!/model/weights/smartpark_plate_ppocrv5_best.pdparams
+!/model/weights/smartpark_plate_ppocrv5_config.yml
+!/model/weights/smartpark_plate_crop_recipe.json
+!/model/weights/smartpark_plate_pose_best.pt
 /runs/
 /weights/
 scripts/__pycache__/
 
-# Vendored training frameworks
-/third_party/
+# Vendored training frameworks（PaddleOCR 等，仅训练用，338MB，不入库）
+# 写成 /third_party/* 而不是 /third_party/：git 的规则是「父目录被排除后，
+# 里面的文件无法再 re-include」，所以必须排除「目录内容」而非目录本身。
+/third_party/*
+
+# 但 QR-Code-generator 是**构建期必需**依赖：src/network/CMakeLists.txt 直接
+# 编译它，REST 网关的 /api/v1/qr 与启动横幅二维码都靠它。
+# 少了这两个文件，干净 clone 下来根本编译不过。只放行 C++ 版（约 48KB）——
+# 上游仓库还带 java/python/rust 等实现，一律不放进本仓库。
+# 同样的道理：放行子目录要用 /* 排除内容，直接放行目录会把整个子树暴露出来。
+/third_party/QR-Code-generator/*
+!/third_party/QR-Code-generator/Readme.markdown
+!/third_party/QR-Code-generator/cpp/
+/third_party/QR-Code-generator/cpp/*
+!/third_party/QR-Code-generator/cpp/qrcodegen.hpp
+!/third_party/QR-Code-generator/cpp/qrcodegen.cpp
+
+# Python bytecode (tests/) 
+tests/__pycache__/

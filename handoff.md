@@ -1,13 +1,161 @@
+# SmartPark 接手说明（2026-10-08）
+
+给下一个终端会话用。**先读这一节，再动代码**；下面是历史归档。
+
+## 30 秒上手
+
+```bash
+cd /Users/Zhuanz/Documents/ChatGPT/c++课设/smartpark
+git branch --show-current     # feat/p2-terminals
+git rev-parse --short HEAD    # c4fc9c5
+git status --short | grep -v .mimosa   # 应为空
+```
+
+- **三处 HEAD 完全一致**（本地 / `github` / `origin`=s1，均为 `c4fc9c5`），工作区干净
+- 远端有两个：`github`（GitHub）与 `origin`（`s1:~/Cpp-CourseProject_smart_park`，推它即同步到 s1）
+- **测试基线**：`build/qt` 13/13、`build/macos` 13/13、`tests/e2e_rest.sh` 65/65
+
+## s1 上现在跑着什么（可直接用）
+
+| 项 | 值 |
+| --- | --- |
+| 服务器 | `10.108.17.55`，PID 2242958 |
+| 端口 | TCP `9527` / HTTP `18080` / WS `18081` |
+| 数据 | `~/smartpark-data/smartpark.db`（新库，75 车位，账号 admin/gate/user，口令 `smartpark`） |
+| 启动脚本 | `~/smartpark-data/start.sh`（已含 Qt 环境变量与参数） |
+| 构建树 | `~/sp-headless`（`build-server` 无 GUI / `build-test` 含测试） |
+| Qt | `~/Qt/6.8.3/gcc_64`（aqtinstall 装的） |
+| 日志 | `~/smartpark-data/server.log` |
+
+**客户端连法**（从你 Mac 直连，无需改代码）：
+
+```bash
+# macOS 管理端：--remote 会预填登录界面（地址默认已是 10.108.17.55）
+pkill -f smartpark_admin_macos     # 已在运行的话 open 不会传参！
+open build/macos/apps/macos/smartpark_admin_macos.app --args --remote 10.108.17.55:9527 --user admin
+
+# H5
+http://10.108.17.55:18080/
+```
+
+**注意**：本机 Shadowrocket / ClashX 会劫持 **8080 / 9090** 端口的流量（实测返回 301/302），所以 s1 的 HTTP 用的是 **18080**。自己起服务端别用 8080。
+
+## 本轮（2026-10-08）做了什么
+
+10 个提交，按主题：
+
+**远程模式打通**
+- `cb6c7d0` macOS app 加 `--remote host:port` 启动参数。注意 `QCoreApplication` 会把不认识的选项当错误退出，所以自定义参数必须在构造它之前摘出来，只把 `argv[0]` 交给 Qt。
+- `ebb7611` **修了一个方向性 bug**：TCP 动作会广播给 TCP 客户端并 publish 到 EventHub（WS 也能收到），但 REST 动作只 publish，**TCP 服务端从没订阅过 hub**——所以网页上建的预约，远程管理端永远收不到事件、永远不刷新快照。修法：给 EventHub 加 `Origin` 标记，拆出 `sendToSessions`（只发 TCP，不 publish）供转发用，避免 WebSocket 收到重复事件。
+
+**数据模型**
+- `92cab4a` 管理端「预约管理」页补上**时段预约**（`Reservation`）的显示。根因见下「两套预约模型」。
+- `2bde56a` **车牌识别改到服务端跑**：新增 TCP `lpr.recognize` action，把 `recognizePlate` 从 `RestGateway` 抽到 `network/PlateRecognition` 给两条入口共用。客户端的调用是异步的（识别几秒，同步会让界面转菊花）。协议帧上限因此从 1MiB 提到 9MiB（6MB 照片 base64 后约 8MB）。
+
+**H5 界面**
+- `57d1ae0` 出入口标记原来按 `scale` 缩放（这张图 scale≈6.9 → 69px 巨字），改成固定 11px + 5px 半径。
+- `50f6400` 车位配色改成与 macOS `stallFill` 逐值一致（含按车位类型分色、55% 透明度）；去掉「更多」页的无感支付卡片与首页顶部蓝色标题栏。
+- `c4fc9c5` 车位上画编号，规则抄 macOS 的 `drawFittedLabel`，**加了一层退化**：两行放不下就只画编号（手机上两行几乎都放不下，否则一半车位没字）。
+- `bc85391` **彻底移除无感支付**（服务端 handler/路由/表/离场钩子、网页提示、Qt 弹幕分支、自测、E2E、文档）。
+
+**构建与部署**
+- `01b6c99` vendor QR-Code-generator。原来 `third_party/` 被整体 gitignore（为了排除 338MB PaddleOCR），但 `src/network/CMakeLists.txt` 要编译它——**干净 clone 根本编译不过**。改 `/third_party/` 为 `/third_party/*`（git 规则：父目录被排除后无法 re-include），并去掉内嵌 `.git`（否则 `git add` 只加 gitlink，clone 拿不到文件）。
+- `840c677` 忽略系统代理。Qt 会把 `all_proxy` 套到**所有** socket 上包括监听 socket，s1 上 `all_proxy=socks5h://...` 导致 `listen()` 直接失败。4 个 app 都加了 `setApplicationProxy(NoProxy)`。
+- `4eb9303` `--advertise` + 智能选网卡（避开 docker/utun/bridge，默认路由要与非虚拟接口同时成立）。`67c3364` `--ws-public-url` 供反代/HTTPS 部署覆盖 ws 地址。
+- `43672d8` `tests/e2e_rest.sh`（65 项）、`4ce5421` `tests/macos_remote_tests.mm`、`4d492ba` 修复被我改坏的 `smartpark_macos_map_tests`（它表现为 ctest 里的 "Not Run" 而不是 Failed，很容易漏）。
+
+## ⚠️ 下一件事：管理端创建表单切到新模型（未做）
+
+**为什么必须做**：`RemoteDataSource` **没有实现** `bookVehicle` / `confirmBooking` / `cancelBooking`，基类默认返回 `nullopt` / `false`：
+
+```cpp
+virtual std::optional<BookingResult> bookVehicle(...) { return std::nullopt; }   // ParkingDataSource.h
+```
+
+**所以远程模式下管理端「创建预约 / 到场确认 / 取消」三个按钮是静默失效的**——点了没反应也不报错。
+
+而协议里 `reservation.create` / `reservation.cancel` / `reservation.checkin` **三个 action 早就有了**，写的就是新模型。所以切过去既是统一数据，也是**修好这个坏掉的功能**。
+
+**改动范围**：
+1. `apps/macos/bridge/ParkingDataSource.h` — 预约写操作改成新模型接口
+2. `apps/macos/bridge/RemoteDataSource.mm` — 3 个写操作走协议 action
+3. `apps/macos/bridge/ParkingBridge.mm` — 本地模式转发到 `service_->reservations()`
+4. `apps/macos/BookingViewController.mm` — 表单字段 `arrivalTime` → `startMs` + `durationMin`（REST 端点的字段名见 `handleReservationCreate`）
+
+**验证**：扩展 `tests/macos_remote_tests.mm`，在自带服务端模式断言「表单创建 → 快照里出现该预约」；再对 s1 跑一次 `--remote`。
+
+## 两套预约模型（改代码前必读）
+
+**它们不是同一个功能的两个版本，而是并存的代际**，各写各的表：
+
+| | `Booking`（旧） | `Reservation`（新，0.7） |
+| --- | --- | --- |
+| 语义 | 「你什么时候到」 | 「你占用哪个时间段」 |
+| 时间 | `arrivalTime` + `arrivalDeadline` | `startTime` + **`endTime`** + `graceDeadline` |
+| 状态 | 4 态 | **7 态**（含 `PendingPayment`/`Expired`） |
+| 定金 | 一个数值 | 完整状态机（含 `Applied` 离场抵扣） |
+| 预期路线 | 无 | `expectedRoute` → H5「反向寻车」用它 |
+| 写入方 | **只有管理端表单**（本地模式） | 网页 H5、用户端 CLI、协议 `reservation.create` |
+| 表 | `bookings` | `reservations` |
+
+管理端「预约管理」页**两者都显示**，末列「来源」区分。`admin.snapshot` 两个都带。
+`Booking` 现在只剩历史数据 + 管理端本地模式的创建入口——切完表单后 `bookings` 变纯历史。
+
+## 常用命令
+
+```bash
+# 本地构建与测试
+cmake --build build/qt && (cd build/qt && ctest)        # 13/13
+cmake --build build/macos && (cd build/macos && ctest)  # 13/13
+tests/e2e_rest.sh --server build/qt/apps/server/smartpark_server \
+    --bin-dir build/qt/apps --web-root apps/webclient   # 65/65，约 50 秒
+(cd build/qt && ctest -LE e2e)                          # 跳过端到端
+
+# 推到两个远端
+GIT_LFS_SKIP_PUSH=1 git push origin feat/p2-terminals   # s1
+GIT_LFS_SKIP_PUSH=1 git push github feat/p2-terminals
+
+# s1：更新 + 重建 + 重启
+ssh s1 'cd ~/sp-headless && GIT_LFS_SKIP_SMUDGE=1 git fetch --quiet origin feat/p2-terminals \
+  && GIT_LFS_SKIP_SMUDGE=1 git reset --hard --quiet FETCH_HEAD \
+  && cmake --build build-server -j8 \
+  && pkill -f "smartpark_server --port 9527"; sleep 1 \
+  && setsid nohup ~/smartpark-data/start.sh > ~/smartpark-data/server.log 2>&1 < /dev/null &'
+```
+
+## 踩过的坑（都付了代价，别再踩）
+
+- **`str.replace()` 不匹配时静默返回原串**。我改图例时因此"改完了"但没生效，靠截图才发现。**静默替换必须加 `assert old in s`**。
+- **`QCoreApplication` 吞命令行参数**：不认识的选项会 `Unknown options: ...` 直接退出。所以 macOS app 的自定义参数要在它之前摘出来，且只传 `argv[0]`。
+- **`open --args` 对已运行的 app 不传参**，只是激活它。测试前先 `pkill`。
+- **macOS 没有 `timeout(1)`**，且「函数内后台 + `$( )`」拿到的是空输出。跨平台超时用「写文件 + 看门狗 + cat」。
+- **`"$(curl ... -d "{\"k\":\"$V\"}")"` 会返回 400**：命令替换在双引号内部时反斜杠规则不同，JSON 里留下字面反斜杠。请求层统一走 helper，别内联转义。
+- **TCP 协议用 `user`/`pass`，REST 用 `username`/`password`**；TCP 应答负载在 `payload` 下（不是 `result`），后续请求要带 `token`。
+- **`/auth/register` 返回 201 且不带 token**，前端是注册后再登录一次。
+- **`/reservations` 对非 admin 强制要求 `plate` 参数**（防越权），`/guide/<arg>` 的参数是**车牌**不是预约 ID。
+- **`minLeadTime = gracePeriod = 30 分钟`**：预约要提前 ≥30 分，到场窗口是预约时间 ±30 分。测试取「+30 分 5 秒」可一次验两条规则。
+- **同一个 SQLite 不能同时被本地端和服务端打开**（本地端状态在内存里，看不到服务端写入）。
+
+## 约定
+
+- **`.mimosa/` 不要提交**（30MB DSH 会话产物，在 `8850ae5` 被误提交进历史）。提交时逐文件精确 `git add`，别用 `git add -A`。
+- s1 是 Slurm 登录节点，长期驻留服务建议 `srun` 到计算节点；`10.108.17.55` 是集群内网，集群外设备访问不到。
+- 车牌识别在 s1 上目前返回 **mock**（`backend=mock`）：识别环境（`scripts/lpr`、`scripts/ocr` 的 `.venv`）没建，模型权重也还是 git-lfs 指针（134 字节 vs 真实 126MB）。要真识别需要：传模型 + `uv sync` 两个环境（torch/paddle，数 GB）+ 配 `--lpr-command`。
+
+---
+
+# 历史归档（2026-09-25 ~ 09-27，**不代表当前进度**）
+
 # SmartPark 接手说明（2026-09-25）
 
 给下一个 Codex / 终端会话用。先读本文件，再动代码。
 
 ## 当前进度（2026-09-27，P2）
 
-- P1 服务端和 P2 Gate/用户端已实现；P2 尚在本地工作区，未 commit/push。当前 `build/qt` 构建和 CTest 6/6 通过，服务端自测新增真正的长驻子进程监听/登录/查询断言。跨进程实测 Gate 先离线缓存，3 秒后服务端启动，5 秒重连时自动补报，SQLite `parking_records` 有原时间戳入场记录；在线入口/余位查询/出口也已跑通。
+- P1 服务端和 P2 Gate/用户端已实现；P2 尚在本地工作区，未 commit/push。当前 `build/qt` 构建和 CTest 12/12 通过（新增 `smartpark_gate_replay_tests`），服务端自测新增真正的长驻子进程监听/登录/查询断言。跨进程实测 Gate 先离线缓存，3 秒后服务端启动，5 秒重连时自动补报，SQLite `parking_records` 有原时间戳入场记录；在线入口/余位查询/出口也已跑通。
 - 长驻服务端生命周期已修复：`ParkingService`/`SmartParkTcpServer` 覆盖 `app.exec()`；Gate `parking.enter` 自动核销预约，不再先调用 `reservation.checkin` 再重复入场。
-- `apps/gate/` 手输车牌模拟 LPR、入口/出口双模式、定时道闸状态机、故障/防砸、离线 JSONL 队列；重连每 5 秒、心跳每 20 秒。队列按 500 条批次读取，只有收到全批次确认才用 `QSaveFile` 移除已确认前缀。补报错误会保留待人工检查。
-- `apps/user/` 查询余位、时段预约/取消，打印预期路线摘要；`src/network/SmartParkTcpServer.cpp` 的 `gate.replay` 按历史记录的车牌+事件类型+毫秒时间戳去重，限制过去 30 天和未来 5 分钟事件；非 gate 账号拒绝。服务端自测覆盖首次补报、重复回放、非法时间戳、权限；Gate 自测覆盖未确认队列跨实例恢复和前缀确认。
+- `apps/gate/` 手输车牌模拟 LPR、入口/出口双模式、定时道闸状态机、故障/防砸、离线 JSONL 队列；重连每 5 秒、心跳每 20 秒。队列按 500 条批次读取，按服务端逐条结论只移除「已获结论的前缀」（`replayHandledPrefix`，部分确认），响应截断或缺失时尾部连同其后事件留在本地重报；被判定无法追溯的事件（skipped）同样有结论、照常出队并打印丢弃明细，不会堵死队列。
+- `apps/user/` 查询余位、时段预约/取消，打印预期路线摘要；`src/network/SmartParkTcpServer.cpp` 的 `gate.replay` 按历史记录的车牌+事件类型+毫秒时间戳去重，限制过去 30 天和未来 5 分钟事件；非 gate 账号拒绝。服务端自测覆盖首次补报、重复回放、非法时间戳、权限、以及逐条结论/顺序/三计数之和的响应形状；`tests/gate_replay_tests.cpp` 覆盖多轮部分确认、未确认后缀跨重启重报、旧格式计数回退，以及 mock 服务端只发半帧应答时一个事件都不出队。
 - P3 待做真实摄像头/LPR；Admin GUI 仍直接使用本地服务，尚未转为 TCP 客户端。TCP v1 明文，限内网/隧道。已有用户数据库不自动播种 gate/user；演示推荐独立新库。参见 README 的三个终端启动命令及 `docs/tcp-protocol.md`。
 
 ## 一句话进度

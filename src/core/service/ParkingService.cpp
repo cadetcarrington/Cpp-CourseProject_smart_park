@@ -257,7 +257,8 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
         if (spot == nullptr || !spot->occupy(vehicle)){
             return std::nullopt;
         }
-        records_.emplace_back(vehicle.plateNumber(), proposal->spotId, entryTime);
+        records_.emplace_back(vehicle.plateNumber(), proposal->spotId, entryTime,
+                              vehicle.type());
         if (repository_ != nullptr && !repository_->saveEntry(records_.back(), *spot)){
             records_.pop_back();
             spot->release();
@@ -290,7 +291,7 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
 
     std::optional<ParkingRecord> ParkingService::closeActiveRecord(
         ParkingRecord &record, ParkingSpot &spot, ParkingRecord::TimePoint exitTime){
-        const auto duration = std::chrono::duration_cast<std::chrono::seconds>(
+        const auto duration = std::chrono::ceil<std::chrono::seconds>(
             exitTime - record.entryTime());
         const double baseFee = billing_.calculateFee(duration);
         ReservationService::ExitSettlement settlement =
@@ -351,7 +352,8 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
             if (spot == nullptr || !spot->occupy(vehicle)){
                 return std::nullopt;
             }
-            records_.emplace_back(vehicle.plateNumber(), chosen.spotId, entryTime);
+            records_.emplace_back(vehicle.plateNumber(), chosen.spotId, entryTime,
+                                  vehicle.type());
             if (repository_ != nullptr
                 && !repository_->saveEntry(records_.back(), *spot)){
                 records_.pop_back();
@@ -571,7 +573,11 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
         if (booking == nullptr){
             return std::nullopt;
         }
-        if (now < booking->arrivalTime() || now > booking->arrivalDeadline()){
+        // 到场确认窗口：预约时间「前后各一个宽限期」（默认 30 分钟），即
+        // [到场时间 - 宽限期, 到场时间 + 宽限期]。允许提前确认，与
+        // ReservationService 的锁位窗口语义一致，避免用户早到却无法入场。
+        const auto earliestArrival = booking->arrivalTime() - bookingPolicy_.gracePeriod;
+        if (now < earliestArrival || now > booking->arrivalDeadline()){
             return std::nullopt;
         }
         ParkingSpot *spot = findReservedSpot(plateNumber);
@@ -588,7 +594,8 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
         if (!spot->occupy(vehicle)){
             return std::nullopt;
         }
-        records_.emplace_back(vehicle.plateNumber(), booking->spotId(), now);
+        records_.emplace_back(vehicle.plateNumber(), booking->spotId(), now,
+                              vehicle.type());
         if (!booking->checkIn()){
             records_.pop_back();
             spot->release();
@@ -879,7 +886,8 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
             if (findSpot(item.spotId) == nullptr){
                 throw std::runtime_error("persisted record refers to an unknown spot: " + item.spotId);
             }
-            ParkingRecord record(item.plateNumber, item.spotId, item.entryTime);
+            ParkingRecord record(item.plateNumber, item.spotId, item.entryTime,
+                                 item.vehicleType);
             if (item.exitTime){
                 if (!record.close(*item.exitTime, item.fee)){
                     throw std::runtime_error("invalid persisted parking record time");
@@ -945,6 +953,18 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
         if (!repository.lastError().empty()){
             throw std::runtime_error("cannot restore booking data: " + repository.lastError());
         }
+        // 先算出「仍被有效预约占用」的车位集合。
+        // 同一车牌「取消后再重新预约」会合法地复用同一个车位：此时那条历史
+        // 预约（Cancelled/NoShow）看上去「仍占着预留车位」，其实车位是归新的
+        // 有效预约所有，不能判为数据不一致——否则用户一旦取消重约，下次启动
+        // 就会因为校验失败而打不开数据库。
+        std::vector<std::string> activelyReservedSpots;
+        for (const Booking &booking : persistedBookings){
+            if (booking.status() == BookingStatus::Booked){
+                activelyReservedSpots.push_back(booking.spotId());
+            }
+        }
+
         for (const Booking &booking : persistedBookings){
             const ParkingSpot *spot = findSpot(booking.spotId());
             if (spot == nullptr){
@@ -971,7 +991,10 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
                                             + booking.plateNumber());
                 }
             } else if (spot->status() == SpotStatus::Reserved && spot->parkedVehicle()
-                       && spot->parkedVehicle()->plateNumber() == booking.plateNumber()){
+                       && spot->parkedVehicle()->plateNumber() == booking.plateNumber()
+                       && std::find(activelyReservedSpots.begin(),
+                                    activelyReservedSpots.end(),
+                                    booking.spotId()) == activelyReservedSpots.end()){
                 throw std::runtime_error("resolved booking still holds its reserved spot: "
                                         + booking.plateNumber());
             }

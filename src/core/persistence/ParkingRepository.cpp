@@ -76,6 +76,7 @@ void ParkingRepository::createSchema(){
                        "spot_id TEXT NOT NULL,"
                        "entry_time_ms INTEGER NOT NULL,"
                        "exit_time_ms INTEGER,"
+                       "vehicle_type INTEGER NOT NULL DEFAULT 0,"
                        "fee REAL NOT NULL DEFAULT 0)"),
         QStringLiteral("CREATE TABLE IF NOT EXISTS layout_snapshot ("
                        "name TEXT PRIMARY KEY,"
@@ -131,6 +132,24 @@ void ParkingRepository::createSchema(){
         QSqlQuery query(database_);
         if (!exec(query, statement, lastError_)){
             return;
+        }
+    }
+    // 迁移：旧版本 parking_records 表缺少 vehicle_type 列，补齐为默认车型。
+    QSqlQuery columnQuery(database_);
+    if (exec(columnQuery, QStringLiteral("PRAGMA table_info(parking_records)"), lastError_)){
+        bool hasVehicleType = false;
+        while (columnQuery.next()){
+            if (columnQuery.value(1).toString() == QStringLiteral("vehicle_type")){
+                hasVehicleType = true;
+                break;
+            }
+        }
+        if (!hasVehicleType){
+            QSqlQuery alterQuery(database_);
+            exec(alterQuery,
+                 QStringLiteral("ALTER TABLE parking_records ADD COLUMN "
+                                "vehicle_type INTEGER NOT NULL DEFAULT 0"),
+                 lastError_);
         }
     }
 }
@@ -286,8 +305,8 @@ bool ParkingRepository::saveEntry(const ParkingRecord &record, const ParkingSpot
     QSqlQuery query(database_);
     if (!prepare(query,
                  QStringLiteral("INSERT INTO parking_records("
-                                "plate_number,spot_id,entry_time_ms,exit_time_ms,fee)"
-                                " VALUES(:plate,:spot,:entry,NULL,0)"),
+                                "plate_number,spot_id,entry_time_ms,exit_time_ms,fee,vehicle_type)"
+                                " VALUES(:plate,:spot,:entry,NULL,0,:vehicleType)"),
                  lastError_)){
         database_.rollback();
         return false;
@@ -296,6 +315,8 @@ bool ParkingRepository::saveEntry(const ParkingRecord &record, const ParkingSpot
                     QString::fromStdString(record.plateNumber()));
     query.bindValue(QStringLiteral(":spot"), QString::fromStdString(record.spotId()));
     query.bindValue(QStringLiteral(":entry"), entryMillis);
+    query.bindValue(QStringLiteral(":vehicleType"),
+                    static_cast<int>(record.vehicleType()));
     if (!exec(query, lastError_)){
         database_.rollback();
         return false;
@@ -419,8 +440,8 @@ bool ParkingRepository::saveBookingCheckIn(const Booking &booking,
     QSqlQuery query(database_);
     if (!prepare(query,
                  QStringLiteral("INSERT INTO parking_records("
-                                "plate_number,spot_id,entry_time_ms,exit_time_ms,fee)"
-                                " VALUES(:plate,:spot,:entry,NULL,0)"),
+                                "plate_number,spot_id,entry_time_ms,exit_time_ms,fee,vehicle_type)"
+                                " VALUES(:plate,:spot,:entry,NULL,0,:vehicleType)"),
                  lastError_)){
         database_.rollback();
         return false;
@@ -429,6 +450,8 @@ bool ParkingRepository::saveBookingCheckIn(const Booking &booking,
                     QString::fromStdString(record.plateNumber()));
     query.bindValue(QStringLiteral(":spot"), QString::fromStdString(record.spotId()));
     query.bindValue(QStringLiteral(":entry"), entryMillis);
+    query.bindValue(QStringLiteral(":vehicleType"),
+                    static_cast<int>(record.vehicleType()));
     if (!exec(query, lastError_)){
         database_.rollback();
         return false;
@@ -667,8 +690,8 @@ bool ParkingRepository::saveReservationCheckIn(const Reservation &reservation,
     QSqlQuery query(database_);
     if (!prepare(query,
                  QStringLiteral("INSERT INTO parking_records("
-                                "plate_number,spot_id,entry_time_ms,exit_time_ms,fee)"
-                                " VALUES(:plate,:spot,:entry,NULL,0)"),
+                                "plate_number,spot_id,entry_time_ms,exit_time_ms,fee,vehicle_type)"
+                                " VALUES(:plate,:spot,:entry,NULL,0,:vehicleType)"),
                  lastError_)){
         database_.rollback();
         return false;
@@ -677,6 +700,8 @@ bool ParkingRepository::saveReservationCheckIn(const Reservation &reservation,
                     QString::fromStdString(record.plateNumber()));
     query.bindValue(QStringLiteral(":spot"), QString::fromStdString(record.spotId()));
     query.bindValue(QStringLiteral(":entry"), entryMillis);
+    query.bindValue(QStringLiteral(":vehicleType"),
+                    static_cast<int>(record.vehicleType()));
     if (!exec(query, lastError_)){
         database_.rollback();
         return false;
@@ -1041,7 +1066,8 @@ std::vector<PersistedRecord> ParkingRepository::loadRecords(){
     std::vector<PersistedRecord> records;
     QSqlQuery query(database_);
     if (!prepare(query,
-                 QStringLiteral("SELECT plate_number,spot_id,entry_time_ms,exit_time_ms,fee"
+                 QStringLiteral("SELECT plate_number,spot_id,entry_time_ms,exit_time_ms,fee,"
+                                "vehicle_type"
                                 " FROM parking_records ORDER BY id"),
                  lastError_)){
         return records;
@@ -1068,6 +1094,13 @@ std::vector<PersistedRecord> ParkingRepository::loadRecords(){
             record.exitTime = exitTime;
         }
         record.fee = query.value(4).toDouble();
+        const int vehicleType = query.value(5).toInt();
+        if (vehicleType < static_cast<int>(VehicleType::Car)
+            || vehicleType > static_cast<int>(VehicleType::Electric)){
+            lastError_ = "invalid persisted vehicle type";
+            return {};
+        }
+        record.vehicleType = static_cast<VehicleType>(vehicleType);
         if (record.plateNumber.empty() || record.spotId.empty()
             || !std::isfinite(record.fee) || record.fee < 0.0
             || (record.exitTime && *record.exitTime < record.entryTime)){

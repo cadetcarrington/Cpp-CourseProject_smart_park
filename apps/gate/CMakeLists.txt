@@ -2,6 +2,14 @@ qt_add_executable(smartpark_gate
     main.cpp
     BarrierGate.cpp
     BarrierGate.h
+    GateClock.cpp
+    GateClock.h
+    QtGateClock.cpp
+    QtGateClock.h
+    OfflineQueue.cpp
+    OfflineQueue.h
+    GateSelftest.cpp
+    GateSelftest.h
 )
 
 target_link_libraries(smartpark_gate

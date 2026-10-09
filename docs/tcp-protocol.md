@@ -46,7 +46,9 @@ DB4403/T 313 智慧停车业务数据与接口规范、北京 DB11/T 3001 ETC �
   **超过 60 秒无任何帧**的连接被判定掉线并关闭。
 - 登录失败连续 5 次断开连接；登录成功/失败写入审计哈希链。
 - 断线补报由 Gate 把 JSONL 队列分批（每次最多 500 条）提交至 `gate.replay`；
-  只在全部事件获确认后移除已确认前缀，超时重试依原车牌与事件时间戳去重。
+  服务端对每条事件回传结论，Gate 只移除「已获结论的前缀」（部分确认），
+  没拿到结论的尾部连同其后的事件留在本地队列下次重报；超时重试依原车牌与
+  事件时间戳去重。
 
 ## 4. 动作清单（v1）
 
@@ -63,13 +65,29 @@ DB4403/T 313 智慧停车业务数据与接口规范、北京 DB11/T 3001 ETC �
 | `reservation.checkin` | `{plate}` | `{spotId}` | 到场核销；广播 `reservation.checkin`；Gate 普通入场直接用 `parking.enter`，自动核销匹配预约 |
 | `gate.replay` | `{events:[{kind, plate, vehicleType?, ts}]}` | `{applied, duplicate, skipped, results:[{plate, kind, ok, duplicate?, error?, spotId?, fee?}]}` | Gate 账号补报；`kind=enter|exit`，`ts` 为事件发生时 epoch 毫秒 |
 | `analytics.report` | `{}` | `{model, summary, findings, recommendations}` | 本地分析结论 |
+| `admin.snapshot` | `{}` | `{layout, spots, zones, capacity, occupied, available, reserved, disabled, dailyRevenue, generatedAtMs}` | **仅 `admin` 账号**。管理端远程模式一次性全量快照，见下方说明 |
+
+`admin.snapshot` 应答细节：`layout = {siteWidth, siteHeight, plan, entrances:[{x,y}],
+exits:[{x,y}], obstacles:[{name,x,y,w,h}], regions:[{x,y,w,h}]}`，其中 `plan`
+为 `garage`（58×42.4 六层车库平面，管理端绘制轴线标注）或 `grid`（通用网格）；
+`spots = [{spotId, zone, type, status, plate?, vehicleType?, x, y, w, h}]`，
+`status` 取值 `0` 空闲 / `1` 占用 / `2` 预订 / `3` 停用，`type` 同车位类型字符串。
+`dailyRevenue = [{date, fee}]` 固定七项，日期为服务端本地时区的今天及前六个
+日历日（`yyyy-MM-dd`，从早到晚）；金额为当日离场的已结算停车记录费用之和，
+已扣除预约定金抵扣，不含单独收取或没收的定金。无记录的日期返回 `0`。
+管理端远程模式以该快照 + 广播事件渲染全部界面，不在本地维护第二个
+`ParkingService`。
 
 `vehicleType` 取值：`car | motorcycle | truck | electric`。补报按数组顺序处理，
-仅接受过去 30 天至未来 5 分钟内的时间戳，每批 1–500 条。`ok=true` 表示
-这一批请求被处理，不代表每条都成功；`skipped>0` 时 Gate 保留本地队列。
-重复事件以停车记录中的车牌、事件类型和毫秒时间戳匹配，成功去重计入
-`duplicate`。跨设备重复识别但时间戳不同、或历史记录被清理后的补报不在
-这一简化去重保证内；演示部署须保护本地队列文件。
+仅接受过去 30 天至未来 5 分钟内的时间戳，每批 1–500 条。外层 `ok=true` 表示
+这一批请求被处理，不代表每条都成功：每条事件都在 `results` 里按提交顺序带一个
+布尔 `ok`，且 `applied + duplicate + skipped` 恒等于提交条数。Gate 只出队
+「连续有结论的前缀」，`results` 缺失或中途截断时前缀到此为止，其余事件保留在
+本地队列下次重报；`skipped` 的事件同样有结论，会照常出队并打印丢弃明细，
+否则队头一条永远无法追溯的事件会堵死整个队列。重复事件以停车记录中的车牌、
+事件类型和毫秒时间戳匹配，成功去重计入 `duplicate`。跨设备重复识别但时间戳
+不同、或历史记录被清理后的补报不在这一简化去重保证内；演示部署须保护本地
+队列文件。
 
 ## 5. 事件清单
 

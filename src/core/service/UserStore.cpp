@@ -8,6 +8,8 @@
 #include <QVariant>
 #include <QCryptographicHash>
 
+#include <tuple>
+
 namespace smartpark{
 namespace{
 constexpr int kMinUserNameLength = 2;
@@ -17,6 +19,13 @@ constexpr int kMaxPasswordLength = 64;
 constexpr int kDigestIterations = 12000;
 constexpr auto kSeedUserName = "admin";
 constexpr auto kSeedPassword = "smartpark";
+constexpr int kMaxLoginFailures = 5;
+constexpr qint64 kLockDurationMs = 10 * 60 * 1000;
+
+bool isDuplicateColumnError(const QString &errorText){
+    return errorText.contains(QStringLiteral("duplicate column name"),
+                              Qt::CaseInsensitive);
+}
 }
 
 UserStore::UserStore(const QString &databasePath){
@@ -32,6 +41,9 @@ UserStore::UserStore(const QString &databasePath){
         return;
     }
     createSchema();
+    if (lastError_.isEmpty()){
+        migrateSchema();
+    }
     if (lastError_.isEmpty()){
         ensureSeedAccount();
     }
@@ -56,8 +68,49 @@ void UserStore::createSchema(){
             "salt TEXT NOT NULL,"
             "password_hash TEXT NOT NULL,"
             "created_at_ms INTEGER NOT NULL,"
-            "last_login_ms INTEGER)"))){
+            "last_login_ms INTEGER,"
+            "role TEXT NOT NULL DEFAULT 'user',"
+            "failed_attempts INTEGER NOT NULL DEFAULT 0,"
+            "locked_until_ms INTEGER NOT NULL DEFAULT 0)"))){
         lastError_ = query.lastError().text();
+    }
+    if (lastError_.isEmpty() && !query.exec(QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS auth_tokens ("
+            "token_hash TEXT PRIMARY KEY,"
+            "username TEXT NOT NULL,"
+            "role TEXT NOT NULL,"
+            "created_at_ms INTEGER NOT NULL,"
+            "expires_at_ms INTEGER NOT NULL,"
+            "revoked INTEGER NOT NULL DEFAULT 0)"))){
+        lastError_ = query.lastError().text();
+    }
+}
+
+void UserStore::migrateSchema(){
+    // 历史库加列迁移：重复执行时忽略 duplicate column 错误，其余照常上报。
+    const std::pair<const char *, const char *> columns[] = {
+        {"role", "TEXT NOT NULL DEFAULT 'user'"},
+        {"failed_attempts", "INTEGER NOT NULL DEFAULT 0"},
+        {"locked_until_ms", "INTEGER NOT NULL DEFAULT 0"},
+    };
+    for (const auto &column : columns){
+        QSqlQuery alter(database_);
+        alter.exec(QStringLiteral("ALTER TABLE users ADD COLUMN %1 %2")
+                       .arg(QLatin1String(column.first),
+                            QLatin1String(column.second)));
+        const QString error = alter.lastError().text();
+        if (!error.isEmpty() && !isDuplicateColumnError(error)){
+            lastError_ = error;
+            return;
+        }
+    }
+    // 历史库的种子账号角色归一：旧 schema 无 role 列，加列后全是默认值。
+    QSqlQuery normalize(database_);
+    if (!normalize.exec(QStringLiteral(
+            "UPDATE users SET role = 'admin' WHERE username = 'admin'")) ||
+        !normalize.exec(QStringLiteral(
+            "UPDATE users SET role = 'gate' WHERE username = 'gate'"))){
+        lastError_ = normalize.lastError().text();
     }
 }
 
@@ -71,22 +124,26 @@ void UserStore::ensureSeedAccount(){
         return;
     }
     // 播种三个内置终端账号：管理员 / Gate 出入口 / 用户端（口令同为 smartpark）。
-    const std::vector<std::pair<const char *, const char *>> seeds = {
-        {kSeedUserName, kSeedPassword}, {"gate", "smartpark"}, {"user", "smartpark"}};
+    const std::vector<std::tuple<const char *, const char *, const char *>> seeds = {
+        {kSeedUserName, kSeedPassword, "admin"},
+        {"gate", kSeedPassword, "gate"},
+        {"user", kSeedPassword, "user"}};
     for (const auto &seed : seeds){
         QByteArray salt(16, 0);
         QRandomGenerator::system()->fillRange(reinterpret_cast<quint32 *>(salt.data()), 4);
         QSqlQuery insert(database_);
         insert.prepare(QStringLiteral(
-            "INSERT INTO users(username, salt, password_hash, created_at_ms)"
-            " VALUES(:userName, :salt, :digest, :createdAt)"));
+            "INSERT INTO users(username, salt, password_hash, created_at_ms, role)"
+            " VALUES(:userName, :salt, :digest, :createdAt, :role)"));
         insert.bindValue(QStringLiteral(":userName"),
-                         QString::fromLatin1(seed.first));
+                         QString::fromLatin1(std::get<0>(seed)));
         insert.bindValue(QStringLiteral(":salt"), QString::fromLatin1(salt.toBase64()));
         insert.bindValue(QStringLiteral(":digest"),
-                         hashPassword(QString::fromLatin1(seed.second), salt));
+                         hashPassword(QString::fromLatin1(std::get<1>(seed)), salt));
         insert.bindValue(QStringLiteral(":createdAt"),
                          QDateTime::currentMSecsSinceEpoch());
+        insert.bindValue(QStringLiteral(":role"),
+                         QString::fromLatin1(std::get<2>(seed)));
         if (!insert.exec()){
             lastError_ = insert.lastError().text();
         }
@@ -140,10 +197,15 @@ UserStore::LoginResult UserStore::verifyLogin(const QString &userName,
     if (userName.trimmed().isEmpty() || password.isEmpty()){
         return LoginResult::EmptyFields;
     }
+    const QString normalized = userName.trimmed();
+    const qint64 lockRemainder = lockedRemainderMs(normalized);
+    if (lockRemainder > 0){
+        return LoginResult::Locked;
+    }
     QSqlQuery query(database_);
     query.prepare(QStringLiteral(
         "SELECT salt, password_hash FROM users WHERE username = :userName"));
-    query.bindValue(QStringLiteral(":userName"), userName.trimmed());
+    query.bindValue(QStringLiteral(":userName"), normalized);
     if (!query.exec() || !query.next()){
         return LoginResult::UnknownUser;
     }
@@ -151,12 +213,145 @@ UserStore::LoginResult UserStore::verifyLogin(const QString &userName,
                                      .arg(query.value(0).toString(),
                                           query.value(1).toString());
     if (!verifyDigest(password, storedDigest)){
+        noteLoginFailure(normalized);
         return LoginResult::WrongPassword;
     }
-    if (!touchLastLogin(userName.trimmed())){
+    clearLoginFailures(normalized);
+    if (!touchLastLogin(normalized)){
         return LoginResult::StorageError;
     }
     return LoginResult::Success;
+}
+
+void UserStore::noteLoginFailure(const QString &userName){
+    QSqlQuery bump(database_);
+    bump.prepare(QStringLiteral(
+        "UPDATE users SET failed_attempts = failed_attempts + 1,"
+        " locked_until_ms = CASE WHEN failed_attempts + 1 >= :maxFailures"
+        " THEN :lockedUntil ELSE locked_until_ms END"
+        " WHERE username = :userName"));
+    bump.bindValue(QStringLiteral(":maxFailures"), kMaxLoginFailures);
+    bump.bindValue(QStringLiteral(":lockedUntil"),
+                   QDateTime::currentMSecsSinceEpoch() + kLockDurationMs);
+    bump.bindValue(QStringLiteral(":userName"), userName);
+    if (!bump.exec()){
+        lastError_ = bump.lastError().text();
+    }
+}
+
+void UserStore::clearLoginFailures(const QString &userName){
+    QSqlQuery reset(database_);
+    reset.prepare(QStringLiteral(
+        "UPDATE users SET failed_attempts = 0, locked_until_ms = 0"
+        " WHERE username = :userName"));
+    reset.bindValue(QStringLiteral(":userName"), userName);
+    if (!reset.exec()){
+        lastError_ = reset.lastError().text();
+    }
+}
+
+qint64 UserStore::lockedRemainderMs(const QString &userName) const{
+    QSqlQuery query(database_);
+    query.prepare(QStringLiteral(
+        "SELECT locked_until_ms FROM users WHERE username = :userName"));
+    query.bindValue(QStringLiteral(":userName"), userName.trimmed());
+    if (!query.exec() || !query.next()){
+        return 0;
+    }
+    const qint64 lockedUntil = query.value(0).toLongLong();
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    return lockedUntil > now ? lockedUntil - now : 0;
+}
+
+QString UserStore::roleOf(const QString &userName) const{
+    QSqlQuery query(database_);
+    query.prepare(QStringLiteral(
+        "SELECT role FROM users WHERE username = :userName"));
+    query.bindValue(QStringLiteral(":userName"), userName.trimmed());
+    if (!query.exec() || !query.next()){
+        return QString();
+    }
+    return query.value(0).toString();
+}
+
+QString UserStore::issueToken(const QString &userName, qint64 ttlMs){
+    const QString role = roleOf(userName);
+    if (role.isEmpty()){
+        lastError_ = QStringLiteral("账号不存在，无法签发 token");
+        return QString();
+    }
+    QByteArray random(32, 0);
+    QRandomGenerator::system()->fillRange(reinterpret_cast<quint32 *>(random.data()), 8);
+    const QString token = QString::fromLatin1(random.toHex());
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QSqlQuery insert(database_);
+    insert.prepare(QStringLiteral(
+        "INSERT INTO auth_tokens(token_hash, username, role,"
+        " created_at_ms, expires_at_ms, revoked) VALUES(:hash, :userName,"
+        " :role, :createdAt, :expiresAt, 0)"));
+    insert.bindValue(QStringLiteral(":hash"),
+                     QString::fromLatin1(
+                         QCryptographicHash::hash(token.toUtf8(),
+                                                  QCryptographicHash::Sha256).toHex()));
+    insert.bindValue(QStringLiteral(":userName"), userName.trimmed());
+    insert.bindValue(QStringLiteral(":role"), role);
+    insert.bindValue(QStringLiteral(":createdAt"), now);
+    insert.bindValue(QStringLiteral(":expiresAt"), now + ttlMs);
+    if (!insert.exec()){
+        lastError_ = insert.lastError().text();
+        return QString();
+    }
+    return token;
+}
+
+std::optional<UserStore::TokenIdentity> UserStore::verifyToken(
+    const QString &token) const{
+    if (token.isEmpty()){
+        return std::nullopt;
+    }
+    QSqlQuery query(database_);
+    query.prepare(QStringLiteral(
+        "SELECT username, role, expires_at_ms, revoked FROM auth_tokens"
+        " WHERE token_hash = :hash"));
+    query.bindValue(QStringLiteral(":hash"),
+                    QString::fromLatin1(
+                        QCryptographicHash::hash(token.toUtf8(),
+                                                 QCryptographicHash::Sha256).toHex()));
+    if (!query.exec() || !query.next()){
+        return std::nullopt;
+    }
+    if (query.value(3).toInt() != 0
+        || query.value(2).toLongLong() <= QDateTime::currentMSecsSinceEpoch()){
+        return std::nullopt;
+    }
+    return TokenIdentity{query.value(0).toString(), query.value(1).toString()};
+}
+
+bool UserStore::revokeToken(const QString &token){
+    QSqlQuery query(database_);
+    query.prepare(QStringLiteral(
+        "UPDATE auth_tokens SET revoked = 1 WHERE token_hash = :hash"));
+    query.bindValue(QStringLiteral(":hash"),
+                    QString::fromLatin1(
+                        QCryptographicHash::hash(token.toUtf8(),
+                                                 QCryptographicHash::Sha256).toHex()));
+    if (!query.exec()){
+        lastError_ = query.lastError().text();
+        return false;
+    }
+    return query.numRowsAffected() > 0;
+}
+
+bool UserStore::revokeUserTokens(const QString &userName){
+    QSqlQuery query(database_);
+    query.prepare(QStringLiteral(
+        "UPDATE auth_tokens SET revoked = 1 WHERE username = :userName"));
+    query.bindValue(QStringLiteral(":userName"), userName.trimmed());
+    if (!query.exec()){
+        lastError_ = query.lastError().text();
+        return false;
+    }
+    return true;
 }
 
 bool UserStore::touchLastLogin(const QString &userName){
@@ -219,6 +414,8 @@ QString UserStore::loginErrorText(LoginResult result){
         return QStringLiteral("密码不正确，请检查后重试。");
     case LoginResult::StorageError:
         return QStringLiteral("账号数据读写失败，请检查数据库文件。");
+    case LoginResult::Locked:
+        return QStringLiteral("失败次数过多，账号已临时锁定，请十分钟后再试。");
     }
     return QStringLiteral("登录失败，请稍后重试。");
 }

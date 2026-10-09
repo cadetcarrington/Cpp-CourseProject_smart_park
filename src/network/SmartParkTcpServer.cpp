@@ -1,9 +1,12 @@
 #include "network/SmartParkTcpServer.h"
+#include "core/model/ParkingLayout.h"
 #include "core/service/AnalyticsEngine.h"
 #include "core/service/AuditLogService.h"
 #include "core/service/ParkingService.h"
 #include "core/service/ReservationService.h"
 #include "core/service/UserStore.h"
+#include "network/EventHub.h"
+#include "network/PlateRecognition.h"
 #include "network/Protocol.h"
 
 #include <QDateTime>
@@ -13,31 +16,21 @@
 #include <QTcpSocket>
 #include <QUuid>
 
+#include <cmath>
+#include <map>
+
 namespace smartpark{
 namespace{
 using Clock = ParkingRecord::Clock;
 using TimePoint = ParkingRecord::TimePoint;
 
-std::optional<VehicleType> vehicleTypeFromString(const QString &text){
-    if (text == QStringLiteral("car")) return VehicleType::Car;
-    if (text == QStringLiteral("motorcycle")) return VehicleType::Motorcycle;
-    if (text == QStringLiteral("truck")) return VehicleType::Truck;
-    if (text == QStringLiteral("electric")) return VehicleType::Electric;
-    return std::nullopt;
-}
-
-QString vehicleTypeToString(VehicleType type){
-    switch (type){
-    case VehicleType::Car: return QStringLiteral("car");
-    case VehicleType::Motorcycle: return QStringLiteral("motorcycle");
-    case VehicleType::Truck: return QStringLiteral("truck");
-    case VehicleType::Electric: return QStringLiteral("electric");
-    }
-    return QStringLiteral("car");
-}
-
 TimePoint msToTime(qint64 ms){
     return TimePoint{} + std::chrono::milliseconds(ms);
+}
+
+qint64 timeToMs(TimePoint time){
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        time.time_since_epoch()).count();
 }
 
 QJsonObject allocationToPayload(const AllocationResult &result){
@@ -82,6 +75,25 @@ quint16 SmartParkTcpServer::port() const{
 
 const QString &SmartParkTcpServer::lastError() const noexcept{
     return lastError_;
+}
+
+void SmartParkTcpServer::setEventHub(EventHub *hub) noexcept{
+    hub_ = hub;
+    if (hub_ == nullptr){
+        return;
+    }
+    // 补上反方向：REST 入口（网页预约/缴费/入场）的动作只 publish 到 hub，
+    // 原先没有任何人转发给 TCP 客户端，于是远程管理端收不到事件、永远不刷新
+    // 快照——网页上刚建的预约在 macOS 端看不到。这里订阅 hub 转发给 TCP 会话。
+    // 只调 sendToSessions：再 publish 一次会让 WebSocket 收到重复事件。
+    connect(hub_, &EventHub::eventOccurred, this,
+            [this](const QString &name, const QJsonObject &payload,
+                   EventHub::Origin origin){
+        if (origin == EventHub::Origin::Tcp){
+            return;   // 已经由 broadcastEvent 发过了
+        }
+        sendToSessions(name, payload);
+    });
 }
 
 void SmartParkTcpServer::timerEvent(QTimerEvent *event){
@@ -198,6 +210,17 @@ void SmartParkTcpServer::dispatch(Session &session, const QString &id,
         } else{
             error = QStringLiteral("仅 Gate 终端可补报");
         }
+    } else if (action == QStringLiteral("lpr.recognize")){
+        result = actionLprRecognize(payload, &ok, &error);
+    } else if (action == QStringLiteral("admin.snapshot")){
+        if (session.user == QStringLiteral("admin")){
+            if (audit_ != nullptr){
+                audit_->record(session.user.toStdString(), "admin_snapshot");
+            }
+            result = actionAdminSnapshot(payload, &ok, &error);
+        } else{
+            error = QStringLiteral("仅管理员可获取快照");
+        }
     } else{
         error = QStringLiteral("未知 action: %1").arg(action);
     }
@@ -213,14 +236,44 @@ void SmartParkTcpServer::respond(Session &session, const QString &id, bool ok,
     send(session, protocol::makeResponse(id, ok, payload, error));
 }
 
-void SmartParkTcpServer::broadcastEvent(const QString &event,
-                                        const QJsonObject &payload){
+QJsonObject SmartParkTcpServer::actionLprRecognize(const QJsonObject &payload,
+                                                   bool *ok, QString *error){
+    const QString imageBase64 = payload.value(QStringLiteral("image")).toString();
+    const QByteArray imageBytes = QByteArray::fromBase64(imageBase64.toLatin1());
+    if (imageBytes.isEmpty() || imageBytes.size() > protocol::kMaxImageBytes){
+        *error = QStringLiteral("image 需为 base64 图片且不超过 %1MB")
+                     .arg(protocol::kMaxImageBytes / (1024 * 1024));
+        return {};
+    }
+    QString note;
+    QJsonObject result = network::recognizePlate(imageBytes, options_.lprCommand, &note);
+    if (result.isEmpty()){
+        *error = QStringLiteral("识别失败：%1").arg(note);
+        return {};
+    }
+    // 让调用方知道这次是真跑脚本还是 mock，别把演示结果当成识别结果。
+    result.insert(QStringLiteral("backend"), note);
+    *ok = true;
+    return result;
+}
+
+void SmartParkTcpServer::sendToSessions(const QString &event,
+                                       const QJsonObject &payload){
     const QByteArray frame = protocol::encodeFrame(
         protocol::makeEvent(event, payload));
     for (auto it = sessions_.begin(); it != sessions_.end(); ++it){
         if (it.value().authenticated){
             it.key()->write(frame);
         }
+    }
+}
+
+void SmartParkTcpServer::broadcastEvent(const QString &event,
+                                        const QJsonObject &payload){
+    sendToSessions(event, payload);
+    if (hub_ != nullptr){
+        // 标成 Tcp：本函数已经把事件发给 TCP 客户端了，订阅端别再发一次。
+        hub_->publish(event, payload, EventHub::Origin::Tcp);
     }
 }
 
@@ -325,7 +378,7 @@ QJsonObject SmartParkTcpServer::actionSpotList(const QJsonObject &, bool *ok,
 QJsonObject SmartParkTcpServer::actionEnter(const QJsonObject &payload,
                                             bool *ok, QString *error){
     const QString plate = payload.value(QStringLiteral("plate")).toString().trimmed();
-    const auto type = vehicleTypeFromString(
+    const auto type = protocol::vehicleTypeFromString(
         payload.value(QStringLiteral("vehicleType")).toString(QStringLiteral("car")));
     if (plate.isEmpty() || !type.has_value()){
         *error = QStringLiteral("车牌或车辆类型无效");
@@ -374,7 +427,7 @@ QJsonObject SmartParkTcpServer::actionLeave(const QJsonObject &payload,
 QJsonObject SmartParkTcpServer::actionReservationCreate(const QJsonObject &payload,
                                                         bool *ok, QString *error){
     const QString plate = payload.value(QStringLiteral("plate")).toString().trimmed();
-    const auto type = vehicleTypeFromString(
+    const auto type = protocol::vehicleTypeFromString(
         payload.value(QStringLiteral("vehicleType")).toString(QStringLiteral("car")));
     const qint64 startMs = payload.value(QStringLiteral("startMs")).toInteger();
     const int durationMin = payload.value(QStringLiteral("durationMin")).toInt(120);
@@ -501,7 +554,7 @@ QJsonObject SmartParkTcpServer::actionGateReplay(const QJsonObject &payload,
                 itemResult.insert(QStringLiteral("duplicate"), true);
                 ++duplicate;
             } else if (kind == QStringLiteral("enter")){
-                const auto type = vehicleTypeFromString(event.value(
+                const auto type = protocol::vehicleTypeFromString(event.value(
                     QStringLiteral("vehicleType")).toString(QStringLiteral("car")));
                 const auto result = type ? service_->enter({plateText, *type}, time)
                                          : std::nullopt;
@@ -566,6 +619,217 @@ QJsonObject SmartParkTcpServer::actionAnalyticsReport(const QJsonObject &,
         recommendations.append(QString::fromStdString(recommendation));
     }
     result.insert(QStringLiteral("recommendations"), recommendations);
+    *ok = true;
+    return result;
+}
+
+QJsonObject SmartParkTcpServer::actionAdminSnapshot(const QJsonObject &,
+                                                    bool *ok, QString *){
+    // 管理端远程模式一次性快照：布局几何 + 车位明细 + 概览计数 + 分区统计。
+    // 管理端据此绘制车位图与表格，无需本地第二个 ParkingService。
+    const ParkingLayout &layout = service_->layout();
+
+    QJsonObject layoutJson;
+    layoutJson.insert(QStringLiteral("siteWidth"), layout.siteWidth());
+    layoutJson.insert(QStringLiteral("siteHeight"), layout.siteHeight());
+    // 与 Admin 本地 isGarageFloorplan 一致：58.0 x 42.4 视为 6 层车库平面图。
+    layoutJson.insert(QStringLiteral("plan"),
+                      std::abs(layout.siteWidth() - 58.0) < 0.25
+                          && std::abs(layout.siteHeight() - 42.4) < 0.25
+                          ? QStringLiteral("garage") : QStringLiteral("grid"));
+    const auto pointJson = [](const Point &point){
+        return QJsonObject{{QStringLiteral("x"), point.x},
+                           {QStringLiteral("y"), point.y}};
+    };
+    QJsonArray entrances;
+    for (const Point &point : layout.entrances()){
+        entrances.append(pointJson(point));
+    }
+    layoutJson.insert(QStringLiteral("entrances"), entrances);
+    QJsonArray exits;
+    for (const Point &point : layout.exits()){
+        exits.append(pointJson(point));
+    }
+    layoutJson.insert(QStringLiteral("exits"), exits);
+    QJsonArray obstacles;
+    for (const LayoutObstacle &obstacle : layout.obstacles()){
+        obstacles.append(QJsonObject{
+            {QStringLiteral("name"), QString::fromStdString(obstacle.name)},
+            {QStringLiteral("x"), obstacle.bounds.origin.x},
+            {QStringLiteral("y"), obstacle.bounds.origin.y},
+            {QStringLiteral("w"), obstacle.bounds.width},
+            {QStringLiteral("h"), obstacle.bounds.height}});
+    }
+    layoutJson.insert(QStringLiteral("obstacles"), obstacles);
+    QJsonArray regions;
+    for (const Rectangle &region : layout.regions()){
+        regions.append(QJsonObject{
+            {QStringLiteral("x"), region.origin.x},
+            {QStringLiteral("y"), region.origin.y},
+            {QStringLiteral("w"), region.width},
+            {QStringLiteral("h"), region.height}});
+    }
+    layoutJson.insert(QStringLiteral("regions"), regions);
+
+    QJsonArray spots;
+    std::map<std::string, std::pair<int, int>> zoneStats;
+    int occupied = 0;
+    int reserved = 0;
+    int disabled = 0;
+    for (const ParkingSpot &spot : service_->spots()){
+        auto &stat = zoneStats[spot.zone()];
+        stat.first += 1;
+        QJsonObject item;
+        item.insert(QStringLiteral("spotId"),
+                    QString::fromStdString(spot.identifier()));
+        item.insert(QStringLiteral("zone"), QString::fromStdString(spot.zone()));
+        item.insert(QStringLiteral("type"), QLatin1String(toString(spot.type())));
+        item.insert(QStringLiteral("status"), static_cast<int>(spot.status()));
+        if (spot.status() == SpotStatus::Occupied){
+            ++occupied;
+            stat.second += 1;
+        } else if (spot.status() == SpotStatus::Reserved){
+            ++reserved;
+        } else if (spot.status() == SpotStatus::Disabled){
+            ++disabled;
+        }
+        const auto &bounds = spot.bounds();
+        item.insert(QStringLiteral("x"), bounds.origin.x);
+        item.insert(QStringLiteral("y"), bounds.origin.y);
+        item.insert(QStringLiteral("w"), bounds.width);
+        item.insert(QStringLiteral("h"), bounds.height);
+        if (spot.parkedVehicle()){
+            item.insert(QStringLiteral("plate"),
+                        QString::fromStdString(
+                            spot.parkedVehicle()->plateNumber()));
+            item.insert(QStringLiteral("vehicleType"),
+                        protocol::vehicleTypeToString(spot.parkedVehicle()->type()));
+        }
+        spots.append(item);
+    }
+
+    QJsonArray zones;
+    for (const auto &entry : zoneStats){
+        zones.append(QJsonObject{{QStringLiteral("zone"),
+                                  QString::fromStdString(entry.first)},
+                                 {QStringLiteral("total"), entry.second.first},
+                                 {QStringLiteral("occupied"), entry.second.second}});
+    }
+
+    QJsonArray dailyRevenue;
+    const QDate today = QDate::currentDate();
+    double fees[7]{};
+    for (const ParkingRecord &record : service_->records()){
+        if (!record.isClosed() || !record.exitTime()){
+            continue;
+        }
+        const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+            record.exitTime()->time_since_epoch()).count();
+        const QDate exitDate = QDateTime::fromMSecsSinceEpoch(milliseconds).date();
+        const qint64 daysAgo = exitDate.daysTo(today);
+        if (daysAgo >= 0 && daysAgo < 7){
+            fees[6 - daysAgo] += record.fee();
+        }
+    }
+    for (int i = 0; i < 7; ++i){
+        dailyRevenue.append(QJsonObject{
+            {QStringLiteral("date"), today.addDays(i - 6).toString(Qt::ISODate)},
+            {QStringLiteral("fee"), fees[i]}});
+    }
+
+    // 停车记录与预约：远程模式要能显示「停车记录」「预约管理」两页，
+    // 并在客户端本地算出洞察（预测/分区压力），所以快照把它们一起带上——
+    // 这些数据量很小，多一次拉取比多一套增量接口简单得多。
+    QJsonArray recordsJson;
+    for (const ParkingRecord &record : service_->records()){
+        QJsonObject item;
+        item.insert(QStringLiteral("plate"),
+                    QString::fromStdString(record.plateNumber()));
+        item.insert(QStringLiteral("spotId"),
+                    QString::fromStdString(record.spotId()));
+        item.insert(QStringLiteral("vehicleType"),
+                    protocol::vehicleTypeToString(record.vehicleType()));
+        item.insert(QStringLiteral("entryTimeMs"), timeToMs(record.entryTime()));
+        if (record.exitTime()){
+            item.insert(QStringLiteral("exitTimeMs"), timeToMs(*record.exitTime()));
+        }
+        item.insert(QStringLiteral("fee"), record.fee());
+        recordsJson.append(item);
+    }
+
+    QJsonArray bookingsJson;
+    for (const Booking &booking : service_->bookings()){
+        QJsonObject item;
+        item.insert(QStringLiteral("id"), QString::fromStdString(booking.id()));
+        item.insert(QStringLiteral("plate"),
+                    QString::fromStdString(booking.plateNumber()));
+        item.insert(QStringLiteral("spotId"),
+                    QString::fromStdString(booking.spotId()));
+        item.insert(QStringLiteral("createdAtMs"), timeToMs(booking.createdAt()));
+        item.insert(QStringLiteral("arrivalMs"), timeToMs(booking.arrivalTime()));
+        item.insert(QStringLiteral("deadlineMs"), timeToMs(booking.arrivalDeadline()));
+        item.insert(QStringLiteral("deposit"), booking.deposit());
+        item.insert(QStringLiteral("status"), bookingStatusToInt(booking.status()));
+        bookingsJson.append(item);
+    }
+
+    // 时段预约（Reservation，0.7 模型）：与 Booking 并存的两代功能。
+    // 网页 H5、用户端 CLI 与 reservation.create 动作都写这张表，而管理端的
+    // 「预约管理」页只显示 Booking——两个功能各写各的，谁也看不见谁。
+    // 快照把它一起带上，管理端才能显示网页上创建的预约。
+    QJsonArray reservationsJson;
+    for (const Reservation &reservation : service_->reservations().reservations()){
+        QJsonObject item;
+        item.insert(QStringLiteral("id"),
+                    QString::fromStdString(reservation.id()));
+        item.insert(QStringLiteral("plate"),
+                    QString::fromStdString(reservation.plateNumber()));
+        item.insert(QStringLiteral("vehicleType"),
+                    protocol::vehicleTypeToString(reservation.vehicleType()));
+        item.insert(QStringLiteral("spotId"),
+                    QString::fromStdString(reservation.spotId()));
+        item.insert(QStringLiteral("createdAtMs"), timeToMs(reservation.createdAt()));
+        item.insert(QStringLiteral("startMs"), timeToMs(reservation.startTime()));
+        item.insert(QStringLiteral("endMs"), timeToMs(reservation.endTime()));
+        item.insert(QStringLiteral("graceDeadlineMs"),
+                    timeToMs(reservation.graceDeadline()));
+        item.insert(QStringLiteral("deposit"), reservation.deposit());
+        item.insert(QStringLiteral("status"), reservationStatusToInt(reservation.status()));
+        item.insert(QStringLiteral("depositState"),
+                    depositStateToInt(reservation.depositState()));
+        item.insert(QStringLiteral("accessible"), reservation.isAccessible());
+        reservationsJson.append(item);
+    }
+    // 预约规则：管理端要显示「定金/最多提前几天/宽限期」。
+    const ReservationRule &rule = service_->reservations().rule();
+
+    QJsonObject result;
+    result.insert(QStringLiteral("reservations"), reservationsJson);
+    result.insert(QStringLiteral("reservationRule"),
+                  QJsonObject{{QStringLiteral("deposit"), rule.deposit},
+                              {QStringLiteral("maxAdvanceDays"), rule.maxAdvanceDays},
+                              {QStringLiteral("gracePeriodMin"),
+                               static_cast<int>(rule.gracePeriod.count())}});
+    result.insert(QStringLiteral("dailyRevenue"), dailyRevenue);
+    result.insert(QStringLiteral("layout"), layoutJson);
+    result.insert(QStringLiteral("spots"), spots);
+    result.insert(QStringLiteral("zones"), zones);
+    result.insert(QStringLiteral("records"), recordsJson);
+    result.insert(QStringLiteral("bookings"), bookingsJson);
+    // 定金口径与服务端一致：远程端不再自己猜一个 0。
+    result.insert(QStringLiteral("pendingDeposits"), service_->pendingDeposits());
+    result.insert(QStringLiteral("forfeitedDeposits"), service_->forfeitedDeposits());
+    result.insert(QStringLiteral("capacity"),
+                  static_cast<int>(service_->spots().size()));
+    result.insert(QStringLiteral("occupied"), occupied);
+    result.insert(QStringLiteral("reserved"), reserved);
+    result.insert(QStringLiteral("disabled"), disabled);
+    // 与 parking.status 的 remainingSpots 口径一致：空闲不把停用算进去。
+    result.insert(QStringLiteral("available"),
+                  static_cast<int>(service_->spots().size()) - occupied
+                      - reserved - disabled);
+    result.insert(QStringLiteral("generatedAtMs"),
+                  QDateTime::currentMSecsSinceEpoch());
     *ok = true;
     return result;
 }

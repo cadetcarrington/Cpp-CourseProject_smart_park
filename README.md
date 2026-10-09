@@ -174,10 +174,156 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
   - 界面：浅色企业风主题（低饱和蓝）+ 主界面毛玻璃模式（整窗高斯模糊光斑 + 半透明面板，`SMARTPARK_NO_GLASS=1` 回退）、登录/注册重做（`UserStore` 盐化哈希口令、失败锁定、密码可见切换）。
   - 创新 Top-5（10 角度子代理评分选拔）：应急生命通道（出口最近车位 + 满场让位）、无障碍关怀预约（免定金/宽限翻倍/无障碍车位限定/少转弯路线）、哈希链防篡改审计日志（`AuditLogService` + `verifyChain`）、反向寻车（行人栅格步行路线）、剧本式一键演示（`DemoDirector` 16 步）。
   - 数据分析：`AnalyticsEngine` 本地 OLS 占用率预测 + 规则结论（CLI `--analyze`），`RemoteAnalystClient` 预留 OpenAI 兼容远程分析接口。
-  - macOS 原生：菜单栏余位图标、通知中心、中文语音播报、PDF 报告导出、NSURLSession 远程分析传输（`MacSystemBridge`）。
+  - macOS 原生：菜单栏余位图标、通知中心、离场毛玻璃窗口通知横幅（`src/platform/MacNotifications`）、中文语音播报、PDF 报告导出、NSURLSession 远程分析传输（`MacSystemBridge`）。
   - 算法：分区均衡升级为负载水位填充（跨分区低负载无条件优先，同档内按距离/拥堵/类型），车库布局 38 辆实测 13 分区负载 25%~62% 均衡。
+- 2026-09-28 增量：合入 `feature/lpr-samples-models`——管理端本地选图识别审阅（YOLO11m + PP-OCRv5 权重经 Git LFS 分发）、40 张授权样例与识别审阅对话框；macOS 原生毛玻璃接入登录页与主窗口；主界面移除顶部工具栏。
 
-尚未完成：真实 LPR、Admin GUI 远程服务端接线、预约查询接口与账号角色体系、`ReservationRule`/计费规则配置化及真实支付。当前 TCP v1 使用内网明文传输，不能直接暴露公网。
+尚未完成：Gate 侧真实摄像头 LPR、预约查询接口与账号角色体系、`ReservationRule`/计费规则配置化及真实支付。当前 TCP v1 使用内网明文传输，不能直接暴露公网。
+
+管理端提供本地选图识别审阅：`scripts/recognize_plate.py` 通过 PyTorch 与 Paddle 环境串联 YOLO11m 和 PP-OCRv5 最佳权重。启动 `scripts/run-admin.sh` 后登录，在主窗口顶栏点击“识别车牌”（“车辆作业”页的“识别图片”也可用）；选图窗口默认打开 [`examples/plates/`](examples/plates/)，可先试 `blue-01.jpg`。审阅原图、定位框、车牌裁剪图与置信度，可更换图片或重试；只有点击“使用车牌”才会转到“车辆作业”并填入车牌，入场/出场始终另行人工操作。40 张整图样例及来源/授权说明见该目录。此路径不是 Gate/Server 集成。两份最佳权重通过 Git LFS 跟踪；克隆时需要 Git LFS，运行时还需安装依赖并提供 PaddleOCR 源码及两个 Python 环境。
+
+```bash
+# 两个 Python 环境由 uv 锁定：scripts/{lpr,ocr}/pyproject.toml + uv.lock
+# （与 ~/.smartpark/{lpr,ocr} 的当前环境零漂移），一键同步：
+scripts/setup_uv_env.sh
+# PaddleOCR 源码放在 scripts/recognize_plate.py 期望的 third_party/PaddleOCR。
+# 本机曾使用 Gitee 镜像修复 iCloud dataless 文件；镜像默认分支会漂移，
+# 当前 checkout c166448875bcecb8d3b7628fd697ac1c28f8705b 的 ppocr/tools/paddleocr
+# 与原 GitHub 克隆逐字节一致（已比对），但正式部署前仍应固定 revision。
+# 验证（输出一行 JSON：车牌、置信度、边界框、格式检查、裁剪方式）：
+~/.smartpark/lpr/bin/python scripts/recognize_plate.py examples/plates/blue-01.jpg \
+    --ocr-python ~/.smartpark/ocr/bin/python
+```
+
+裁剪配方是训练与推理之间的合同：`model/weights/smartpark_plate_crop_recipe.json`
+声明推理该按哪种方式裁剪（`quad`＝四角透视矫正，现有权重即按此训练；`bbox`＝检测框
+原始裁剪，用于按运行分布重训的权重）。`scripts/recognize_plate.py` 默认读这份配方，
+`--crop-recipe` 可显式指定（如数据集目录里由 `prepare_recognition.py` 写出的那份），
+`--crop auto|quad|bbox` 可临时覆盖。输出的 `crop` 字段说明本次实际用了哪一种：
+`auto` 在检测器没有四角（仍是轴对齐框权重）时回退 `bbox`，不会静默假装做了矫正。
+
+四角检测（`--task obb` 四角旋转框，或 `--task pose` 四关键点）训练完成后，把新权重
+替换到 `model/weights/` 即可让 `crop` 变成 `quad`，倾斜/旋转车牌走训练同款透视矫正。
+pose 的关键点带语义顺序（0=左上、1=右上、2=右下、3=左下），图片整体旋转也能摆正；
+OBB 只有几何四角、无法区分上下，需要时可加 `--flip-check`（对裁剪图与其 180° 各识别
+一次，取格式合法或置信度更高的结果，代价是每张多一次 OCR）。
+
+`scripts/run-admin.sh` 会自动导出 `SMARTPARK_LPR_PY` / `SMARTPARK_OCR_PY`
+（缺省指向 `~/.smartpark/{lpr,ocr}/bin/python`）；直接启动 .app 时对话框也会
+回退到同一默认路径。注意脚本对 OCR 解释器只做绝对路径展开而**不能**
+`resolve()`：uv/venv 的 `bin/python` 是符号链接，解析后会绕过 `pyvenv.cfg`
+丢失依赖。
+
+命令行只接受一张图片，成功时输出一行 JSON（车牌、检测/识别置信度、边界框、格式检查、裁剪方式、四角来源）；失败时在标准错误输出原因并返回非零状态。检测和 OCR 在同一请求中串行运行，不支持多图批处理、`--ocr-workers` 或 `--no-warmup`。默认在 CPU 上运行，首次载入两份权重可能较慢；识别器使用 `scripts/rec/ppocrv5_dict.txt`，它与训练时完整的 `ppocrv5_dict.txt` 保持一致，不能换成 `plate_dict.txt`。默认权重在 `model/weights/`，随 LFS 下载；配置文件 `smartpark_plate_ppocrv5_config.yml` 同时纳入版本控制，脚本会覆盖训练机的权重、字典与样例路径。PaddleOCR 源码与 Python 依赖仍需单独准备（`--paddleocr` 可指定位置）。2026-09-30 已消除"训练四角矫正、推理检测框裁剪"的分布断层：裁剪几何收敛到 `scripts/plate_geometry.py` 一处，训练与推理共用同一配方（见下方评测数据与两条重训路线）。Paddle 原生推理导出已在本机验证；YOLO ONNX 导出尚需 `onnx` 依赖，Paddle→ONNX 和 C++ 运行时尚未完成。
+
+### 车牌识别准确率基线与两条对齐路线
+
+2026-09-30 用 `examples/plates/` 下 31 省均衡的 200 张 CCPD 整图（`manifest-provinces.csv`，含 tilt/rotate/challenge 等困难子集）复核当时的两阶段权重，发现整牌精确匹配只有 **64.5%**；根因是"训练用四角透视矫正裁剪、推理直接裁检测框"的分布断层。2026-10-05 两条对齐路线都训练完成并在同一套 200 张上复核：
+
+| 方案 | 合计 200 张 | ccpd_tilt 40 | ccpd_rotate 18 | ccpd_base 37 | ccpd_green 33 |
+| --- | --- | --- | --- | --- | --- |
+| 旧：检测框裁剪 + 旧识别器 | 64.5% | 27.5% | 16.7% | 86.5% | 81.8% |
+| 标注四角（上限对照） | 92.5% | 97.5% | 100% | 97.3% | 90.9% |
+| **路线 1：pose 四关键点检测器 + 现有识别器（`quad` 裁剪）** | **93.5%** | **100%** | **100%** | 97.3% | 90.9% |
+| 路线 2：旧检测器 + 运行时裁剪重训识别器（`bbox` 裁剪） | 88.5% | 85.0% | 77.8% | 97.3% | 90.9% |
+| 组合：pose 检测器 + 运行时重训识别器（`bbox` 裁剪） | 89.0% | 82.5% | 88.9% | 97.3% | 87.9% |
+
+- **路线 1 已作为出厂配置**：`model/weights/smartpark_plate_pose_best.pt`（6 epoch，pose mAP50-95 = 0.9950）放到 `model/weights/` 后，`recognize_plate.py` 会自动优先用它，输出的 `crop` 变成 `quad`、`quad_source` 变成 `keypoints`（GUI 无需改动，Qt/macOS 两端只读原有字段）。
+- 路线 2 的权重留在训练机 `model/runs/plate_rec_runtime/`（20 epoch，best acc 0.9950），配套 `ccpd_rec_runtime/crop_recipe.json`（`mode=bbox`）；要用它就把权重和配方一起放进 `model/weights/`。
+- 剩余误差已经不是几何问题：路线 1 的 12 个错例里 11 个只错省份字（晋→豫/浙/皖/鲁/青/赣/川，识别置信度仍 0.90-0.99），因为 CCPD 训练集以皖牌为主；想把 93.5% 再往上推，需要省份均衡的识别微调数据或省份先验，而不是继续调裁剪。
+
+#### 省份微调：单省重点 vs 全非皖均衡（2026-10-05）
+
+CCPD 是合肥数据集：皖牌占 92.8%，其余 30 省合计 7.2%，其中晋牌整池只有 **436 张（0.12%）**、在 12.9 万条识别训练样本里只有 **31 条（0.024%）**，模型因此对晋牌的省份字系统性认错。两轮微调（都从出厂识别权重起、3 epoch、lr 1e-4，评测集用过的图片全部排除在训练外）：
+
+| 方案 | 合计 200 张 | 晋牌 100 张 | 非晋 100 张 |
+| --- | --- | --- | --- |
+| 出厂（路线 1） | 93.5% | 92.0% | 95.0% |
+| 单省重点（`--province 晋 --target-share 0.10`，晋占 epoch 10.1%） | 89.5% | 98.0% | 81.0% |
+| **全非皖均衡 + 晋 ×2**（`--balance --per-province-share 0.012 --bias-factor 2.0`，非皖占 28.6%、晋占 1.9%） | **96.0%** | **98.0%** | **94.0%** |
+
+- **均衡版胜出并已作为出厂识别权重**：`model/weights/smartpark_plate_ppocrv5_bal.pdparams`；`recognize_plate.py` 的 `--recognizer` 缺省会优先用它（没有该文件才退回 `..._best.pdparams`）。剩余 8 个错例集中在长尾省份（藏 1 张、青 3 张这类整池样本个位数的省）与新能源绿牌，晋牌只剩 2 个且都只是省份字。
+- 单省重点版权重留在 `model/weights/smartpark_plate_ppocrv5_jin.pdparams` 备查：晋牌同样 98%，但非晋掉到 81%，只在"晋牌占比 ≥70%"的闸口才划算（转折点由 `0.98s+0.81(1-s)` vs `0.92s+0.95(1-s)` 得出，s≈70%）。
+- 复现（两种模式都由 `prepare_recognition_focus.py` 支持，`--province` 可换任意省份）：
+  ```bash
+  sbatch scripts/prepare_recognition_balance.slurm        # 全非皖均衡 + 晋 x2（纯 CPU）
+  sbatch scripts/train_rec.slurm \
+      --config scripts/rec/PP-OCRv5_server_rec_plate.yml \
+      --data "$ROOT/model/datasets/ccpd_rec_balance" \
+      --pretrained "$ROOT/model/weights/smartpark_plate_ppocrv5_best.pdparams" \
+      --output "$ROOT/model/runs/plate_rec_balance" --epochs 3 --lr 0.0001
+  ```
+- 长尾省份（藏/宁/琼/青/吉…）整池只有几张到几十张，过采样垫不高，想稳要补真实数据。
+
+#### 绿牌（新能源）加权：没有收益，且发现评测集污染（2026-10-05）
+
+绿牌是 200 张评测集里最弱的子集，于是又做了一轮绿牌加权：`prepare_recognition_green.py` 把绿牌行的重复倍数从 5× 提到 11×（占 epoch 30.5%，共 20.8 万行），从均衡版权重再微调 3 epoch。结论是**没有改善**：
+
+| 方案 | 合计 200 张 | 晋牌 100 | 非晋 100 | 干净绿牌 16 张 |
+| --- | --- | --- | --- | --- |
+| 出厂（路线 1） | 93.5% | 92.0% | 95.0% | 15/16 |
+| 非皖均衡 | 96.0% | 98.0% | 94.0% | 14/16 |
+| 绿牌加权 | 96.0% | 99.0% | 93.0% | 14/16 |
+
+原因是绿牌可训整图只有 **5,752 张**（CCPD2020 train），重复同一批样本不产生新信息；绿牌要提升只能补真实新能源数据。绿牌加权版与均衡版整体打平（差异 ±1 张，属噪声），权重留在 `model/weights/smartpark_plate_ppocrv5_green.pdparams` 备查，出厂仍用均衡版。
+
+同时发现**评测集本身有污染**：33 张绿牌里有 **17 张的裁剪图出现在 `ccpd_rec` 训练集里**，所以旧模型的绿牌数字（出厂 30/33、均衡 29/33）是偏高的。绿牌加权版已把这 17 张从训练列表剔除（`--exclude-manifest`），它的绿牌成绩是干净的；跨模型比较绿牌时只看"干净 16 张"这一列。
+
+复现（左列＝旧检测器，路线 1 用 `--detector` 指向 pose 权重）：
+
+```bash
+# 逐图结果写 JSONL，终端按子集汇总整牌精确匹配率
+~/.smartpark/lpr/bin/python scripts/evaluate_plates.py \
+    --manifest examples/plates/manifest-provinces.csv --workers 4
+~/.smartpark/lpr/bin/python scripts/evaluate_plates.py \
+    --manifest examples/plates/manifest-provinces.csv --workers 4 \
+    --detector model/weights/smartpark_plate_pose_best.pt --tag route1-pose
+~/.smartpark/lpr/bin/python scripts/evaluate_plates.py \
+    --manifest examples/plates/manifest-provinces.csv --oracle-corners --workers 4
+```
+
+两条对齐路线在训练机 s1 上的完整命令（已跑通，保留备查）：
+
+```bash
+# 路线 1（推理侧，出厂方案）：检测改四关键点，推理按训练同款透视矫正
+#   输出目录会先清空，每个 --task 用各自目录（缺省已按任务名分开）
+"$SMARTPARK_LPR_PY" scripts/prepare_ccpd.py --task pose --no-download \
+    --output "$ROOT/model/datasets/ccpd_yolo_pose"
+sbatch scripts/train_lpr.slurm --task pose --name license_plate_pose --imgsz 640 --batch 32 --device 0,1
+# 4 小时上限到点后接着跑（脚本不会自动续投）：
+sbatch scripts/train_lpr.slurm --task pose --name license_plate_pose --resume
+
+# 路线 2（训练侧）：保持现有轴对齐检测器，用"运行时裁剪"重造识别数据集并重训
+sbatch scripts/prepare_recognition_runtime.slurm     # 纯 CPU 作业，不占 GPU
+sbatch scripts/train_rec.slurm \
+    --config scripts/rec/PP-OCRv5_server_rec_plate_runtime.yml \
+    --data "$ROOT/model/datasets/ccpd_rec_runtime" \
+    --output "$ROOT/model/runs/plate_rec_runtime"
+```
+
+训练机 s1（inspur 集群）实测环境（2026-10-04 核对）：
+
+| 项 | 值 |
+| --- | --- |
+| Slurm | 26.05.4（RPM 已装并运行，**不需要源码编译**），`ClusterName=inspur-cluster` |
+| 分区 | `gpu`（默认分区），节点 `inspur[1-3]`，每节点 `Gres=gpu:v100:2`，56 核 / 184 GB |
+| 时间上限 | `MaxTime=04:00:00`、`DefaultTime=01:00:00`——**脚本里必须写 `#SBATCH --time`**（缺了只有 1 小时），长训练按 4 小时一段续投 |
+| 仓库 | `/home/inspur/nfs/home/cadetcarrington/Cpp-CourseProject_smart_park` |
+| 环境 | `~/miniforge3/envs/{smartpark-lpr,smartpark-ocr}`（torch 2.6.0 / ultralytics 8.4.142 / paddle 3.1.1，均带 CUDA） |
+| 数据 | `model/datasets/{CCPD2019,CCPD2020,ccpd_yolo,ccpd_yolo_pose,ccpd_rec,ccpd_rec_runtime}` 已就绪 |
+| 出网 | 登录节点到 github.com 超时，**计算节点可访问**；下载初始权重请在 `srun`/`sbatch` 里做 |
+
+现有三份出厂权重都是 s1 上训练产物的副本（sha256 一致）：
+`model/runs/plate_rec/best_accuracy.pdparams` → `model/weights/smartpark_plate_ppocrv5_best.pdparams`，
+`model/runs/license_plate/weights/best.pt` → `model/weights/smartpark_plate_yolo11m_best.pt`，
+`model/runs/license_plate_pose-2/weights/best.pt` → `model/weights/smartpark_plate_pose_best.pt`。
+
+路线 1 训完把检测权重换进 `model/weights/`（`--task` 会自动取
+`model/yolo11m-obb.pt` / `model/yolo11m-pose.pt` 作初始权重，需先放到 `model/`）；
+路线 2 训完把识别权重换进去，并把
+`ccpd_rec_runtime/crop_recipe.json` 复制成 `model/weights/smartpark_plate_crop_recipe.json`
+（`mode` 会变成 `bbox`），推理即自动按运行分布裁剪。两条路线都需要重跑上面的
+200 张评测后再更新本表。
 
 ## 后续发展路线
 
@@ -264,11 +410,50 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
 
 ## 最近工作记录
 
+2026-10-05 两条对齐路线训练完成 + 出厂切换：
+
+- 路线 1（pose 四关键点检测器，6 epoch，imgsz 640 / batch 32 / 双卡）：pose mAP50-95 = 0.9950；与现有识别器组合后 200 张整牌精确匹配 **93.5%**（tilt 40/40、rotate 18/18 全对，challenge 88.9%、base 97.3%、green 90.9%），略高于"标注四角"对照上限（92.5%）。权重已作为出厂配置放在 `model/weights/smartpark_plate_pose_best.pt`。
+- `recognize_plate.py` 的 `--detector` 缺省改为"有 pose 权重就用它，否则退回轴对齐框权重"；输出新增 `crop`/`quad_source`/`flip_checked` 诊断字段（Qt 与 macOS 两端只读原有字段，无需改动 GUI）。
+- 路线 2（旧检测器 + 运行时裁剪重训识别器，20 epoch，best acc 0.9950）在同一套 200 张上 **88.5%**（tilt 85.0%、rotate 77.8%），权重留在 s1 的 `model/runs/plate_rec_runtime/`，需要时与 `crop_recipe.json`（`mode=bbox`）一起发布。
+- 剩余误差不再是几何：路线 1 的 12 个错例中 11 个只错省份字（晋→豫/浙/皖/鲁/青/赣/川，识别置信度仍 0.90-0.99），属 CCPD 训练集省份分布偏斜；另有 1 张绿牌漏检。
+- 运维教训：s1 的 `gpu` 分区 `DefaultTime=01:00:00`，slurm 脚本必须显式写 `#SBATCH --time`，否则 1 小时就被砍（已补 `--time=04:00:00`）；`train_lpr.py` 新增 `--resume`（ultralytics 只在 `resume=True` 时续跑）。
+- 评测脚本 `evaluate_plates.py` 支持 `--detector/--recognizer/--config/--crop-recipe/--tag`，可直接对任意权重组合跑同一套 200 张。
+
+2026-09-30（晚）识别准确率归因 + 训练/推理裁剪对齐：
+
+- 用 31 省均衡的 200 张 CCPD 整图复核：整牌精确匹配 69.0%（精选 40 张为 90.0%），与 2026-09-28 记录的 `blue-01` 输出逐位一致，权重 sha256 与 LFS 指针一致，Gitee 重克隆的 `ppocr/tools/paddleocr` 与原 GitHub 克隆逐字节相同 —— 脚本、权重、环境都没有退化，掉点来自评测集变难（65% 为 tilt/rotate/db/fn/weather/challenge 困难子集）。
+- 归因：同一识别器换裁剪几何后 69.0% → 92.5%（tilt 30.0%→97.5%，rotate 44.4%→100%）。根因是训练侧 `prepare_recognition.py` 用四角透视矫正裁剪，而推理侧 `recognize_plate.py` 直接裁 YOLO 轴对齐框；倾斜车牌的裁剪图是歪的平行四边形，模型在倾斜/旋转子集上崩掉。检测本身没问题（框与标注 IoU≈0.86，0 次漏检）。
+- 新增 `scripts/plate_geometry.py`：四角排序/外扩/透视矫正/裁剪配方的唯一实现，训练与推理共用（黄金测试比对重构前的逐像素输出，防两侧几何各自漂移）。
+- `scripts/recognize_plate.py`：支持 OBB 四角与 4 关键点检测输出，按配方做训练同款矫正；新增 `--crop auto|quad|bbox`、`--crop-recipe`、`--flip-check`（OBB 上下歧义时二次识别取更可信者）；JSON 增加 `crop`/`quad_source`/`flip_checked`/`recipe` 诊断字段（GUI 仍按原有必需字段解析，不受影响）。默认配方随权重发布在 `model/weights/smartpark_plate_crop_recipe.json`。
+- 两条对齐路线的代码就绪：路线 1 `prepare_ccpd.py --task obb|pose` + `train_lpr.py --task` + `train_lpr.slurm`（四角/关键点检测，推理直接透视矫正）；路线 2 `prepare_recognition.py --crop-mode bbox`（按运行时检测框重造识别数据集，写出 `crop_recipe.json`）+ `PP-OCRv5_server_rec_plate_runtime.yml`。两者都需在 s1 上重训并重跑 200 张评测。
+- 测试：新增 `tests/test_plate_geometry.py`、`tests/test_plate_datasets.py`，扩充 `tests/test_recognize_plate.py`（共 37 个用例；无 numpy/opencv 的解释器自动跳过视觉用例）。
+
+2026-09-29（晚）离场原生窗口通知 + uv 环境固化 + 识别回退：
+
+- 车辆离场原生窗口通知：新增 Qt 无关的 `src/platform/MacNotifications`（NSPanel + NSVisualEffectView 毛玻璃横幅，PingFang 字体，5 秒自动淡出、点击关闭、多条横幅层叠，CTest 冒烟覆盖展示与自动消失）。Qt Admin 本地离场与远程 `parking.exited` 广播都会弹出“车辆已离场”横幅（车位/停车时长/费用）；远程模式只由事件触发一次，本端与 Gate 侧离场均覆盖，断线时随快照一起清空。
+- 识别环境固化：`scripts/{lpr,ocr}/pyproject.toml + uv.lock`（与 `~/.smartpark/{lpr,ocr}` 现有环境零漂移，锁定 paddlepaddle 3.3.1 / ultralytics 8.4.164 / torch 2.14.0），`scripts/setup_uv_env.sh` 一键 `uv sync --frozen` 同步。
+- `recognize_plate.py` 已恢复单图串行检测与 OCR：一次只接收一张图片，成功输出一行 JSON，失败返回非零。先前多图线程池基准不能代表 GUI 的单图延迟或准确率；本次没有新的全样例准确率和速度对照，勿引用先前的批量加速数据。
+- 排查并修复识别全挂问题：仓库位于 iCloud 同步的 `~/Documents`，「优化 Mac 存储」把全仓 1736 个文件（含 third_party/PaddleOCR 793 个、.git 249 个）驱逐为 dataless 占位，读取时在线拉取超时（errno 60）。GitHub 443 当时不通，改从 Gitee 官方镜像重克隆 `third_party/PaddleOCR`（0 dataless，端到端恢复）；构建关键文件已用看门狗读取物化。**建议对本项目目录关闭「优化 Mac 存储」或移出 iCloud 同步范围，否则会复发。**
+
+2026-09-28（下午）选图识别在本机端到端可用：
+
+- 用 uv（Python 3.12）建立 `~/.smartpark/lpr`（ultralytics + OpenCV）与 `~/.smartpark/ocr`（paddlepaddle 3.3.1 + OpenCV/PIL/skimage 等）两套环境，PaddleOCR 源码克隆到 `third_party/PaddleOCR`（已 gitignore）。
+- 修复 `recognize_plate.py` 对 OCR 解释器的 `Path.resolve()`：uv/venv 的 `bin/python` 是符号链接，解析后脱离 `pyvenv.cfg` 导致子进程找不到依赖；改为仅绝对路径展开。
+- 实测样例 `examples/plates/blue-01.jpg` 输出 `{"plate": "皖AMJ570", "detection_confidence": 0.78, "recognition_confidence": 0.9999, "valid": true}`；`run-admin.sh` 自动导出环境变量，对话框在环境变量缺失时回退同一默认路径，从 Finder 直接启动 .app 也可识别。
+
+2026-09-28 识别分支合入 + Admin 接入服务端状态：
+
+- 合入 `feature/lpr-samples-models`（保留 main 侧 P1/P2 内容与训练脚本安全修复，仅 README 需手工合并）：管理端本地选图识别审阅、40 张授权样例、两份最佳权重经 Git LFS 分发（约 121 MB + 215 MB，克隆需 `git lfs`；训练机 `s1` 的实体已校验 SHA-256 一致）。
+- 服务端 `--layout` 真正生效：`smartpark_server --layout data/garage-6f.txt` 即以 75 位车库平面运行（缺省仍为内置 60 位）；布局与持久化数据不匹配时拒绝启动并明确报错，绝不自动清库。
+- 新增 `admin.snapshot`（仅 `admin` 账号）：一次性下发布局几何 + 车位明细 + 计数 + 分区统计，Admin 远程模式不再本地维护第二个 `ParkingService`。
+- Admin 默认改为远程服务端模式：`ServerSession` 异步会话（20s 心跳、1s→15s 退避重连、事件驱动去抖刷新、断线禁写不重试），登录走服务端会话（`LoginDialog` 注入远程认证器，注册入口隐藏）；`--local`/`--smoke-test` 保留完整本地路径。无服务端数据合同的页面（预约/记录/配置、历史曲线、车型更正、策略、应急、布局编辑）远程模式下隐藏或禁用。
+- 测试：新增 `smartpark_admin_remote_tests`（5 用例：会话快照与权限、窗口镜像服务端状态含 Gate 事件驱动、本端入离场、服务端重启重连）；全量 CTest 8/8 通过；跨进程实测 75 位布局启动与布局不匹配拒绝。
+
 2026-09-27 P2：Gate 与用户端演示链路：
 
-- `apps/gate/` 提供入口/出口双模式，手输车牌模拟 LPR；状态机包括抬杆、保持、落闸、防砸反转及故障复位。离线事件先写 JSONL，连接恢复后每批最多 500 条补报，全部确认才移除已确认前缀。
+- `apps/gate/` 提供入口/出口双模式，手输车牌模拟 LPR；状态机包括抬杆、保持、落闸、防砸反转及故障复位。离线事件先写 JSONL，连接恢复后每批最多 500 条补报，按服务端逐条结论只移除「已获结论的前缀」（部分确认）；响应截断时未获结论的事件保留在本地队列下次重报。
 - `apps/user/` 支持余位查询、创建/取消时段预约，显示预期入口、车位、距离和转向；两终端每 5 秒重连、每 20 秒心跳。已有数据库不会自动添加新播种账号，演示请用新数据库或自行注册账号。
-- `gate.replay` 仅允许 `gate` 账号，按原始时间入账，重复事件按停车记录车牌、种类、毫秒时间戳去重；无效/失败事件逐条反馈且保留本地队列。跨设备时间不同的重复扫描不保证去重，明文 TCP 限内网/隧道使用。
+- `gate.replay` 仅允许 `gate` 账号，按原始时间入账，重复事件按停车记录车牌、种类、毫秒时间戳去重；无效/失败事件逐条反馈为 `skipped`，随已确认前缀一起出队并打印丢弃明细，不会堵住后续补报。跨设备时间不同的重复扫描不保证去重，明文 TCP 限内网/隧道使用。
 - 修复长驻服务端对象在事件循环前析构导致无监听的问题；进程间实测离线缓存→服务端启动→Gate 自动补报→SQLite 停车记录恢复，另实测在线入口→用户端余位查询→出口结算。服务端自测另起长驻子进程验证 TCP 监听生命周期。`cmake --build build/qt --parallel 6`、`ctest --test-dir build/qt --output-on-failure` 均通过，6/6。
 
 演示使用三个终端（从仓库根目录启动，数据库和队列路径按需调整）：
@@ -278,6 +463,17 @@ PendingPayment -> Confirmed -> CheckedIn -> Completed
 ./build/qt/apps/gate/smartpark_gate --mode entrance --port 9527 --queue /tmp/smartpark-entrance.jsonl
 ./build/qt/apps/user/smartpark_user --port 9527
 ```
+
+手机端（H5 用户端）与服务端同源伺服，加 `--web-root apps/webclient` 即启用，
+启动横幅会打印带点位票据的二维码，扫码即进入「设置账户」流程：
+
+```sh
+./build/qt/apps/server/smartpark_server --port 9527 --http-port 8080 --ws-port 8081 \
+    --db /tmp/smartpark-p2-demo.db --web-root apps/webclient --site-name "演示车场"
+```
+
+> 部署到服务器（无 GUI 构建、systemd、防火墙、客户端接入、已知限制）见
+> [`docs/deploy-server.md`](docs/deploy-server.md)。
 
 新数据库演示账号 `admin`、`gate`、`user` 的密码均为 `smartpark`。Gate 输入车牌直接入场（服务端自动核销匹配且处于到场窗口的预约），可输入 `status`、`fault on|off`、`reset`、`pass`、`quit`；用户端输入 `status`、`reserve <车牌> [偏移分钟 时长分钟]`、`cancel <车牌>`。出口另开一个 Gate 进程并设置 `--mode exit` 和独立队列文件。离线仅为模拟放行，重连补报可能因车位冲突被拒，失败事件继续保留供人工处理。
 
@@ -905,6 +1101,31 @@ CLI 默认把车位与停车记录持久化到 SQLite：未指定 `--db` 时使�
 运行流程：系统启动 `smartpark_cli` → 解析布局 → 构建障碍栅格 → `SpotAllocator` 按策略为候选车位计算路线和评分 → 选择最优车位并占用或预留 → 输出路线和状态 → 检查结果并返回退出码。
 
 ## Admin GUI 跨平台构建与运行
+
+### Admin 远程服务端模式（2026-09-28 起为默认）
+
+Admin 默认作为 TCP 客户端连接服务端，与 Gate 出入终端共享**同一权威停车状态**：
+地图、车位表、KPI 与分区压力全部来自服务端 `admin.snapshot` 快照，
+Gate/预约产生的广播事件触发去抖刷新（250 ms 合并），断线后按
+1s→2s→4s…（上限 15s）自动重连并重新登录，重新上线即拉全量快照。
+
+```bash
+# 1) 启动服务端：--layout 现在真正生效（示例为 75 位车库平面）；
+#    缺省仍是内置 60 位布局。布局与已持久化数据不匹配时服务端拒绝启动，绝不自动清库。
+smartpark_server --layout data/garage-6f.txt --port 9527
+# 2) 启动管理端：默认连接 127.0.0.1:9527，登录账号在服务端校验（演示 admin/smartpark）。
+smartpark_admin
+smartpark_admin --server 192.168.1.10:9527   # 指向其他部署
+smartpark_admin --local                      # 旧的本地数据模式（行为同 0.7）
+```
+
+远程模式界面范围：总览（快照 KPI + 构成/类型/分区压力 + 服务端 `analytics.report`）、
+实时车位（快照几何绘制）、车辆作业（入场/离场直发服务端 `parking.enter/leave`；
+图片识别审阅仅作车牌候选输入，最终入离场仍由服务端裁决）、当前车位。
+预约管理、停车记录、设施配置与历史曲线/预测等需要停车记录数据合同的页面
+在远程模式隐藏，不再展示本地模拟统计；车型更正、策略切换、应急通道与
+布局编辑在服务端具备对应接口前明确禁用。本地模式（`--local`、`--smoke-test`）
+保持 SmartPark 0.7 的完整功能与测试路径。
 
 `smartpark_admin` 现在支持 Windows、macOS 与 Linux。跨平台差异被封装在 CMake 和构建脚本中：
 
