@@ -1,0 +1,45 @@
+{
+  "date": "2026-10-09",
+  "host": "s1",
+  "baseline_commit": "763e75c",
+  "baseline_config": "scripts/lpr/baseline.json",
+  "manifest_sha256": "3bf613a2772b2ed3e634dc7b3387782763dab965c9aff7acfd08611bff9ee7a3",
+  "resident": {
+    "images": 200,
+    "correct": 191,
+    "errors": 1,
+    "startup_seconds": 6.063328644260764,
+    "first_request_seconds": 6.272980825044215,
+    "warm_median_seconds": 1.3081545578315854,
+    "warm_p95_seconds": 1.3417754359543324,
+    "baseline_exact_outputs": 200,
+    "changed_outputs": [],
+    "comparison_confidence_tolerance": 1e-06
+  },
+  "tcp_bridge": {
+    "cold_cli_seconds": [
+      13.660882400348783,
+      14.383420408703387,
+      14.284257995896041
+    ],
+    "cold_cli_median_seconds": 14.284257995896041,
+    "tcp_seconds": [
+      7.485808074474335,
+      1.4442882062867284,
+      1.4273308105766773,
+      1.4209564290940762,
+      1.4301804676651955,
+      1.4157426692545414
+    ],
+    "tcp_first_request_seconds": 7.485808074474335,
+    "tcp_warm_median_seconds": 1.4273308105766773,
+    "outputs_exact": true,
+    "plate": "皖AMJ570",
+    "backend": "script",
+    "warm_speedup": 10.007671585345268
+  },
+  "strict_full_output_matches": 200,
+  "accuracy_before": 0.955,
+  "accuracy_after": 0.955,
+  "note": "Regression comparison, not an independent generalization evaluation; historical dataset contamination still applies."
+}
