@@ -2,50 +2,54 @@
   "version": 3,
   "configurePresets": [
     {
-      "name": "cli-debug",
-      "displayName": "SmartPark CLI Debug",
+      "name": "macos-debug",
+      "displayName": "SmartPark macOS + Server Debug",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/cli",
+      "binaryDir": "${sourceDir}/build/macos",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "SMARTPARK_BUILD_ADMIN": "OFF"
+        "SMARTPARK_BUILD_MACOS_ADMIN": "ON",
+        "BUILD_TESTING": "ON"
       }
     },
     {
-      "name": "qt-debug",
-      "displayName": "SmartPark Qt Debug",
+      "name": "server-debug",
+      "displayName": "SmartPark Server + Terminals Debug",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/qt",
+      "binaryDir": "${sourceDir}/build/server",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "SMARTPARK_BUILD_ADMIN": "ON"
+        "SMARTPARK_BUILD_MACOS_ADMIN": "OFF",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "server-release",
+      "displayName": "SmartPark s1 Deployment",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/server-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SMARTPARK_BUILD_MACOS_ADMIN": "OFF",
+        "BUILD_TESTING": "OFF"
       }
     }
   ],
   "buildPresets": [
-    {
-      "name": "cli-debug",
-      "configurePreset": "cli-debug"
-    },
-    {
-      "name": "qt-debug",
-      "configurePreset": "qt-debug"
-    }
+    { "name": "macos-debug", "configurePreset": "macos-debug" },
+    { "name": "server-debug", "configurePreset": "server-debug" },
+    { "name": "server-release", "configurePreset": "server-release" }
   ],
   "testPresets": [
     {
-      "name": "cli-tests",
-      "configurePreset": "cli-debug",
-      "output": {
-        "outputOnFailure": true
-      }
+      "name": "macos-tests",
+      "configurePreset": "macos-debug",
+      "output": { "outputOnFailure": true }
     },
     {
-      "name": "qt-tests",
-      "configurePreset": "qt-debug",
-      "output": {
-        "outputOnFailure": true
-      }
+      "name": "server-tests",
+      "configurePreset": "server-debug",
+      "output": { "outputOnFailure": true }
     }
   ]
 }

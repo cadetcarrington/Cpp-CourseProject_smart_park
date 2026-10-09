@@ -1,3 +1,6 @@
+# Local assistant/session artifacts (kept on disk, not in Git)
+/.mimosa/
+
 # CMake build artifacts
 /build/
 /build-*/
