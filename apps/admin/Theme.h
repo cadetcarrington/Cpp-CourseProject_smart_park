@@ -126,6 +126,9 @@ inline QString solidMainWindowStyleSheet(){
         QLineEdit:focus, QComboBox:focus, QDateTimeEdit:focus {
             border: 2px solid @primary@; padding: 0 7px;
         }
+        QDateTimeEdit::drop-down {
+            subcontrol-origin: padding; subcontrol-position: top right; width: 24px;
+        }
         QPushButton {
             color: @text2@; background: @surface@; border: 1px solid @inputBorder@;
             border-radius: 4px; min-height: 30px; padding: 0 12px; font-weight: 600;
@@ -140,7 +143,7 @@ inline QString solidMainWindowStyleSheet(){
         QPushButton[variant="quiet"] { color: @text3@; background: transparent; border-color: transparent; }
         QPushButton[variant="quiet"]:hover { background: @primaryFaint@; border-color: @primaryFaint@; color: @text1@; }
         QTableWidget {
-            background: @surface@; alternate-background-color: @surfaceAlt@;
+            color: @text1@; background: @surface@; alternate-background-color: @surfaceAlt@;
             selection-background-color: @primarySoft@; selection-color: @text1@;
             border: 1px solid @border@; border-radius: 4px; gridline-color: @gridLine@;
         }
@@ -178,14 +181,8 @@ inline QString glassMainWindowStyleSheet(){
             background: rgba(255, 255, 255, 150); border-right: 1px solid rgba(255, 255, 255, 140);
             min-width: 206px; max-width: 260px;
         }
-        QLabel#brandMark {
-            background: rgba(255, 255, 255, 35);
-            border-right: 1px solid rgba(0, 0, 0, 25);
-            min-width: 206px;
-            max-width: 260px;
-            border-radius: 15px;
-            font-size: 13pt; font-weight: 700;
-        }
+        QFrame#sideBar[nativeVibrancy="true"] { background: transparent; }
+       
         QLabel#brandName { color: @text1@; font-size: 15pt; font-weight: 700; }
         QLabel#brandCaption, QLabel#sideBarCaption { color: @text3@; font-size: 9pt; }
         QLabel#sideSection { color: @text4@; font-size: 8pt; font-weight: 700; }
@@ -199,6 +196,7 @@ inline QString glassMainWindowStyleSheet(){
         QListWidget#sideNavigation::item:hover { background: rgba(255, 255, 255, 120); color: @text1@; }
         QListWidget#sideNavigation::item:selected { background: @primarySoft@; color: @primary@; font-weight: 700; }
         QFrame#topHeader { background: rgba(255, 255, 255, 185); border-bottom: 1px solid rgba(255, 255, 255, 150); border-radius: 12px; }
+        QFrame#topHeader[nativeVibrancy="true"] { background: transparent; border: none; }
         QLabel#pageTitle { color: @text1@; font-size: 16pt; font-weight: 700; }
         QLabel#pageSubtitle, QLabel#mutedText { color: @text3@; font-size: 10pt; }
         QLabel#connectionBadge {
@@ -212,11 +210,14 @@ inline QString glassMainWindowStyleSheet(){
         }
         QFrame#contentCard {
             background: rgba(255, 255, 255, 205); border: 1px solid rgba(255, 255, 255, 170);
-            border-radius: 15px;
+            border-radius: 12px;
+        }
+        QFrame#contentCard[nativeVibrancy="true"], QFrame#metricCard[nativeVibrancy="true"] {
+            background: transparent;
         }
         QFrame#metricCard {
             background: rgba(255, 255, 255, 185); border: 1px solid rgba(255, 255, 255, 160);
-            border-radius: 15px; min-height: 96px;
+            border-radius: 12px; min-height: 96px;
         }
         QLabel#metricTitle { color: @text3@; font-size: 10pt; font-weight: 600; }
         QLabel#metricValue { color: @text1@; font-size: 21pt; font-weight: 700; }
@@ -233,6 +234,9 @@ inline QString glassMainWindowStyleSheet(){
         QLineEdit:focus, QComboBox:focus, QDateTimeEdit:focus {
             border: 2px solid @primary@; padding: 0 7px;
         }
+        QDateTimeEdit::drop-down {
+            subcontrol-origin: padding; subcontrol-position: top right; width: 24px;
+        }
         QPushButton {
             color: @text2@; background: rgba(255, 255, 255, 200); border: 1px solid @inputBorder@;
             border-radius: 15px; min-height: 30px; padding: 0 12px; font-weight: 600;
@@ -247,7 +251,7 @@ inline QString glassMainWindowStyleSheet(){
         QPushButton[variant="quiet"] { color: @text3@; background: transparent; border-color: transparent; }
         QPushButton[variant="quiet"]:hover { background: rgba(255, 255, 255, 140); border-color: transparent; color: @text1@; }
         QTableWidget {
-            background: rgba(255, 255, 255, 235); alternate-background-color: @surfaceAlt@;
+            color: @text1@; background: rgba(255, 255, 255, 235); alternate-background-color: @surfaceAlt@;
             selection-background-color: @primarySoft@; selection-color: @text1@;
             border: 1px solid rgba(255, 255, 255, 170); border-radius: 15px; gridline-color: @gridLine@;
         }

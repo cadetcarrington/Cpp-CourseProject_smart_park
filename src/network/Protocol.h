@@ -1,14 +1,22 @@
 #pragma once
+#include "core/model/Vehicle.h"
+
 #include <QByteArray>
 #include <QJsonObject>
 #include <QString>
+
+#include <optional>
 
 namespace smartpark{
 namespace protocol{
 
 constexpr int kProtocolVersion = 1;
 // 单帧 JSON 载荷上限；超限视为恶意/异常连接并断开。
-constexpr int kMaxFrameBytes = 1024 * 1024;
+// 帧上限。原先 1MiB 够用，但 lpr.recognize 要把照片 base64 塞进 payload：
+// 6MB 图片 base64 后约 8MB，加上 JSON 开销再留点余量。
+constexpr int kMaxFrameBytes = 9 * 1024 * 1024;
+// 单张图片的原始字节上限（base64 前），与 REST 的 /api/v1/lpr/recognize 一致。
+constexpr int kMaxImageBytes = 6 * 1024 * 1024;
 
 // 封包：4 字节大端长度前缀 + UTF-8 JSON 载荷。
 QByteArray encodeFrame(const QJsonObject &message);
@@ -27,6 +35,12 @@ QJsonObject makeResponse(const QString &id, bool ok,
                          const QJsonObject &payload = {},
                          const QString &error = {});
 QJsonObject makeEvent(const QString &event, const QJsonObject &payload = {});
+
+// 车型的线上字符串编码（parking.enter / gate.replay / admin.snapshot 共用）。
+// 定义在协议层而不是各自实现：服务端与客户端一旦对不上，
+// 摩托车/货车/新能源车会被静默当成轿车处理。
+QString vehicleTypeToString(smartpark::VehicleType type);
+std::optional<smartpark::VehicleType> vehicleTypeFromString(const QString &text);
 
 } // namespace protocol
 } // namespace smartpark

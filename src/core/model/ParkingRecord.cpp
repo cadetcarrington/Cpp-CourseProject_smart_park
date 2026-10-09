@@ -4,10 +4,11 @@
 #include <utility>
 namespace smartpark{
 ParkingRecord::ParkingRecord(std::string plateNumber, std::string spotId,
-                             TimePoint entryTime)
+                             TimePoint entryTime, VehicleType vehicleType)
     : plateNumber_(std::move(plateNumber))
     , spotId_(std::move(spotId))
-    , entryTime_(entryTime){
+    , entryTime_(entryTime)
+    , vehicleType_(vehicleType){
     if (plateNumber_.empty()){
         throw std::invalid_argument("plate number cannot be empty");
     }
@@ -26,6 +27,9 @@ ParkingRecord::TimePoint ParkingRecord::entryTime() const noexcept{
 }
 const std::optional<ParkingRecord::TimePoint> &ParkingRecord::exitTime() const noexcept{
     return exitTime_;
+}
+VehicleType ParkingRecord::vehicleType() const noexcept{
+    return vehicleType_;
 }
 bool ParkingRecord::isClosed() const noexcept{
     return exitTime_.has_value();

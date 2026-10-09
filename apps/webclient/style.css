@@ -1,0 +1,170 @@
+/* SmartPark H5 用户端样式：移动端优先，深色头部 + 卡片流。 */
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+:root {
+  --bg: #f2f4f8;
+  --card: #ffffff;
+  --ink: #1c2530;
+  --ink-2: #5b6b7c;
+  --line: #e4e9f0;
+  --brand: #1667ff;
+  --brand-2: #0f1b2d;
+  --ok: #12b76a;
+  --warn: #f79009;
+  --bad: #f04438;
+  --radius: 14px;
+}
+html, body { height: 100%; }
+body {
+  font: 15px/1.5 -apple-system, "PingFang SC", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+  background: var(--bg); color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 毛玻璃只用在两条常驻栏上：顶部蓝色头部与底部导航。
+   它们盖在滚动内容之上，模糊的是从底下经过的卡片，
+   所以不需要额外的背景层——把整页做成玻璃反而是另一回事了。 */
+#app { max-width: 520px; margin: 0 auto; min-height: 100%; padding-bottom: 76px; }
+.boot { text-align: center; color: var(--ink-2); padding: 80px 0; }
+
+/* 头部 */
+.header {
+  /* 吸顶玻璃条：滚动时余位与实时徽标始终可见。 */
+  position: sticky; top: 0; z-index: 15;
+  background: linear-gradient(150deg, rgba(22,48,79,.68), rgba(15,27,45,.76) 70%);
+  -webkit-backdrop-filter: blur(18px) saturate(180%);
+  backdrop-filter: blur(18px) saturate(180%);
+  color: #fff; padding: 22px 18px 18px;
+  border-radius: 0 0 22px 22px;
+  border-bottom: 1px solid rgba(255,255,255,.12);
+  box-shadow: 0 6px 24px rgba(12,24,44,.18);
+}
+.header .row { display: flex; align-items: center; justify-content: space-between; }
+.header h1 { font-size: 19px; font-weight: 700; letter-spacing: .5px; }
+.header .sub { color: rgba(255,255,255,.65); font-size: 12px; margin-top: 2px; }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--bad); margin-right: 5px; vertical-align: 1px; }
+.dot.on { background: var(--ok); }
+
+/* 底部导航 */
+.tabbar {
+  position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
+  width: 100%; max-width: 520px;
+  background: rgba(255,255,255,.72);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  border-top: 1px solid rgba(255,255,255,.6); display: flex; z-index: 20;
+  padding-bottom: env(safe-area-inset-bottom);
+  box-shadow: 0 -6px 20px rgba(16,32,54,.08);
+}
+.tabbar a {
+  flex: 1; text-align: center; padding: 14px 0 13px; color: var(--ink-2);
+  text-decoration: none; font-size: 13px;
+}
+.tabbar a.on { color: var(--brand); font-weight: 600; }
+
+/* 卡片与通用 */
+.card {
+  background: var(--card);
+  border-radius: var(--radius);
+  margin: 12px 14px 0; padding: 15px 16px;
+  box-shadow: 0 1px 3px rgba(16,32,54,.06);
+}
+.card h3 { font-size: 15px; margin-bottom: 10px; }
+.card h3 .more { float: right; color: var(--brand); font-size: 12px; font-weight: 400; text-decoration: none; }
+.muted { color: var(--ink-2); font-size: 12px; }
+.value-xl { font-size: 44px; font-weight: 800; line-height: 1.1; }
+.stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 14px; }
+.stat-grid .s { background: rgba(255,255,255,.08); border-radius: 10px; padding: 8px 4px; text-align: center; }
+.stat-grid .s b { display: block; font-size: 17px; }
+.stat-grid .s span { font-size: 11px; color: rgba(255,255,255,.6); }
+.btn {
+  display: block; width: 100%; border: 0; border-radius: 12px;
+  background: var(--brand); color: #fff; font-size: 16px; font-weight: 600;
+  padding: 13px 0; margin-top: 14px; cursor: pointer;
+}
+.btn:disabled { opacity: .45; }
+.btn.ghost { background: #eef3ff; color: var(--brand); }
+.btn.danger { background: #feecea; color: var(--bad); }
+.btn.sm { width: auto; padding: 7px 14px; font-size: 13px; margin-top: 0; }
+input, select {
+  width: 100%; border: 1px solid var(--line); border-radius: 10px;
+  padding: 11px 12px; font-size: 15px; background: #fbfcfe; color: var(--ink);
+  appearance: none; -webkit-appearance: none;
+}
+input:focus, select:focus { outline: none; border-color: var(--brand); }
+.field { margin-bottom: 11px; }
+.field label { display: block; font-size: 12px; color: var(--ink-2); margin-bottom: 5px; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.banner { border-radius: var(--radius); margin: 12px 14px 0; padding: 12px 15px; font-size: 13px; }
+.banner.ok { background: #e8f8f0; color: #0b7a48; }
+.banner.bad { background: #feecea; color: #b42318; }
+
+/* 列表条目 */
+.item { display: flex; justify-content: space-between; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.item:last-child { border-bottom: 0; }
+.item .t { font-weight: 600; font-size: 14px; }
+.item .d { color: var(--ink-2); font-size: 12px; margin-top: 2px; }
+.tag { font-size: 11px; border-radius: 6px; padding: 3px 8px; font-weight: 600; }
+.tag.ok { background: #e8f8f0; color: #0b7a48; }
+.tag.warn { background: #fef4e6; color: #b54708; }
+.tag.bad { background: #feecea; color: #b42318; }
+.tag.info { background: #eef3ff; color: var(--brand); }
+.empty { text-align: center; color: var(--ink-2); padding: 30px 0 18px; font-size: 13px; }
+
+/* 分区负载 */
+.zone { margin-top: 9px; }
+.zone .zl { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-2); }
+.zone .bar { height: 6px; border-radius: 3px; background: #e9edf3; margin-top: 4px; overflow: hidden; }
+.zone .bar i { display: block; height: 100%; background: var(--brand); border-radius: 3px; }
+
+/* 收银台 */
+.cashier { text-align: center; padding: 8px 0 4px; }
+.cashier .amount { font-size: 42px; font-weight: 800; margin: 6px 0 2px; }
+.cashier .amount::before { content: "¥"; font-size: 22px; font-weight: 600; }
+.cashier .count { font-size: 13px; color: var(--warn); margin: 8px 0 2px; }
+.qrbox {
+  margin: 14px auto 4px; width: 168px; height: 168px; border-radius: 12px;
+  border: 1px dashed var(--line); display: flex; align-items: center; justify-content: center;
+  flex-direction: column; color: var(--ink-2); font-size: 12px; background: #fbfcfe;
+}
+.qrbox .otn { font-family: ui-monospace, Menlo, monospace; font-size: 11px; margin-top: 8px; word-break: break-all; padding: 0 10px; }
+.kv { display: flex; justify-content: space-between; font-size: 13px; padding: 7px 0; border-bottom: 1px dashed var(--line); }
+.kv:last-child { border-bottom: 0; }
+.kv b { font-weight: 600; }
+
+/* 指引画布 */
+canvas.map { width: 100%; border-radius: 12px; background: #0e1626; display: block; }
+.legend { display: flex; gap: 12px; font-size: 11px; color: var(--ink-2); margin-top: 8px; flex-wrap: wrap; }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+
+/* 登录页 */
+.auth { padding: 46px 26px 0; }
+.auth .logo { text-align: center; color: #fff; background: linear-gradient(150deg, #16304f, var(--brand-2)); margin: -46px -26px 26px; padding: 52px 0 30px; border-radius: 0 0 26px 26px; }
+.auth .logo h1 { font-size: 24px; letter-spacing: 1px; }
+.auth .logo p { color: rgba(255,255,255,.6); font-size: 12px; margin-top: 4px; }
+.seg { display: flex; background: #e9edf3; border-radius: 10px; padding: 3px; margin-bottom: 18px; }
+.seg a { flex: 1; text-align: center; padding: 8px 0; border-radius: 8px; color: var(--ink-2); text-decoration: none; font-size: 14px; }
+.seg a.on { background: #fff; color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+
+/* toast */
+#toast {
+  position: fixed; top: 18px; left: 50%; transform: translateX(-50%) translateY(-80px);
+  background: rgba(20,30,45,.92); color: #fff;
+  padding: 10px 18px; border-radius: 20px;
+  font-size: 13px; transition: transform .25s; z-index: 99; max-width: 86%;
+}
+#toast.show { transform: translateX(-50%) translateY(0); }
+.toastWrap { position: fixed; top: 14px; left: 0; right: 0; z-index: 99; pointer-events: none; }
+.toastItem {
+  width: max-content; max-width: 86%; margin: 6px auto;
+  background: rgba(20,30,45,.92);
+  color: #fff; padding: 9px 16px; border-radius: 18px; font-size: 13px;
+  animation: pop .2s ease-out;
+}
+@keyframes pop { from { transform: scale(.9); opacity: 0; } }
+
+/* 降级：不支持 backdrop-filter 时两条栏回到不透明，
+   否则半透明背景会让底下滚过的文字透出来，读不清。 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .header { background: linear-gradient(150deg, #16304f, var(--brand-2) 70%); }
+  .tabbar { background: #fff; }
+}

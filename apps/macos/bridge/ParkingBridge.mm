@@ -1,0 +1,510 @@
+#include "ParkingBridge.h"
+
+#include "bridge/RemoteDataSource.h"
+
+#include "core/model/Booking.h"
+#include "core/model/ParkingLayout.h"
+#include "core/model/ParkingRecord.h"
+#include "core/persistence/Persistence.h"
+#include "core/service/ParkingInsightEngine.h"
+#include "core/service/ParkingService.h"
+#include "core/service/ReservationService.h"
+
+#include <QSqlDatabase>
+#include <QSqlError>
+#include <QSqlQuery>
+#include <QString>
+
+#include <QJsonArray>
+#include <QJsonValue>
+
+#include <cmath>
+#include <cstddef>
+#include <ctime>
+#include <cstdio>
+#include <optional>
+#include <stdexcept>
+
+namespace{
+// 解析布局描述；ParkingLayout 没有可访问的默认构造函数，故用 optional 承载。
+// 解析失败时返回 nullopt 并把原因写入 error。
+std::optional<smartpark::ParkingLayout> parseLayout(const std::string &description,
+                                                    std::string *error){
+    try{
+        return smartpark::ParkingLayout::fromDescription(description);
+    } catch (const std::exception &failure){
+        if (error != nullptr){
+            *error = failure.what();
+        }
+        return std::nullopt;
+    }
+}
+} // namespace
+
+ParkingBridge::ParkingBridge()
+    : ParkingBridge(smartpark::Persistence::defaultDatabasePath()){}
+
+ParkingBridge::ParkingBridge(const QString &databasePath){
+    databasePath_ = databasePath.toStdString();
+    layoutText_ = smartpark::ParkingLayout::garageDescription();
+
+    std::string error;
+    if (!rebuildService(smartpark::ParkingLayout::garageLayout(), &error)){
+        // 数据库不可用：沿用「不提供 service_」的语义，lastError_ 供上层展示。
+        lastError_ = error;
+        std::fprintf(stderr, "[ParkingBridge] persistence error: %s\n",
+                     error.c_str());
+    }
+}
+
+ParkingBridge::~ParkingBridge() = default;
+
+bool ParkingBridge::rebuildService(const smartpark::ParkingLayout &layout,
+                                   std::string *error){
+    if (databasePath_.empty() || databaseFailed_){
+        service_ = std::make_unique<smartpark::ParkingService>(layout, strategy_);
+        return true;
+    }
+    try{
+        if (!persistence_){
+            persistence_ = std::make_unique<smartpark::Persistence>(
+                QString::fromStdString(databasePath_));
+        }
+        if (!persistence_->lastError().isEmpty()){
+            throw std::runtime_error(persistence_->lastError().toStdString());
+        }
+        // 先构造成功再替换 service_：任一步抛异常时旧 service_ 仍然有效，
+        // 用户可以继续使用原布局与原数据。
+        auto rebuilt = std::make_unique<smartpark::ParkingService>(
+            layout, strategy_, &persistence_->repository());
+        service_ = std::move(rebuilt);
+        return true;
+    } catch (const std::exception &failure){
+        if (error != nullptr){
+            *error = failure.what();
+        }
+        return false;
+    }
+}
+
+bool ParkingBridge::clearParkingData(std::string *error){
+    if (!persistence_){
+        if (error != nullptr){
+            *error = "停车数据库连接不可用";
+        }
+        return false;
+    }
+    QSqlDatabase &database = persistence_->databaseManager().database();
+    if (!database.transaction()){
+        if (error != nullptr){
+            *error = database.lastError().text().toStdString();
+        }
+        return false;
+    }
+    // 账号和停车数据共库，只清理业务数据，保留已注册用户。
+    for (const QString &table : {QStringLiteral("deposit_payments"),
+                                 QStringLiteral("reservations"),
+                                 QStringLiteral("bookings"),
+                                 QStringLiteral("parking_records"),
+                                 QStringLiteral("parking_spots"),
+                                 QStringLiteral("layout_snapshot")}){
+        QSqlQuery query(database);
+        if (!query.exec(QStringLiteral("DELETE FROM ") + table)){
+            if (error != nullptr){
+                *error = query.lastError().text().toStdString();
+            }
+            database.rollback();
+            return false;
+        }
+    }
+    if (!database.commit()){
+        if (error != nullptr){
+            *error = database.lastError().text().toStdString();
+        }
+        database.rollback();
+        return false;
+    }
+    return true;
+}
+
+const std::string &ParkingBridge::layoutDescription() const noexcept{
+    if (remote_){
+        return remote_->layoutDescription();
+    }
+    return layoutText_;
+}
+
+bool ParkingBridge::memoryOnly() const noexcept{
+    if (remote_){
+        return remote_->memoryOnly();
+    }
+    return databaseFailed_ || databasePath_.empty();
+}
+
+bool ParkingBridge::applyLayoutDescription(const std::string &description,
+                                           std::string *error,
+                                           bool *needsDatabaseReset){
+    if (needsDatabaseReset != nullptr){
+        *needsDatabaseReset = false;
+    }
+    const auto layout = parseLayout(description, error);
+    if (!layout){
+        return false;
+    }
+    std::string buildError;
+    if (rebuildService(*layout, &buildError)){
+        layoutText_ = description;
+        lastError_.clear();
+        return true;
+    }
+    // 语法没问题，但库里的停车数据无法迁移到新布局：交由调用方确认是否重置。
+    if (needsDatabaseReset != nullptr){
+        *needsDatabaseReset = true;
+    }
+    if (error != nullptr){
+        *error = buildError;
+    }
+    return false;
+}
+
+bool ParkingBridge::resetDatabaseAndApplyLayout(const std::string &description,
+                                                std::string *error){
+    const auto layout = parseLayout(description, error);
+    if (!layout){
+        return false;
+    }
+
+    if (!clearParkingData(error)){
+        return false;
+    }
+    service_.reset();
+    // 必须连 Persistence 一起重建：ParkingRepository 会把上次失败的原因留在
+    // lastError_（例如 "persisted layout differs from the current layout"），
+    // 而 restore() 只要看到 lastError_ 非空就抛「恢复失败」。复用同一连接会让
+    // 已经成功的重置被误判为失败，并连带把 bridge 打成内存模式。
+    persistence_.reset();
+    databaseFailed_ = false;
+    std::string buildError;
+    if (!rebuildService(*layout, &buildError)){
+        databaseFailed_ = true;
+        service_ = std::make_unique<smartpark::ParkingService>(*layout, strategy_);
+        layoutText_ = description;
+        if (error != nullptr){
+            *error = "历史停车记录与预约已清空，但重建停车服务失败：" + buildError +
+                     "（已降级为内存模式，重启后不会保留）";
+        }
+        return false;
+    }
+    layoutText_ = description;
+    lastError_.clear();
+    return true;
+}
+
+double ParkingBridge::totalRevenue() const noexcept{
+    if (remote_){
+        return remote_->totalRevenue();
+    }
+    return service_ ? service_->totalRevenue() : 0.0;
+}
+
+const smartpark::ParkingLayout &ParkingBridge::layout() const noexcept{
+    if (remote_){
+        return remote_->layout();
+    }
+    static const smartpark::ParkingLayout empty = smartpark::ParkingLayout::garageLayout();
+    return service_ ? service_->layout() : empty;
+}
+
+const std::vector<smartpark::ParkingSpot> &ParkingBridge::spots() const noexcept{
+    if (remote_){
+        return remote_->spots();
+    }
+    static const std::vector<smartpark::ParkingSpot> empty;
+    return service_ ? service_->spots() : empty;
+}
+
+const std::vector<smartpark::ParkingRecord> &ParkingBridge::records() const noexcept{
+    if (remote_){
+        return remote_->records();
+    }
+    static const std::vector<smartpark::ParkingRecord> empty;
+    return service_ ? service_->records() : empty;
+}
+
+const std::vector<smartpark::Booking> &ParkingBridge::bookings() const noexcept{
+    if (remote_){
+        return remote_->bookings();
+    }
+    static const std::vector<smartpark::Booking> empty;
+    return service_ ? service_->bookings() : empty;
+}
+
+const std::vector<smartpark::Reservation> &ParkingBridge::reservations() const noexcept{
+    if (remote_){
+        return remote_->reservations();
+    }
+    static const std::vector<smartpark::Reservation> empty;
+    return service_ ? service_->reservations().reservations() : empty;
+}
+
+ParkingBridge::ReservationRuleView ParkingBridge::reservationRule() const noexcept{
+    if (remote_){
+        return remote_->reservationRule();
+    }
+    ReservationRuleView view;
+    if (service_){
+        const smartpark::ReservationRule &rule = service_->reservations().rule();
+        view.deposit = rule.deposit;
+        view.maxAdvanceDays = rule.maxAdvanceDays;
+        view.gracePeriodMin = static_cast<int>(rule.gracePeriod.count());
+    }
+    return view;
+}
+
+void ParkingBridge::recognizePlateRemotely(
+    const QByteArray &imageBytes, std::function<void(PlateRecognition)> done){
+    if (remote_){
+        remote_->recognizePlateRemotely(imageBytes, std::move(done));
+        return;
+    }
+    // 本地模式由界面自己起识别脚本（沿用原有路径），这里不接管。
+    done(PlateRecognition{false, {}, 0.0, {}, "本地模式请使用本机识别脚本"});
+}
+
+bool ParkingBridge::supportsRemoteRecognition() const noexcept{
+    return remote_ != nullptr;
+}
+
+smartpark::ParkingInsights ParkingBridge::insights() const noexcept{
+    if (remote_){
+        return remote_->insights();
+    }
+    if (!service_){
+        return smartpark::ParkingInsights{};
+    }
+    return smartpark::ParkingInsightEngine::analyze(
+        service_->spots(), service_->records(), service_->bookings());
+}
+
+double ParkingBridge::pendingDeposits() const noexcept{
+    if (remote_){
+        return remote_->pendingDeposits();
+    }
+    return service_ ? service_->pendingDeposits() : 0.0;
+}
+
+double ParkingBridge::forfeitedDeposits() const noexcept{
+    if (remote_){
+        return remote_->forfeitedDeposits();
+    }
+    return service_ ? service_->forfeitedDeposits() : 0.0;
+}
+
+std::optional<smartpark::AllocationResult> ParkingBridge::enterVehicle(
+    const std::string &plate, smartpark::VehicleType type){
+    if (remote_){
+        return remote_->enterVehicle(plate, type);
+    }
+    if (!service_){
+        return std::nullopt;
+    }
+    return service_->enter(smartpark::Vehicle(plate, type));
+}
+
+std::optional<smartpark::AllocationResult> ParkingBridge::emergencyEnter(
+    const std::string &plate, smartpark::VehicleType type){
+    if (remote_){
+        // 协议里没有应急生命通道 action：远程模式下该能力不可用。
+        return remote_->emergencyEnter(plate, type);
+    }
+    if (!service_){
+        return std::nullopt;
+    }
+    return service_->emergencyEnter(smartpark::Vehicle(plate, type));
+}
+
+std::optional<smartpark::ParkingRecord> ParkingBridge::leaveVehicle(const std::string &plate){
+    if (remote_){
+        return remote_->leaveVehicle(plate);
+    }
+    if (!service_){
+        return std::nullopt;
+    }
+    return service_->leave(plate);
+}
+
+bool ParkingBridge::updateVehicleType(const std::string &plate, smartpark::VehicleType type){
+    if (remote_){
+        return remote_->updateVehicleType(plate, type);
+    }
+    return service_ && service_->updateVehicleType(plate, type);
+}
+
+void ParkingBridge::setStrategy(smartpark::AllocationStrategy strategy){
+    // 记录在 bridge 上：布局重建会构造新的 ParkingService，需要恢复该选择。
+    strategy_ = strategy;
+    if (remote_){
+        return;   // 远程模式下分配策略由服务端统一配置
+    }
+    if (service_){
+        service_->setStrategy(strategy);
+    }
+}
+
+std::optional<smartpark::BookingResult> ParkingBridge::bookVehicle(
+    const std::string &plate, smartpark::VehicleType type,
+    smartpark::ParkingRecord::TimePoint arrival){
+    if (remote_){
+        return remote_->bookVehicle(plate, type, arrival);
+    }
+    if (!service_){
+        return std::nullopt;
+    }
+    return service_->createBooking(smartpark::Vehicle(plate, type), arrival);
+}
+
+std::optional<smartpark::AllocationResult> ParkingBridge::confirmBooking(const std::string &plate){
+    if (remote_){
+        return remote_->confirmBooking(plate);
+    }
+    if (!service_){
+        return std::nullopt;
+    }
+    return service_->confirmBooking(plate);
+}
+
+bool ParkingBridge::cancelBooking(const std::string &plate){
+    if (remote_){
+        return remote_->cancelBooking(plate);
+    }
+    return service_ && service_->cancelBooking(plate);
+}
+
+smartpark::BillingRule ParkingBridge::billingRule() const{
+    if (remote_){
+        return remote_->billingRule();
+    }
+    return service_ ? service_->billing().rule() : smartpark::BillingRule{};
+}
+
+smartpark::BookingPolicy ParkingBridge::bookingPolicy() const{
+    if (remote_){
+        return remote_->bookingPolicy();
+    }
+    return service_ ? service_->bookingPolicy() : smartpark::BookingPolicy{};
+}
+
+bool ParkingBridge::ready() const noexcept{
+    if (remote_){
+        return remote_->ready();
+    }
+    return service_ != nullptr;
+}
+
+const std::string &ParkingBridge::lastError() const noexcept{
+    if (remote_){
+        return remote_->lastError();
+    }
+    return lastError_;
+}
+
+namespace{
+// 本地按记录聚合 7 日收入：与服务端 admin.snapshot 的口径一致
+// （仅已离场记录，费用已扣定金）。
+std::vector<ParkingBridge::DailyRevenueEntry> localSevenDayRevenue(
+    const std::vector<smartpark::ParkingRecord> &records){
+    std::vector<ParkingBridge::DailyRevenueEntry> series;
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t today = std::chrono::system_clock::to_time_t(now);
+    std::tm parts{};
+    localtime_r(&today, &parts);
+    parts.tm_hour = 0;
+    parts.tm_min = 0;
+    parts.tm_sec = 0;
+    const std::time_t midnight = std::mktime(&parts);
+    for (int offset = 6; offset >= 0; --offset){
+        const std::time_t day = midnight - offset * 86400;
+        std::tm dayParts{};
+        localtime_r(&day, &dayParts);
+        char buffer[16];
+        std::strftime(buffer, sizeof(buffer), "%Y-%m-%d", &dayParts);
+        series.push_back({buffer, 0.0});
+    }
+    for (const smartpark::ParkingRecord &record : records){
+        if (!record.isClosed() || !record.exitTime()){
+            continue;
+        }
+        const std::time_t exit = std::chrono::system_clock::to_time_t(*record.exitTime());
+        std::tm exitParts{};
+        localtime_r(&exit, &exitParts);
+        exitParts.tm_hour = 0;
+        exitParts.tm_min = 0;
+        exitParts.tm_sec = 0;
+        const double daysAgo = std::difftime(midnight, std::mktime(&exitParts)) / 86400.0;
+        const int index = 6 - static_cast<int>(std::llround(daysAgo));
+        if (index >= 0 && index < 7){
+            series[static_cast<std::size_t>(index)].fee += record.fee();
+        }
+    }
+    return series;
+}
+} // namespace
+
+std::vector<ParkingBridge::DailyRevenueEntry> ParkingBridge::sevenDayRevenue() const{
+    if (remote_){
+        std::vector<DailyRevenueEntry> series;
+        for (const QJsonValue &item : remote_->dailyRevenueSeries()){
+            const QJsonObject entry = item.toObject();
+            series.push_back({entry.value(QStringLiteral("date")).toString().toStdString(),
+                              entry.value(QStringLiteral("fee")).toDouble()});
+        }
+        if (!series.empty()){
+            return series;
+        }
+        return {};
+    }
+    return localSevenDayRevenue(records());
+}
+
+bool ParkingBridge::connectRemote(const QString &host, quint16 port,
+                                  const QString &user, const QString &password){
+    if (!remote_){
+        remote_ = std::make_unique<smartpark::RemoteDataSource>();
+        remote_->onConnectionChanged = [this](bool online, const QString &detail){
+            if (onRemoteStateChanged){
+                onRemoteStateChanged(online, detail);
+            }
+        };
+        remote_->onSnapshotRefreshed = [this]{
+            if (onRemoteDataChanged){
+                onRemoteDataChanged();
+            }
+        };
+    }
+    remote_->start(host, port, user, password);
+    return true;
+}
+
+void ParkingBridge::disconnectRemote(){
+    if (!remote_){
+        return;
+    }
+    remote_->stop();
+    // 释放远程数据源：remoteMode() 变回 false，读写重新落回本地库。
+    remote_.reset();
+}
+
+bool ParkingBridge::remoteMode() const noexcept{
+    return remote_ != nullptr;
+}
+
+smartpark::ParkingDataSource::Capabilities ParkingBridge::capabilities() const{
+    if (remote_){
+        return remote_->capabilities();
+    }
+    return smartpark::ParkingDataSource::Capabilities{};
+}
+
+smartpark::RemoteDataSource *ParkingBridge::remote() const noexcept{
+    return remote_.get();
+}
