@@ -18,6 +18,10 @@ YOLO_OFFLINE=true ~/.smartpark/lpr/bin/python -B scripts/recognize_plate.py \
 
 成功返回一行 JSON，包含 `plate`、检测／识别置信度、`bounding_box`、`valid`、`crop`、`quad_source` 和 `flip_checked`；失败打印原因到 stderr 并返回非零状态。脚本默认使用 CPU，每次请求重新加载模型，暂不提供多图批处理。`valid` 仅表示字符格式合法，不等于模型识别正确；管理端仍要求人工核对。
 
+## 推理检查点与可选加速
+
+当前单图 FP32 模式已保存为 `763e75c`，均衡 OCR 权重也已加入 Git LFS；模型与环境指纹见 [推理基线](lpr-baseline.md)。可选 [常驻推理方案](lpr-performance.md) 保留同样的模型、输入和后处理，200 张逐图输出完全一致，原单图 CLI 中位数为 14.28 秒，常驻模式真实 TCP 热请求中位数为 1.43 秒。常驻模式需要显式启用，默认单图命令仍保留。
+
 ## s1 的已验证配置
 
 2026-10-09 复用训练目录 `~/Cpp-CourseProject_smart_park` 的模型及脚本，检测解释器为 `~/miniforge3/envs/smartpark-lpr/bin/python`，OCR 解释器为 `~/miniforge3/envs/smartpark-ocr/bin/python`。对应版本为 torch 2.6.0、ultralytics 8.4.142、paddle 3.1.1。

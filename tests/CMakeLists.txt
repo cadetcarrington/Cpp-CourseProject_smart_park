@@ -106,6 +106,8 @@ find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_test(NAME smartpark_lpr_script_tests
         COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_recognize_plate.py)
+    add_test(NAME smartpark_lpr_resident_tests
+        COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_lpr_resident.py)
     # 无 numpy/opencv 的解释器会自动跳过视觉用例（exit 0）。
     add_test(NAME smartpark_plate_geometry_tests
         COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_plate_geometry.py)

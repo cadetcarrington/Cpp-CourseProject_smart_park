@@ -54,7 +54,7 @@ def parse_paddle_result(content: str, image: Path) -> tuple[str, float]:
     raise ValueError("PaddleOCR did not return a result for the detected crop")
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("image", type=Path)
     parser.add_argument("--detector", type=Path, default=None,
@@ -74,7 +74,7 @@ def parse_args() -> argparse.Namespace:
                         help="裁剪配方 JSON，缺省读 model/weights/smartpark_plate_crop_recipe.json")
     parser.add_argument("--flip-check", action="store_true",
                         help="四角来自 OBB（无法区分上下）时，对裁剪图与其 180° 各识别一次取更可信的结果")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def as_nested_list(value):
@@ -179,6 +179,8 @@ def recognize_crop(crop, name: str, context: dict) -> tuple[str, float]:
     results_path = directory / f"{name}.txt"
     if not plate_geometry.write_crop(crop_path, crop, context["recipe"]):
         raise ValueError("Could not save plate crop")
+    if context.get("crop_recognizer") is not None:
+        return context["crop_recognizer"](crop_path, results_path)
     command = [
         str(context["ocr_python"]), "-B", str(context["paddleocr"] / "tools/infer_rec.py"),
         "-c", str(context["config"]), "-o",
@@ -203,7 +205,7 @@ def pick_flipped(first: tuple[str, float], second: tuple[str, float]) -> int:
     return 0 if first[1] >= second[1] else 1
 
 
-def recognize(args: argparse.Namespace) -> dict:
+def recognize(args: argparse.Namespace, *, detector_model=None, crop_recognizer=None) -> dict:
     from ultralytics import YOLO
     import cv2
 
@@ -232,8 +234,9 @@ def recognize(args: argparse.Namespace) -> dict:
     frame = cv2.imread(str(image), cv2.IMREAD_COLOR)
     if frame is None:
         raise ValueError(f"Cannot decode image: {image}")
-    detection = YOLO(str(detector)).predict(frame, imgsz=960, conf=args.confidence,
-                                            device="cpu", verbose=False)[0]
+    model = detector_model if detector_model is not None else YOLO(str(detector))
+    detection = model.predict(frame, imgsz=960, conf=args.confidence,
+                              device="cpu", verbose=False)[0]
     if len(detection.boxes) == 0:
         raise ValueError("No license plate detected")
     best = int(detection.boxes.conf.argmax().item())
@@ -259,7 +262,8 @@ def recognize(args: argparse.Namespace) -> dict:
         crop = plate_geometry.crop_box(frame, bounds)
 
     context = {"directory": None, "recipe": recipe, "ocr_python": ocr_python, "paddleocr": paddleocr,
-               "config": config, "recognizer": recognizer, "dictionary": dictionary}
+               "config": config, "recognizer": recognizer, "dictionary": dictionary,
+               "crop_recognizer": crop_recognizer}
     flip_checked = False
     with tempfile.TemporaryDirectory(prefix="smartpark-lpr-") as directory:
         context["directory"] = Path(directory)
