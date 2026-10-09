@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "captured_at": "2026-10-09",
+  "mode": "single-image subprocess, CPU FP32",
+  "detector_imgsz": 960,
+  "detection_confidence_threshold": 0.25,
+  "crop": "auto",
+  "flip_check": false,
+  "model_root": "~/Cpp-CourseProject_smart_park",
+  "environment": {
+    "OPENBLAS_NUM_THREADS": "4",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "OMP_NUM_THREADS": "4",
+    "YOLO_OFFLINE": "true",
+    "MKL_NUM_THREADS": "4"
+  },
+  "packages": {
+    "smartpark-lpr": {"torch": "2.6.0", "ultralytics": "8.4.142", "numpy": "2.4.6", "cv2": "4.10.0"},
+    "smartpark-ocr": {"paddle": "3.1.1", "numpy": "2.4.1", "cv2": "5.0.0"}
+  },
+  "sha256": {
+    "scripts/recognize_plate.py": "aab798890c44610317bb305e0de65e803636364d4071c38f247cf98f803819c3",
+    "scripts/plate_geometry.py": "5f54032cc67b77f90a066b8806b47e39123a67b828d3c3cfbb2f6598b75fd10f",
+    "model/weights/smartpark_plate_pose_best.pt": "a8c357090c7caa718ae0d2c878bf36fce57d9a1495afab7b1c11a108c1ca2b83",
+    "model/weights/smartpark_plate_ppocrv5_bal.pdparams": "375628414b124ff186146d274c8432136d3243d7394084a12d5db012e7683d0e",
+    "model/weights/smartpark_plate_ppocrv5_config.yml": "af40fec20a55587462cd1ee061afe2a24bc99d911219587d2c87d00558898c9d",
+    "model/weights/smartpark_plate_crop_recipe.json": "4ee4282c8e749b3d311001f7d700bd0d20bb4864be6fd5091d070a0b1f25067f",
+    "scripts/rec/ppocrv5_dict.txt": "d1979e9f794c464c0d2e0b70a7fe14dd978e9dc644c0e71f14158cdf8342af1b",
+    "third_party/PaddleOCR/tools/infer_rec.py": "a290c7dd4cf4af9fd614224b5f0f95703a4ba7dd9eda7ea5933959ffb6457213"
+  }
+}
