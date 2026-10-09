@@ -109,14 +109,17 @@ struct MapTransform{
 MapTransform mapTransform(NSRect bounds, const smartpark::ParkingLayout &layout){
     const double width = layout.siteWidth();
     const double height = layout.siteHeight();
+    // 车库贴左上角，只留一圈 12px 边距。原来是 80px 总边距 + 居中：窗口越大
+    // 四周空白越多、底图越小。tests/macos_map_tests.mm 里有一份同样的期望变换，
+    // 改这里必须同步改那里，否则像素断言会去采样错误的坐标。
+    const double margin = 12.0;
     if (width <= 0.0 || height <= 0.0
-        || bounds.size.width <= 80.0 || bounds.size.height <= 80.0){
+        || bounds.size.width <= 2.0 * margin || bounds.size.height <= 2.0 * margin){
         return {0.0, 0.0, 0.0};
     }
-    const double scale = MIN((bounds.size.width - 80.0) / width,
-                             (bounds.size.height - 80.0) / height);
-    return {scale, bounds.origin.x + (bounds.size.width - width * scale) / 2.0,
-            bounds.origin.y + (bounds.size.height - height * scale) / 2.0};
+    const double scale = MIN((bounds.size.width - 2.0 * margin) / width,
+                             (bounds.size.height - 2.0 * margin) / height);
+    return {scale, bounds.origin.x + margin, bounds.origin.y + margin};
 }
 
 void drawFittedLabel(NSString *text, NSRect rect, NSColor *color,
@@ -335,8 +338,9 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
 
     const bool garage = isGarageFloorplan(layout);
 
-    // 场地背景
-    [rgba(232, 234, 229, 255) setFill];
+    // 场地背景：白。原来是暖灰（232,234,229），没铺车位的地方（各库之间、核心筒
+    // 那一条空档）看起来是灰的，用户要求中间空档是白的。
+    [rgba(255, 255, 255, 255) setFill];
     NSRectFill(NSMakeRect(ox, oy, siteW * scale, siteH * scale));
 
     // 网格 + 坐标轴标签
@@ -373,7 +377,7 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
              withAttributes:axisAttrs];
         }
     } else{
-        [rgba(198, 204, 210, 255) setStroke];
+        [rgba(226, 231, 236, 255) setStroke];
         for (double x = 5.0; x < siteW; x += 5.0){
             NSBezierPath *line = [NSBezierPath bezierPath];
             [line moveToPoint:NSMakePoint(tx(x), ty(0.0))];
@@ -392,10 +396,9 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
     if (!garage){
         for (const smartpark::Rectangle &region : layout.regions()){
             NSRect r = rectFor(region);
-            [rgba(226, 230, 235, 40) setFill];
-            NSRectFill(r);
+            // 只描边、不铺灰：区域框含通道，铺灰会把每条通道都染成灰色。
             NSBezierPath *p = [NSBezierPath bezierPathWithRect:r];
-            [rgba(170, 178, 188, 255) setStroke];
+            [rgba(178, 186, 196, 255) setStroke];
             [p stroke];
         }
     }
@@ -412,20 +415,56 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
                         rgba(48, 52, 56, 255), 12.0);
     }
 
-    // 入口 / 出口标记
-    for (const smartpark::Point &entrance : layout.entrances()){
-        if (entrance.y <= 0.6){
-            NSRect r = NSMakeRect(tx(entrance.x - 3.2), ty(0.05), 6.4 * scale, 2.4 * scale);
-            [rgba(176, 178, 172, 255) setFill];
-            NSRectFill(r);
+    // 入口 / 出口标记：闸机在哪面墙就画在哪面墙。
+    // 原来只画 y<=0.6（北墙）的闸机，而且文字统一堆在顶边——布局把闸机放在西墙/
+    // 南墙时，标签和实际位置对不上。这里按「离哪面墙最近」定位，标签贴在闸机内侧
+    // （永远落在场地里，不会被画布裁掉），颜色沿用路线的蓝/橙：入场蓝、出场橙。
+    const NSColor *entryColor = rgba(36, 92, 196, 255);
+    const NSColor *exitColor = rgba(214, 108, 20, 255);
+    NSDictionary *entryAttrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:11.0 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName: entryColor,
+    };
+    NSDictionary *exitAttrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:11.0 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName: exitColor,
+    };
+    auto drawGate = [&](const smartpark::Point &gate, NSString *text,
+                        NSDictionary *attrs, NSColor *color){
+        const NSPoint center = NSMakePoint(tx(gate.x), ty(gate.y));
+        const double dNorth = gate.y;
+        const double dSouth = siteH - gate.y;
+        const double dWest = gate.x;
+        const double dEast = siteW - gate.x;
+        const double length = MAX(8.0, 2.2 * scale);   // 墙面开口标记长度(px)
+        const double thick = MAX(3.0, 0.9 * scale);    // 标记厚度(px)
+        const NSSize textSize = [text sizeWithAttributes:attrs];
+        NSRect marker;
+        NSPoint label;
+        if (dNorth <= dSouth && dNorth <= dWest && dNorth <= dEast){
+            marker = NSMakeRect(center.x - length / 2, center.y, length, thick);
+            label = NSMakePoint(center.x - textSize.width / 2, center.y + thick + 3);
+        } else if (dSouth <= dWest && dSouth <= dEast){
+            marker = NSMakeRect(center.x - length / 2, center.y - thick, length, thick);
+            label = NSMakePoint(center.x - textSize.width / 2,
+                                center.y - thick - textSize.height - 3);
+        } else if (dWest <= dEast){
+            marker = NSMakeRect(center.x, center.y - length / 2, thick, length);
+            label = NSMakePoint(center.x + thick + 3, center.y - textSize.height / 2);
+        } else{
+            marker = NSMakeRect(center.x - thick, center.y - length / 2, thick, length);
+            label = NSMakePoint(center.x - thick - textSize.width - 3,
+                                center.y - textSize.height / 2);
         }
+        [color setFill];
+        NSRectFill(marker);
+        [text drawAtPoint:label withAttributes:attrs];
+    };
+    for (const smartpark::Point &entrance : layout.entrances()){
+        drawGate(entrance, @"入口", entryAttrs, (NSColor *)entryColor);
     }
     for (const smartpark::Point &exit : layout.exits()){
-        if (exit.y <= 0.6){
-            NSRect r = NSMakeRect(tx(exit.x - 2.6), ty(0.05), 5.2 * scale, 2.2 * scale);
-            [rgba(176, 178, 172, 255) setFill];
-            NSRectFill(r);
-        }
+        drawGate(exit, @"出口", exitAttrs, (NSColor *)exitColor);
     }
 
     // 已预约但还没锁位的车位（0.7 延迟锁位）：车位状态仍是「空闲」，光看填充色
@@ -510,24 +549,7 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
     [rgba(46, 50, 54, 255) setStroke];
     wall.lineWidth = 2.0;
     [wall stroke];
-
-    // 入口 / 出口文字
-    NSDictionary *entryAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:10.0 weight:NSFontWeightMedium],
-        NSForegroundColorAttributeName: rgba(36, 72, 160, 255),
-    };
-    NSDictionary *exitAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:10.0 weight:NSFontWeightMedium],
-        NSForegroundColorAttributeName: rgba(176, 84, 24, 255),
-    };
-    for (const smartpark::Point &entrance : layout.entrances()){
-        [@"入口" drawInRect:NSMakeRect(tx(entrance.x) - 14, ty(0.0) - 26, 28, 12)
-             withAttributes:entryAttrs];
-    }
-    for (const smartpark::Point &exit : layout.exits()){
-        [@"出口" drawInRect:NSMakeRect(tx(exit.x) - 14, ty(0.0) - 26, 28, 12)
-             withAttributes:exitAttrs];
-    }
+    // 入口 / 出口的文字与墙面标记在上面统一画（drawGate，按最近的一面墙定位）。
 }
 
 @end

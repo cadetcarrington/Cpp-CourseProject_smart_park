@@ -131,8 +131,9 @@ input:focus, select:focus { outline: none; border-color: var(--brand); }
 .kv:last-child { border-bottom: 0; }
 .kv b { font-weight: 600; }
 
-/* 指引画布 */
-canvas.map { width: 100%; border-radius: 12px; background: #0e1626; display: block; }
+/* 指引画布：图面是白底平面图（与 macOS 端一致），画布底也铺白，
+   否则贴左上角作图后，场外只剩右侧/下方一条深色边，看着像没画满。 */
+canvas.map { width: 100%; border-radius: 12px; background: #fff; border: 1px solid rgba(255,255,255,.14); display: block; }
 .legend { display: flex; gap: 12px; font-size: 11px; color: var(--ink-2); margin-top: 8px; flex-wrap: wrap; }
 .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
 
