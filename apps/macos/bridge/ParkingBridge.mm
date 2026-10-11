@@ -46,12 +46,31 @@ std::optional<smartpark::ParkingLayout> parseLayout(const std::string &descripti
 ParkingBridge::ParkingBridge()
     : ParkingBridge(smartpark::Persistence::defaultDatabasePath()){}
 
-ParkingBridge::ParkingBridge(const QString &databasePath){
+ParkingBridge::ParkingBridge(const QString &databasePath)
+    : ParkingBridge(databasePath, QString()){}
+
+ParkingBridge::ParkingBridge(const QString &databasePath,
+                             const QString &layoutDescription){
     databasePath_ = databasePath.toStdString();
     layoutText_ = smartpark::ParkingLayout::garageDescription();
 
+    smartpark::ParkingLayout layout = smartpark::ParkingLayout::garageLayout();
+    if (!layoutDescription.trimmed().isEmpty()){
+        try{
+            layout = smartpark::ParkingLayout::fromDescription(
+                layoutDescription.toStdString());
+            // 编辑框/导出用同一份文本：用户看到的必须是这条库实际生效的布局。
+            layoutText_ = layoutDescription.toStdString();
+        } catch (const std::exception &failure){
+            lastError_ = std::string("布局文件无效：") + failure.what();
+            std::fprintf(stderr, "[ParkingBridge] invalid layout: %s\n",
+                         failure.what());
+            return;
+        }
+    }
+
     std::string error;
-    if (!rebuildService(smartpark::ParkingLayout::garageLayout(), &error)){
+    if (!rebuildService(layout, &error)){
         // 数据库不可用：沿用「不提供 service_」的语义，lastError_ 供上层展示。
         lastError_ = error;
         std::fprintf(stderr, "[ParkingBridge] persistence error: %s\n",

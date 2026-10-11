@@ -129,9 +129,13 @@ fi
 echo "=== 启动服务端 ==="
 echo "  服务端: $SERVER"
 echo "  数据目录: $DIR"
+# 识别用测试替身（tests/lpr_stub.sh）：真脚本要 torch/paddle 环境，e2e 不依赖；
+# 替身会 sleep 2 秒，用来验证「识别期间服务端不被阻塞」。
+LPR_STUB="sh $REPO_ROOT/tests/lpr_stub.sh %1"
 "$SERVER" --port "$TCP_PORT" --http-port "$HTTP_PORT" --ws-port "$WS_PORT" \
     --db "$DIR/smartpark.db" --layout "$LAYOUT" \
     --web-root "$WEB_ROOT" --advertise 127.0.0.1 \
+    --lpr-command "$LPR_STUB" \
     --site-name "E2E 测试车场" > "$DIR/server.log" 2>&1 &
 SRVPID=$!
 sleep 4
@@ -439,6 +443,42 @@ chk "离场使占用数 -1" "$((OCC1-OCC2))" 1
 chk "离场不新增记录（同一条转已结算）" "$((REC2-REC1))" 0
 chk "离场后状态为已结算" \
     "$(api GET "/records?plate=$(urlenc 京A22222)" "$UT" | jget "['records'][0]['status']")" "closed"
+
+echo
+echo "=== L. 车牌识别接口（脚本模式） ==="
+# 正常图片：替身返回固定车牌。
+IMG_OK=$(python3 -c "import base64;print(base64.b64encode(b'JPEGDATA-OK').decode())")
+LPR_OK=$(curl -s -m 30 -X POST "$B/lpr/recognize" -H "Authorization: Bearer $AT" \
+    -H 'Content-Type: application/json' -d "$(jbody image "$IMG_OK")")
+[ "$(echo "$LPR_OK" | jget "['plate']")" = "京A88888" ] && ok "识别成功返回车牌" \
+    || no "识别未返回预期车牌：$LPR_OK"
+[ "$(echo "$LPR_OK" | jget "['backend']")" = "script" ] && ok "backend=script（走的是脚本）" \
+    || no "backend 不是 script：$LPR_OK"
+
+# 画面里没有车牌：必须是 422 + NO_PLATE，而不是没有信息量的 500。
+IMG_NO=$(python3 -c "import base64;print(base64.b64encode(b'NOPLATE').decode())")
+LPR_CODE=$(curl -s -m 30 -o "$DIR/lpr-noplate.json" -w '%{http_code}' -X POST "$B/lpr/recognize" \
+    -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' \
+    -d "$(jbody image "$IMG_NO")")
+chk "无车牌时返回 422" "$LPR_CODE" 422
+[ "$(jget "['code']" < "$DIR/lpr-noplate.json")" = "NO_PLATE" ] \
+    && ok "无车牌错误码为 NO_PLATE" || no "错误码不是 NO_PLATE：$(cat "$DIR/lpr-noplate.json")"
+
+# 识别期间服务端必须还能干活：替身要跑 2 秒，这期间 status 必须秒回。
+# 旧实现（waitForFinished）会把事件循环堵住，这条会超时失败。
+curl -s -m 30 -o "$DIR/lpr-slow.json" -X POST "$B/lpr/recognize" \
+    -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' \
+    -d "$(jbody image "$IMG_OK")" &
+LPR_PID=$!
+sleep 0.4
+STATUS_T=$(curl -s -m 5 -o /dev/null -w '%{time_total}' "$B/parking/status" \
+    -H "Authorization: Bearer $AT")
+wait "$LPR_PID" 2>/dev/null
+python3 -c "import sys;sys.exit(0 if float('$STATUS_T') < 1.5 else 1)" \
+    && ok "识别进行中 status 仍秒回（${STATUS_T}s）" \
+    || no "识别把服务端堵住了：status 用了 ${STATUS_T}s"
+[ "$(jget "['plate']" < "$DIR/lpr-slow.json")" = "京A88888" ] \
+    && ok "并发的识别自己也成功" || no "并发识别失败：$(cat "$DIR/lpr-slow.json")"
 
 echo
 echo "================================"

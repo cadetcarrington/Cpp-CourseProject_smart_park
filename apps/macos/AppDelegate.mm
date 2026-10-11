@@ -2,6 +2,7 @@
 
 #import "LoginViewController.h"
 #import "MainWindowController.h"
+#import "LocalRecognitionService.h"
 
 #include "core/persistence/Persistence.h"
 #include "core/service/UserStore.h"
@@ -9,6 +10,7 @@
 #include <QCoreApplication>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
+#include <QFile>
 #include <QString>
 
 #include <memory>
@@ -17,19 +19,61 @@
     // 账号库与停车数据共用同一个 SQLite 文件（与 Qt 版一致）。
     std::unique_ptr<smartpark::UserStore> userStore_;
     QString databasePath_;
+    // --layout 读到的布局文本；为空表示用内置车库布局。
+    QString layoutDescription_;
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification{
+    // 自定义参数在 main.mm 里就摘出来了（QCoreApplication 只拿到 argv[0]，
+    // 下面这个 parser 看不到它们），这里只作为兜底保留。
     QCommandLineParser parser;
     const QCommandLineOption databaseOption(
         {QStringLiteral("d"), QStringLiteral("db")},
         QStringLiteral("本地 SQLite 数据库路径"), QStringLiteral("path"));
     parser.addOption(databaseOption);
     parser.process(*QCoreApplication::instance());
-    databasePath_ = parser.isSet(databaseOption)
-        ? parser.value(databaseOption)
-        : smartpark::Persistence::defaultDatabasePath();
+    if (_launchDatabasePath.length > 0){
+        databasePath_ = QString::fromNSString(_launchDatabasePath);
+    } else {
+        databasePath_ = parser.isSet(databaseOption)
+            ? parser.value(databaseOption)
+            : smartpark::Persistence::defaultDatabasePath();
+    }
+
+    // --layout：本地模式用指定的布局开库。服务端库/自定义图纸的布局签名与内置
+    // 布局不同，不传这个参数会被服务端库拒之门外（"persisted layout differs"）。
+    if (_launchLayoutPath.length > 0){
+        QFile layoutFile(QString::fromNSString(_launchLayoutPath));
+        if (!layoutFile.open(QIODevice::ReadOnly | QIODevice::Text)){
+            [self failWithTitle:@"布局文件打不开"
+                         detail:[NSString stringWithFormat:@"%@：%@",
+                                 _launchLayoutPath,
+                                 layoutFile.errorString().toNSString()]];
+            return;
+        }
+        layoutDescription_ = QString::fromUtf8(layoutFile.readAll());
+        if (layoutDescription_.trimmed().isEmpty()){
+            [self failWithTitle:@"布局文件是空的" detail:_launchLayoutPath];
+            return;
+        }
+    }
     [self showLogin];
+    [LocalRecognitionService preloadDefault];
+}
+
+// 启动期致命错误：弹窗说明原因后退出，不要带着半截配置继续跑。
+- (void)failWithTitle:(NSString *)title detail:(NSString *)detail{
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = title;
+    alert.informativeText = detail;
+    alert.alertStyle = NSAlertStyleCritical;
+    [alert addButtonWithTitle:@"退出"];
+    if (self.loginWindowController.window != nil){
+        [alert beginSheetModalForWindow:self.loginWindowController.window completionHandler:nil];
+    } else {
+        [alert runModal];
+    }
+    [NSApp terminate:nil];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender{
@@ -113,7 +157,9 @@
                    port:(NSInteger)remotePort
                password:(NSString *)remotePassword{
     MainWindowController *main =
-        [[MainWindowController alloc] initWithUserName:userName databasePath:databasePath_];
+        [[MainWindowController alloc] initWithUserName:userName
+                                          databasePath:databasePath_
+                                     layoutDescription:layoutDescription_];
 
     if (remoteHost.length > 0){
         // 远程模式：本机库不作为数据源，失败与否由连接状态决定。

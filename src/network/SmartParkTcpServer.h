@@ -2,6 +2,7 @@
 #include "network/Protocol.h"
 
 #include <QHash>
+#include <QPointer>
 #include <QObject>
 #include <QTimer>
 
@@ -87,7 +88,9 @@ private:
     QJsonObject actionGateReplay(const QJsonObject &payload, bool *ok, QString *error);
     // 管理端专用全量快照：布局几何 + 车位明细 + 计数，仅 admin 账号可调用。
     QJsonObject actionAdminSnapshot(const QJsonObject &payload, bool *ok, QString *error);
-    QJsonObject actionLprRecognize(const QJsonObject &payload, bool *ok, QString *error);
+    // 识别要起 Python 进程（十几秒）：异步跑，完成后自己 respond。
+    void startLprRecognize(Session &session, const QString &id,
+                           const QJsonObject &payload);
     // 预约订单的线上形状：admin.snapshot 的 reservations[] 与
     // reservation.create / reservation.checkin 的应答共用，字段名只此一处。
     static QJsonObject reservationToPayload(const Reservation &reservation);

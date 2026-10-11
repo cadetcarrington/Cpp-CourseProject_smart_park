@@ -1,6 +1,6 @@
 # 车牌识别：运行、训练与评测
 
-当前实现为 [recognize_plate.py](../scripts/recognize_plate.py)，串行处理一张图片。macOS 本地模式启动该脚本；远程模式通过 TCP `lpr.recognize` 交给服务端执行。没有配置服务端识别命令时，返回按图片哈希生成的模拟结果。
+图片推理使用 [recognize_plate.py](../scripts/recognize_plate.py) 的 CPU FP32 流程。macOS 管理端无论使用本地数据库还是连接远程服务器，都在本机识别图片；远程连接只用于停车业务，所选图片不会上传到服务器。程序显示登录窗口后自动在后台加载并预热本机 [常驻模型](lpr-performance.md)，启动界面不等待模型就绪；识别请求复用同一进程，过早提交时异步等待加载完成。模型跨登录及页面切换复用，取消、超时或退出应用会关闭推理进程，之后识别可重新加载。自定义 `SMARTPARK_LPR_SCRIPT` 保持原单图调用方式，不自动预热。管理端需要本机检测和 OCR 两套 Python 环境；缺少环境时明确提示，不返回模拟车牌。其他客户端仍可调用服务端 TCP `lpr.recognize` API。
 
 ## 运行环境
 
@@ -20,7 +20,7 @@ YOLO_OFFLINE=true ~/.smartpark/lpr/bin/python -B scripts/recognize_plate.py \
 
 ## 推理检查点与可选加速
 
-当前单图 FP32 模式已保存为 `763e75c`，均衡 OCR 权重也已加入 Git LFS；模型与环境指纹见 [推理基线](lpr-baseline.md)。可选 [常驻推理方案](lpr-performance.md) 保留同样的模型、输入和后处理，200 张逐图输出完全一致，原单图 CLI 中位数为 14.28 秒，常驻模式真实 TCP 热请求中位数为 1.43 秒。常驻模式需要显式启用，默认单图命令仍保留。
+当前单图 FP32 模式已保存为 `763e75c`，均衡 OCR 权重也已加入 Git LFS；模型与环境指纹见 [推理基线](lpr-baseline.md)。可选 [常驻推理方案](lpr-performance.md) 保留同样的模型、输入和后处理，200 张逐图输出完全一致，原单图 CLI 中位数为 14.28 秒，常驻模式真实 TCP 热请求中位数为 1.43 秒。服务端常驻模式需要显式启用；macOS 管理端已自动使用本机常驻模式，单图 CLI 仍保留。
 
 ## s1 的已验证配置
 

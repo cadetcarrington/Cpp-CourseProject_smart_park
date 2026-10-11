@@ -46,6 +46,26 @@ def valid_plate(text: str) -> bool:
     return PLATE_PATTERN.fullmatch(text) is not None
 
 
+def save_crop_preview(crop, image: Path, recipe) -> str | None:
+    """把检测器裁出的车牌图落盘供前端预览；未配置 SMARTPARK_LPR_CROP_DIR 时返回 None。
+
+    文件名带输入图片名与进程号，避免常驻服务连续处理多张图时互相覆盖。
+    """
+    import plate_geometry
+
+    directory = os.environ.get("SMARTPARK_LPR_CROP_DIR")
+    if not directory:
+        return None
+    target = Path(directory).expanduser() / f"{image.stem}-{os.getpid()}.jpg"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not plate_geometry.write_crop(target, crop, recipe):
+            return None
+    except OSError:
+        return None
+    return str(target)
+
+
 def parse_paddle_result(content: str, image: Path) -> tuple[str, float]:
     for line in content.splitlines():
         fields = line.split("\t")
@@ -274,6 +294,7 @@ def recognize(args: argparse.Namespace, *, detector_model=None, crop_recognizer=
             flip_checked = True
             if pick_flipped((plate, recognition_confidence), other) == 1:
                 plate, recognition_confidence = other
+                crop = flipped
 
     return {
         "plate": plate,
@@ -282,6 +303,7 @@ def recognize(args: argparse.Namespace, *, detector_model=None, crop_recognizer=
         "bounding_box": list(bounds),
         "valid": valid_plate(plate),
         "crop": mode,
+        "crop_image": save_crop_preview(crop, image, recipe),
         "quad_source": quad_source,
         "flip_checked": flip_checked,
         "recipe": f"{recipe.mode}:h{recipe.height}:w{recipe.min_width}-{recipe.max_width}:e{recipe.expand}",

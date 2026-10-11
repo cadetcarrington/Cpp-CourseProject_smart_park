@@ -30,6 +30,10 @@ set(MACOS_ADMIN_SOURCES
     TableView.h
     TableView.mm
     TextUtil.h
+    LocalRecognitionService.h
+    LocalRecognitionService.mm
+    PlatePhotoArchive.h
+    PlatePhotoArchive.mm
     OperationsViewController.h
     OperationsViewController.mm
     OccupancyViewController.h

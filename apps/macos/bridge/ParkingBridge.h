@@ -30,6 +30,11 @@ class ParkingBridge : public smartpark::ParkingDataSource{
 public:
     ParkingBridge();
     explicit ParkingBridge(const QString &databasePath);
+    // 用给定布局描述启动本地模式（对应启动参数 `--layout <文件>`）。服务端库或
+    // 自定义图纸的库与内置布局签名不同，本地端必须拿同一份布局才打得开；描述为空
+    // 时退回内置车库布局。解析失败不静默降级——那会得到一个「布局不一致」的次生
+    // 错误，掩盖真正的原因。
+    ParkingBridge(const QString &databasePath, const QString &layoutDescription);
     ~ParkingBridge();
 
     ParkingBridge(const ParkingBridge &) = delete;

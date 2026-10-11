@@ -60,6 +60,14 @@
 }
 
 - (instancetype)initWithUserName:(NSString *)userName databasePath:(const QString &)databasePath{
+    return [self initWithUserName:userName
+                     databasePath:databasePath
+                layoutDescription:QString()];
+}
+
+- (instancetype)initWithUserName:(NSString *)userName
+                    databasePath:(const QString &)databasePath
+               layoutDescription:(const QString &)layoutDescription{
     NSWindow *window = [[NSWindow alloc]
         initWithContentRect:NSMakeRect(0, 0, 1120, 720)
         styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
@@ -68,7 +76,7 @@
         backing:NSBackingStoreBuffered
         defer:NO];
     if ((self = [super initWithWindow:window])){
-        bridge_ = std::make_unique<ParkingBridge>(databasePath);
+        bridge_ = std::make_unique<ParkingBridge>(databasePath, layoutDescription);
 
         window.title = @"SmartPark Admin";
         window.accessibilityIdentifier = @"smartpark.main.window";
@@ -219,7 +227,18 @@
     if (bridge_ == nullptr){
         return @"无法创建停车数据服务。";
     }
-    return [NSString stringWithUTF8String:bridge_->lastError().c_str()] ?: @"无法打开停车数据库。";
+    NSString *reason = [NSString stringWithUTF8String:bridge_->lastError().c_str()]
+        ?: @"无法打开停车数据库。";
+    // 库的布局签名与当前布局不符，是换库/换图纸后最常见的失败；把解法直接写进
+    // 提示，否则用户只看到一句「persisted layout differs」无从下手。
+    if ([reason containsString:@"persisted layout"]){
+        return [NSString stringWithFormat:
+            @"%@\n\n这个库是用另一份布局建的（例如服务端的三塔楼图纸）。"
+             "加上启动参数 --layout <布局文件> 指定同一份布局即可打开，"
+             "例如：--db ~/smartpark-data/smartpark-3tower.db "
+             "--layout data/garage-3tower.txt", reason];
+    }
+    return reason;
 }
 
 - (void)dealloc{

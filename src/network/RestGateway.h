@@ -137,7 +137,7 @@ private:
     QHttpServerResponse handlePlateList(const QHttpServerRequest &request);
     QHttpServerResponse handlePlateBind(const QHttpServerRequest &request);
     // 拍照识牌：POST /api/v1/lpr/recognize {image: base64}
-    QHttpServerResponse handleLprRecognize(const QHttpServerRequest &request);
+
 
     // ---- 鉴权与响应辅助 ----
     std::optional<QString> bearerToken(const QHttpServerRequest &request) const;
@@ -173,7 +173,8 @@ private:
     // 确保存在一个可用点位票据并返回其 token（没有则新建）。
     // 票据落库，因此服务端重启后张贴出去的二维码依然有效。
     QString ensureDefaultSiteTicket();
-    QJsonObject recognizePlate(const QByteArray &imageBytes, QString *note);
+    // 异步识别：返回待就绪的 future，Qt 在结果就绪时回包。
+    QFuture<QHttpServerResponse> handleLprRecognize(const QHttpServerRequest &request);
 
     // ---- WebSocket 推送与定时扫描 ----
     void broadcastWs(const QString &name, const QJsonObject &payload);

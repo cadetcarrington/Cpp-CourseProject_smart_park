@@ -278,4 +278,4 @@ int GridPlanner::nearestFreeCell(Point point) const{
 bool GridPlanner::isFree(int index) const noexcept{
     return index >= 0 && index < static_cast<int>(blocked_.size()) && !blocked_[index];
 }
-} // namespace smartpark
+} 

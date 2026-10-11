@@ -226,7 +226,9 @@ void SmartParkTcpServer::dispatch(Session &session, const QString &id,
             error = QStringLiteral("仅 Gate 终端可补报");
         }
     } else if (action == QStringLiteral("lpr.recognize")){
-        result = actionLprRecognize(payload, &ok, &error);
+        // 识别要起 Python 进程（s1 上约 13 秒）：异步回包，函数自己 respond。
+        startLprRecognize(session, id, payload);
+        return;
     } else if (action == QStringLiteral("admin.snapshot")){
         if (session.user == QStringLiteral("admin")){
             if (audit_ != nullptr){
@@ -251,25 +253,43 @@ void SmartParkTcpServer::respond(Session &session, const QString &id, bool ok,
     send(session, protocol::makeResponse(id, ok, payload, error));
 }
 
-QJsonObject SmartParkTcpServer::actionLprRecognize(const QJsonObject &payload,
-                                                   bool *ok, QString *error){
+void SmartParkTcpServer::startLprRecognize(Session &session, const QString &id,
+                                          const QJsonObject &payload){
     const QString imageBase64 = payload.value(QStringLiteral("image")).toString();
     const QByteArray imageBytes = QByteArray::fromBase64(imageBase64.toLatin1());
     if (imageBytes.isEmpty() || imageBytes.size() > protocol::kMaxImageBytes){
-        *error = QStringLiteral("image 需为 base64 图片且不超过 %1MB")
-                     .arg(protocol::kMaxImageBytes / (1024 * 1024));
-        return {};
+        respond(session, id, false, {},
+                QStringLiteral("image 需为 base64 图片且不超过 %1MB")
+                    .arg(protocol::kMaxImageBytes / (1024 * 1024)));
+        return;
     }
-    QString note;
-    QJsonObject result = network::recognizePlate(imageBytes, options_.lprCommand, &note);
-    if (result.isEmpty()){
-        *error = QStringLiteral("识别失败：%1").arg(note);
-        return {};
-    }
-    // 让调用方知道这次是真跑脚本还是 mock，别把演示结果当成识别结果。
-    result.insert(QStringLiteral("backend"), note);
-    *ok = true;
-    return result;
+    // 客户端可能在识别期间断开：用 QPointer 记下 socket，回包前重新查会话。
+    QPointer<QTcpSocket> socket = session.socket;
+    network::recognizePlateAsync(
+        imageBytes, options_.lprCommand, this,
+        [this, socket, id](network::LprOutcome outcome){
+        if (socket.isNull()){
+            return;   // 连接已销毁
+        }
+        const auto it = sessions_.find(socket.data());
+        if (it == sessions_.end() || !it.value().authenticated){
+            return;   // 已断开或登出
+        }
+        if (outcome.status == network::LprStatus::Ok){
+            QJsonObject result = outcome.result;
+            // 让调用方知道这次是真跑脚本还是 mock，别把演示结果当成识别结果。
+            result.insert(QStringLiteral("backend"), outcome.note);
+            respond(it.value(), id, true, result, {});
+            return;
+        }
+        QString error = outcome.status == network::LprStatus::NoPlate
+            ? QStringLiteral("未识别到车牌：请换一张更清晰、车牌完整入镜的照片")
+            : QStringLiteral("识别失败：%1").arg(outcome.note);
+        if (!outcome.detail.isEmpty()){
+            error += QStringLiteral("（脚本输出：%1）").arg(outcome.detail);
+        }
+        respond(it.value(), id, false, {}, error);
+    });
 }
 
 void SmartParkTcpServer::sendToSessions(const QString &event,

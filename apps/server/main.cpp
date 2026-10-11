@@ -4,6 +4,7 @@
 #include "core/service/ParkingService.h"
 #include "core/service/UserStore.h"
 #include "network/EventHub.h"
+#include "network/PlateRecognition.h"
 #include "network/RestGateway.h"
 #include "network/SmartParkTcpServer.h"
 #include "network/TcpClient.h"
@@ -251,6 +252,27 @@ int runSelftest(){
                      < 1e-9,
           "parking.leave settles within free period", leave.value_or(QJsonObject()));
 
+    // 6.5 识别输出归类：纯函数，直接断言三种结局（识别成功 / 画面里没车牌 /
+    //     脚本出错）。服务端与网页端就靠这个区分「换张照片」和「要排障」。
+    {
+        using smartpark::network::LprStatus;
+        const auto okOutcome = smartpark::network::classifyLprOutput(
+            0, QByteArrayLiteral("{\"plate\":\"京A12345\",\"confidence\":0.9}"),
+            QByteArray());
+        check(okOutcome.status == LprStatus::Ok && !okOutcome.result.isEmpty(),
+              "classifyLprOutput: 识别成功 -> Ok");
+        const auto noPlateOutcome = smartpark::network::classifyLprOutput(
+            1, QByteArrayLiteral("No license plate detected\n"), QByteArray());
+        check(noPlateOutcome.status == LprStatus::NoPlate,
+              "classifyLprOutput: 画面无车牌 -> NoPlate");
+        const auto brokenOutcome = smartpark::network::classifyLprOutput(
+            2, QByteArrayLiteral("Traceback (most recent call last):\n"),
+            QByteArrayLiteral("boom"));
+        check(brokenOutcome.status == LprStatus::Failed
+                  && !brokenOutcome.detail.isEmpty(),
+              "classifyLprOutput: 脚本出错 -> Failed 且带原话");
+    }
+
     // 7. 分析报告
     const auto report = client.request(QStringLiteral("analytics.report"), {});
     check(report.has_value() && report->value(QStringLiteral("ok")).toBool()
@@ -287,6 +309,83 @@ int runSelftest(){
         }
     }
     check(sawEntered, "monitor received parking.entered event");
+
+    // 8.5 异步识别动作（脚本模式）：另起一个服务端，用假的 --lpr-command 验证
+    //     「识别到车牌」与「画面里没车牌」两条结局，以及回包确实走了异步路径。
+    {
+        smartpark::SmartParkTcpServer::Options scriptOptions;
+        scriptOptions.port = 0;
+        scriptOptions.heartbeatTimeoutMs = 600000;
+        scriptOptions.lprCommand = QStringLiteral(
+            "printf '{\"plate\":\"京A54321\",\"confidence\":0.98}\\n'");
+        smartpark::SmartParkTcpServer scriptServer(service, &audit, &users,
+                                                   scriptOptions);
+        if (scriptServer.listen()){
+            smartpark::TcpClient lprClient;
+            const bool lprConnected = lprClient.connectToHost(
+                QStringLiteral("127.0.0.1"), scriptServer.port());
+            check(lprConnected, "lpr script server accepts a client");
+            if (lprConnected){
+                const auto lprLogin = lprClient.request(QStringLiteral("login"),
+                    QJsonObject{{QStringLiteral("user"), QStringLiteral("admin")},
+                                {QStringLiteral("pass"), QStringLiteral("smartpark")}});
+                lprClient.setToken(lprLogin
+                    ? lprLogin->value(QStringLiteral("payload")).toObject()
+                          .value(QStringLiteral("token")).toString()
+                    : QString());
+                const QString fakeImage =
+                    QString::fromLatin1(QByteArrayLiteral("fake-jpeg").toBase64());
+                const auto lprReply = lprClient.request(
+                    QStringLiteral("lpr.recognize"),
+                    QJsonObject{{QStringLiteral("image"), fakeImage}});
+                const QJsonObject lprPayload = lprReply
+                    ? lprReply->value(QStringLiteral("payload")).toObject()
+                    : QJsonObject{};
+                check(lprReply.has_value()
+                          && lprReply->value(QStringLiteral("ok")).toBool()
+                          && lprPayload.value(QStringLiteral("plate")).toString()
+                                 == QStringLiteral("京A54321")
+                          && lprPayload.value(QStringLiteral("backend")).toString()
+                                 == QStringLiteral("script"),
+                      "lpr.recognize 脚本模式异步返回车牌", lprReply.value_or(QJsonObject()));
+            }
+        } else {
+            check(false, "lpr script server listens");
+        }
+
+        smartpark::SmartParkTcpServer::Options noPlateOptions;
+        noPlateOptions.port = 0;
+        noPlateOptions.heartbeatTimeoutMs = 600000;
+        noPlateOptions.lprCommand =
+            QStringLiteral("echo No license plate detected");
+        smartpark::SmartParkTcpServer noPlateServer(service, &audit, &users,
+                                                    noPlateOptions);
+        if (noPlateServer.listen()){
+            smartpark::TcpClient noPlateClient;
+            if (noPlateClient.connectToHost(QStringLiteral("127.0.0.1"),
+                                            noPlateServer.port())){
+                const auto noPlateLogin = noPlateClient.request(QStringLiteral("login"),
+                    QJsonObject{{QStringLiteral("user"), QStringLiteral("admin")},
+                                {QStringLiteral("pass"), QStringLiteral("smartpark")}});
+                noPlateClient.setToken(noPlateLogin
+                    ? noPlateLogin->value(QStringLiteral("payload")).toObject()
+                          .value(QStringLiteral("token")).toString()
+                    : QString());
+                const auto noPlateReply = noPlateClient.request(
+                    QStringLiteral("lpr.recognize"),
+                    QJsonObject{{QStringLiteral("image"),
+                                 QString::fromLatin1(QByteArrayLiteral("fake-jpeg").toBase64())}});
+                check(noPlateReply.has_value()
+                          && !noPlateReply->value(QStringLiteral("ok")).toBool()
+                          && noPlateReply->value(QStringLiteral("error")).toString()
+                                 .contains(QStringLiteral("未识别到车牌")),
+                      "lpr.recognize 无车牌时给出可读原因",
+                      noPlateReply.value_or(QJsonObject()));
+            }
+        } else {
+            check(false, "lpr no-plate server listens");
+        }
+    }
 
     // 9. 未登录请求被拒绝
     smartpark::TcpClient anonymous;

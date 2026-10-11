@@ -887,7 +887,8 @@ function viewMore(root) {
     const file = event.target.files && event.target.files[0];
     if (!file) return;
     const box = root.querySelector('#lpr-result');
-    box.innerHTML = '<div class="empty">识别中…</div>';
+    // 识别要起 Python 进程，s1 上实测十几秒，先把预期讲清楚，别让人以为卡死。
+    box.innerHTML = '<div class="empty">识别中…（首次约 10–20 秒，请稍候）</div>';
     try {
       const image = await fileToJpegBase64(file, 900);
       const r = await api('POST', '/lpr/recognize', { image });
@@ -913,7 +914,16 @@ function viewMore(root) {
         nav('#/reserve');
       };
     } catch (e) {
-      box.innerHTML = `<div class="banner bad">识别失败：${esc(e.message || '')}</div>`;
+      // 服务端区分了两类失败：NO_PLATE＝画面里没找到车牌（换张照片就行），
+      // LPR_FAILED＝识别脚本本身出错（要服务端排障）。别都显示成一句「识别失败」。
+      if (e && e.code === 'NO_PLATE') {
+        box.innerHTML = `<div class="banner bad">📷 ${esc(e.message || '未识别到车牌')}
+          <div class="muted" style="margin-top:6px">${esc(e.detail || '')}</div>
+          <div class="muted">拍摄建议：车牌完整入镜、避免逆光与运动模糊，单张 900px 以内。</div></div>`;
+      } else {
+        const detail = e && e.detail ? `（${esc(e.detail)}）` : '';
+        box.innerHTML = `<div class="banner bad">识别失败：${esc((e && e.message) || '服务端未返回结果')}${detail}</div>`;
+      }
     } finally {
       event.target.value = '';
     }

@@ -12,6 +12,7 @@ import socketserver
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -164,9 +165,29 @@ def serve(address, engine):
             pass
 
 
+def warmup(engine, image):
+    # Load both models and first-run operators without publishing a sample crop
+    # into the administrator's preview area.
+    preview = os.environ.pop("SMARTPARK_LPR_CROP_DIR", None)
+    try:
+        engine.recognize(image)
+    finally:
+        if preview is not None:
+            os.environ["SMARTPARK_LPR_CROP_DIR"] = preview
+
+
+def watch_parent(parent_pid, stop_event):
+    while not stop_event.wait(0.5):
+        if os.getppid() != parent_pid:
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, add_help=False)
     parser.add_argument("--socket", required=True, type=Path)
+    parser.add_argument("--warmup-image", type=Path)
+    parser.add_argument("--parent-pid", type=int)
     options, remaining = parser.parse_known_args()
     args = recognize_plate.parse_args(["<resident-request>", *remaining])
     # Same deployment defaults; no changes to precision or math settings.
@@ -177,8 +198,15 @@ def main():
 
     previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGINT, signal.SIGTERM)}
     engine = None
+    parent_watch = threading.Event()
     try:
+        if options.parent_pid is not None:
+            if options.parent_pid <= 0 or os.getppid() != options.parent_pid:
+                raise ValueError("Inference owner process is no longer present")
+            threading.Thread(target=watch_parent, args=(options.parent_pid, parent_watch), daemon=True).start()
         engine = ResidentEngine(args)
+        if options.warmup_image is not None:
+            warmup(engine, options.warmup_image.expanduser().resolve())
         serve(options.socket, engine)
     except KeyboardInterrupt:
         return 0
@@ -186,6 +214,7 @@ def main():
         print(str(error), file=sys.stderr)
         return 1
     finally:
+        parent_watch.set()
         if engine is not None:
             engine.close()
         for sig, handler in previous.items():

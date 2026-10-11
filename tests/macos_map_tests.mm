@@ -1,15 +1,18 @@
 #import <Cocoa/Cocoa.h>
 
 #import "ParkingMapView.h"
+#import "PlatePhotoArchive.h"
 #include "bridge/ParkingBridge.h"
 
 #include <QCoreApplication>
+#include <QFile>
 #include <QTemporaryDir>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -255,6 +258,88 @@ int main(int argc, char **argv){
                         "pending reservation is not exposed for the map");
                 std::printf("local booking flow: create/checkin/cancel OK "
                             "(spot %s)\n", created->reservation.spotId().c_str());
+            }
+
+            // --layout / 自定义布局开库 + 重新打开：换库或换图纸后的核心场景。
+            // 修之前这里会锁死——客户端固定用内置布局开库，签名对不上就报
+            // 「persisted layout differs」，重启后彻底打不开（只能删库）。
+            {
+                // 注意：SMARTPARK_DATA_DIR 是宏，不能直接塞进 QStringLiteral
+                // （它要求单个字面量）；相邻字面量拼接后在 fromUtf8 里才成立。
+                const QString layoutPath =
+                    QString::fromUtf8(SMARTPARK_DATA_DIR "/garage-3tower.txt");
+                QFile layoutFile(layoutPath);
+                require(layoutFile.open(QIODevice::ReadOnly | QIODevice::Text),
+                        "cannot open the sample layout file");
+                const QString description = QString::fromUtf8(layoutFile.readAll());
+                const QString customDb = directory.filePath("custom-layout.sqlite");
+                int customSpots = 0;
+                {
+                    ParkingBridge custom(customDb, description);
+                    require(custom.ready(),
+                            "custom layout bridge not ready: " + custom.lastError());
+                    require(!custom.memoryOnly(), "custom layout fell back to memory mode");
+                    customSpots = custom.totalSpots();
+                    require(customSpots > 0, "custom layout has no spots");
+                }
+                {
+                    // 第二次打开同一个库（= 下次启动）：必须还能开。
+                    ParkingBridge reopened(customDb, description);
+                    require(reopened.ready(),
+                            "reopening the db with the same layout failed: "
+                                + reopened.lastError());
+                    require(reopened.totalSpots() == customSpots,
+                            "spot count changed on reopen");
+                    require(reopened.layoutDescription() == description.toStdString(),
+                            "bridge did not keep the custom layout text");
+                }
+                {
+                    // 布局不匹配时必须明确失败，不能悄悄用内置布局去写别的图纸的库。
+                    ParkingBridge mismatched(customDb);
+                    require(!mismatched.ready(),
+                            "a mismatching layout must not open the db");
+                }
+                std::printf("custom layout: %d spots, reopen OK, mismatch rejected\n",
+                            customSpots);
+            }
+
+            // 车牌照片留档：入库归档一张、同车牌再归档一张，出库按车牌取回最新的那张。
+            // 目录用环境变量指到临时目录，测试不写用户的应用数据目录。
+            {
+                QTemporaryDir photoRoot;
+                require(photoRoot.isValid(), "cannot create plate photo root");
+                const QString photoDir = photoRoot.filePath(QStringLiteral("plates"));
+                setenv("SMARTPARK_PLATE_PHOTO_DIR", photoDir.toUtf8().constData(), 1);
+
+                // QTemporaryDir::filePath 给的是 QString，归档接口要 NSString。
+                NSString *first = photoRoot.filePath(QStringLiteral("crop-a.jpg")).toNSString();
+                NSString *second = photoRoot.filePath(QStringLiteral("crop-b.jpg")).toNSString();
+                [[NSData dataWithBytes:"a" length:1] writeToFile:first atomically:YES];
+                [[NSData dataWithBytes:"b" length:1] writeToFile:second atomically:YES];
+
+                NSError *archiveError = nil;
+                NSString *firstArchived = [PlatePhotoArchive archiveImageAtPath:first
+                                                                          plate:@"京A12345"
+                                                                          error:&archiveError];
+                require(firstArchived.length > 0, "archiving the plate photo failed");
+                require([firstArchived.lastPathComponent hasPrefix:@"京A12345_"],
+                        "archived file name lost the plate prefix");
+                NSString *secondArchived = [PlatePhotoArchive archiveImageAtPath:second
+                                                                           plate:@"京A12345"
+                                                                           error:&archiveError];
+                require(secondArchived.length > 0, "second archive failed");
+                require(![secondArchived isEqualToString:firstArchived],
+                        "same-second archive overwrote the previous photo");
+                require([PlatePhotoArchive photosForPlate:@"京A12345"].count == 2,
+                        "photosForPlate did not list both photos");
+                require([[PlatePhotoArchive latestPhotoForPlate:@"京A12345"]
+                            isEqualToString:secondArchived],
+                        "latest lookup returned an older photo");
+                require([PlatePhotoArchive latestPhotoForPlate:@"京B00000"].length == 0,
+                        "unknown plate should have no archived photo");
+                unsetenv("SMARTPARK_PLATE_PHOTO_DIR");
+                std::printf("plate photo archive: 2 archived, latest lookup OK (%s)\n",
+                            secondArchived.lastPathComponent.UTF8String);
             }
 
             [NSApplication sharedApplication];

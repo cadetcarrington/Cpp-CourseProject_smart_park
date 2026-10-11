@@ -161,10 +161,17 @@ v1 实现：`POST /api/v1/reservations` 创建预约时，服务端即时收取�
 `POST /api/v1/lpr/recognize` `{"image": "<base64 JPEG ≤6MB>"}`：
 
 - 未配置 `--lpr-command`：内置 mock，按图片 SHA-256 确定性生成演示车牌，
-  响应 `{"plate": "...", "confidence": 0.87, "source": "mock", "backend": "mock"}`；
+  响应 200 `{"plate": "...", "confidence": 0.87, "source": "mock", "backend": "mock"}`；
 - 配置 `--lpr-command "<cmd> %1"`：图片写入临时文件后经 `/bin/sh` 执行
   命令模板（本机可接 `~/.smartpark/lpr/bin/python scripts/recognize_plate.py`，
-  其 JSON 输出的 `plate` 键被直接采用），超时 30 秒，失败回 INTERNAL。
+  其 JSON 输出的 `plate` 键被直接采用），看门狗 60 秒。
+- **识别是异步执行的**：进程在事件循环里跑，处理期间 HTTP / WebSocket / TCP
+  心跳与快照照常响应（旧实现用 `waitForFinished`，实测识别 13.3 秒期间
+  `GET /parking/status` 要等 12.3 秒，还会让管理端错过心跳掉线重连）。
+- 失败分两类，都用 **422 + JSON**（不用 500：实测 Linux/Qt 上 5xx 的 JSON 体
+  不会被送出，客户端只看到一句 "Internal Server Error"）：
+  - 画面里没有车牌 → `{"code": "NO_PLATE", "message": "未识别到车牌：请换一张更清晰、车牌完整入镜的照片", "detail": "<脚本原话>"}`；
+  - 脚本启动失败/超时/输出无法解析 → `{"code": "LPR_FAILED", "message": "识别失败：<原因>", "detail": "<脚本原话>"}`。
 - 二维码：`GET /api/v1/qr?text=<urlencoded>` 免认证返回 SVG
   （Nayuki qrcodegen，MIT，`third_party/QR-Code-generator`）；服务端启动
   横幅同步打印 H5 接入地址的 ASCII 二维码。

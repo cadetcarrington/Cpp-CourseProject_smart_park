@@ -9,6 +9,11 @@ class QString;
 
 - (instancetype)initWithUserName:(NSString *)userName;
 - (instancetype)initWithUserName:(NSString *)userName databasePath:(const QString &)databasePath;
+// layoutDescription 非空时按这份布局启动本地模式（`--layout <文件>` 读到的内容）；
+// 传空则用内置车库布局，与旧行为一致。
+- (instancetype)initWithUserName:(NSString *)userName
+                    databasePath:(const QString &)databasePath
+               layoutDescription:(const QString &)layoutDescription;
 - (BOOL)isDatabaseReady;
 - (NSString *)databaseError;
 

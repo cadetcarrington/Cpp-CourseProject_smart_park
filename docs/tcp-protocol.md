@@ -64,6 +64,7 @@ DB4403/T 313 智慧停车业务数据与接口规范、北京 DB11/T 3001 ETC �
 | `reservation.cancel` | `{plate}` | `{}` | 取消退定金；广播 `reservation.cancelled` |
 | `reservation.checkin` | `{plate}` | `{spotId, + 订单字段（id/plate/vehicleType/spotId/createdAtMs/startMs/endMs/graceDeadlineMs/deposit/status/depositState/accessible）}` | 到场核销；广播 `reservation.checkin`；Gate 普通入场直接用 `parking.enter`，自动核销匹配预约 |
 | `gate.replay` | `{events:[{kind, plate, vehicleType?, ts}]}` | `{applied, duplicate, skipped, results:[{plate, kind, ok, duplicate?, error?, spotId?, fee?}]}` | Gate 账号补报；`kind=enter|exit`，`ts` 为事件发生时 epoch 毫秒 |
+| `lpr.recognize` | `{image: base64}` | `{plate, confidence, bounding_box, …, backend}` | 服务端识牌；**异步回包**（脚本十几秒，期间事件循环不阻塞），无车牌/脚本出错时 `ok=false` 且 error 为可读原因 |
 | `analytics.report` | `{}` | `{model, summary, findings, recommendations}` | 本地分析结论 |
 | `admin.snapshot` | `{}` | `{layout, spots, zones, capacity, occupied, available, reserved, disabled, dailyRevenue, generatedAtMs}` | **仅 `admin` 账号**。管理端远程模式一次性全量快照，见下方说明 |
 

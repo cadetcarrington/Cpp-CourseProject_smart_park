@@ -11,7 +11,7 @@ if [[ ! -x "$APP" ]]; then
     exit 1
 fi
 
-# 本地识别的两套环境；远程模式由服务端负责推理。
+# 两种连接模式都在本机识别；停车业务仍按所选数据源执行。
 if [[ -z "${SMARTPARK_LPR_PY:-}" && -x "$HOME/.smartpark/lpr/bin/python" ]]; then
     export SMARTPARK_LPR_PY="$HOME/.smartpark/lpr/bin/python"
 fi

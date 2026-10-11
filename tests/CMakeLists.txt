@@ -40,6 +40,7 @@ if(APPLE AND TARGET smartpark_admin_macos)
     add_executable(smartpark_macos_map_tests
         macos_map_tests.mm
         ${CMAKE_SOURCE_DIR}/apps/macos/ParkingMapView.mm
+        ${CMAKE_SOURCE_DIR}/apps/macos/PlatePhotoArchive.mm
         ${CMAKE_SOURCE_DIR}/apps/macos/bridge/ParkingBridge.mm
         ${CMAKE_SOURCE_DIR}/apps/macos/bridge/RemoteDataSource.mm
         ${CMAKE_SOURCE_DIR}/apps/macos/bridge/RemoteDataSource.h
@@ -48,6 +49,9 @@ if(APPLE AND TARGET smartpark_admin_macos)
         ${CMAKE_SOURCE_DIR}/apps/macos)
     target_compile_features(smartpark_macos_map_tests PRIVATE cxx_std_17)
     target_compile_options(smartpark_macos_map_tests PRIVATE -fobjc-arc)
+    # 测试要读仓库里的样例布局（data/garage-3tower.txt）来验证 --layout 的开库路径。
+    target_compile_definitions(smartpark_macos_map_tests PRIVATE
+        SMARTPARK_DATA_DIR="${CMAKE_SOURCE_DIR}/data")
     set_target_properties(smartpark_macos_map_tests PROPERTIES AUTOMOC ON)
     # ParkingBridge 支持远程模式后经 RemoteDataSource 用到 ServerSession，
     # 因此这里也要链 smartpark_network（随之带入 Qt Network/WebSockets/HttpServer）。

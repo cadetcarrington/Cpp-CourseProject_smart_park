@@ -15,6 +15,39 @@ import lpr_service
 from lpr_ocr_worker import cache_initializers, cache_once
 
 
+class WarmupTests(unittest.TestCase):
+    def test_warmup_suppresses_sample_preview_and_restores_setting(self):
+        import os
+        from unittest.mock import patch
+        def recognize(image):
+            self.assertEqual(image, "sample.jpg")
+            self.assertNotIn("SMARTPARK_LPR_CROP_DIR", os.environ)
+        engine = SimpleNamespace(recognize=Mock(side_effect=recognize))
+        with patch.dict(os.environ, SMARTPARK_LPR_CROP_DIR="preview"):
+            lpr_service.warmup(engine, "sample.jpg")
+            self.assertEqual(os.environ["SMARTPARK_LPR_CROP_DIR"], "preview")
+        engine.recognize.assert_called_once_with("sample.jpg")
+
+    def test_failed_warmup_also_restores_preview(self):
+        import os
+        from unittest.mock import patch
+        engine = SimpleNamespace(recognize=Mock(side_effect=ValueError("bad sample")))
+        with patch.dict(os.environ, SMARTPARK_LPR_CROP_DIR="preview"):
+            with self.assertRaises(ValueError):
+                lpr_service.warmup(engine, "sample.jpg")
+            self.assertEqual(os.environ["SMARTPARK_LPR_CROP_DIR"], "preview")
+
+    def test_owner_exit_requests_graceful_shutdown(self):
+        from unittest.mock import patch
+        stopped = Mock()
+        stopped.wait.return_value = False
+        with patch.object(lpr_service.os, "getppid", return_value=2), \
+                patch.object(lpr_service.os, "getpid", return_value=123), \
+                patch.object(lpr_service.os, "kill") as kill:
+            lpr_service.watch_parent(1, stopped)
+        kill.assert_called_once_with(123, lpr_service.signal.SIGTERM)
+
+
 class InitializerTests(unittest.TestCase):
     def test_initializers_reuse_models_but_still_process_each_image(self):
         module = SimpleNamespace(
@@ -43,6 +76,36 @@ class InitializerTests(unittest.TestCase):
         model = cached()
         self.assertIs(cached(), model)
         self.assertEqual(factory.call_count, 2)
+
+
+class StartupTests(unittest.TestCase):
+    def test_startup_retry_connects_once_after_missing_socket(self):
+        import errno
+        from unittest.mock import patch
+        missing, ready = Mock(), Mock()
+        missing.connect.side_effect = FileNotFoundError(errno.ENOENT, "starting")
+        with patch.object(lpr_client.socket, "socket", side_effect=[missing, ready]), \
+                patch.object(lpr_client.time, "sleep"):
+            connection = lpr_client.connect("service.sock", 55, wait_ready=45)
+        self.assertIs(connection, ready)
+        missing.close.assert_called_once()
+        ready.connect.assert_called_once()
+
+    def test_worker_exit_during_startup_is_reported(self):
+        import errno
+        from unittest.mock import patch
+        missing = Mock()
+        missing.connect.side_effect = FileNotFoundError(errno.ENOENT, "starting")
+        with patch.object(lpr_client.socket, "socket", return_value=missing), \
+                patch.object(lpr_client.os, "kill", side_effect=ProcessLookupError):
+            with self.assertRaisesRegex(RuntimeError, "exited during startup"):
+                lpr_client.connect("service.sock", 55, wait_ready=45, service_pid=123)
+        missing.close.assert_called_once()
+
+    def test_invalid_startup_wait_is_rejected(self):
+        for seconds in (-1, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                lpr_client.connect("service.sock", 55, wait_ready=seconds)
 
 
 class ComparisonTests(unittest.TestCase):

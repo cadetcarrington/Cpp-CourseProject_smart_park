@@ -17,6 +17,7 @@
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QPromise>
 #include <QProcess>
 #include <QRandomGenerator>
 #include <QSqlError>
@@ -332,6 +333,8 @@ void RestGateway::setupHttp(){
                  [this](const QHttpServerRequest &request){
                      return handleOrderList(request);
                  });
+    // 识别要起 Python 进程（s1 上约 13 秒）：返回 QFuture，Qt 在结果就绪时回包。
+    // 处理期间事件循环照常跑，HTTP/TCP/WebSocket 与心跳都不会被堵住。
     http_->route(QStringLiteral("/api/v1/lpr/recognize"),
                  QHttpServerRequest::Method::Post,
                  [this](const QHttpServerRequest &request){
@@ -586,6 +589,15 @@ QHttpServerResponse RestGateway::jsonError(
     QHttpServerResponder::StatusCode status, const char *code,
     const QString &message) const{
     return QHttpServerResponse(errorObject(code, message), status);
+}
+
+// 识别走异步回包（QFuture）：校验失败这类立即出错的情况包装成「已就绪的 future」。
+static QFuture<QHttpServerResponse> readyResponse(QHttpServerResponse response){
+    QPromise<QHttpServerResponse> promise;
+    promise.start();
+    promise.addResult(std::move(response));
+    promise.finish();
+    return promise.future();
 }
 
 // ---- 路由 handler：账号 ----
@@ -1797,46 +1809,63 @@ QString RestGateway::ensureDefaultSiteTicket(){
     return token;
 }
 
-QJsonObject RestGateway::recognizePlate(const QByteArray &imageBytes,
-                                        QString *note){
-    // 实现移到 network/PlateRecognition，TCP 服务端的 lpr.recognize 动作共用同一套，
-    // 避免「跑在服务器上」这件事有两个版本。
-    return network::recognizePlate(imageBytes, options_.lprCommand, note);
-}
-
-QHttpServerResponse RestGateway::handleLprRecognize(
+QFuture<QHttpServerResponse> RestGateway::handleLprRecognize(
     const QHttpServerRequest &request){
     const auto auth = authenticate(request);
     if (!auth.has_value()){
-        return jsonError(QHttpServerResponder::StatusCode::Unauthorized,
-                         "AUTH_REQUIRED", QStringLiteral("缺少或无效的 Bearer token"));
+        return readyResponse(jsonError(
+            QHttpServerResponder::StatusCode::Unauthorized,
+            "AUTH_REQUIRED", QStringLiteral("缺少或无效的 Bearer token")));
     }
     const auto body = bodyJson(request);
     if (!body.has_value()){
-        return jsonError(QHttpServerResponder::StatusCode::BadRequest,
-                         "VALIDATION", QStringLiteral("请求体必须是 JSON 对象"));
+        return readyResponse(jsonError(
+            QHttpServerResponder::StatusCode::BadRequest,
+            "VALIDATION", QStringLiteral("请求体必须是 JSON 对象")));
     }
-    const QString imageBase64 =
-        body->value(QStringLiteral("image")).toString();
-    QByteArray imageBytes = QByteArray::fromBase64(imageBase64.toLatin1());
+    const QString imageBase64 = body->value(QStringLiteral("image")).toString();
+    const QByteArray imageBytes = QByteArray::fromBase64(imageBase64.toLatin1());
     if (imageBytes.isEmpty() || imageBytes.size() > 6 * 1024 * 1024){
-        return jsonError(QHttpServerResponder::StatusCode::BadRequest,
-                         "VALIDATION",
-                         QStringLiteral("image 需为 base64 图片且不超过 6MB"));
+        return readyResponse(jsonError(
+            QHttpServerResponder::StatusCode::BadRequest,
+            "VALIDATION", QStringLiteral("image 需为 base64 图片且不超过 6MB")));
     }
-    QString note;
-    const QJsonObject result = recognizePlate(imageBytes, &note);
-    if (result.isEmpty()){
-        return jsonError(QHttpServerResponder::StatusCode::InternalServerError,
-                         "INTERNAL",
-                         QStringLiteral("识别失败：%1").arg(note));
-    }
-    QJsonObject payload = result;
-    payload.insert(QStringLiteral("backend"), note);
-    if (audit_ != nullptr){
-        audit_->record(auth->username.toStdString(), "lpr_recognize");
-    }
-    return QHttpServerResponse(payload);
+    // 校验都同步做完；识别本身异步跑，结果通过 QPromise 交回，Qt 负责回包。
+    const QString user = auth->username;
+    auto promise = std::make_shared<QPromise<QHttpServerResponse>>();
+    promise->start();
+    QFuture<QHttpServerResponse> future = promise->future();
+    network::recognizePlateAsync(
+        imageBytes, options_.lprCommand, this,
+        [this, promise, user](network::LprOutcome outcome){
+        if (outcome.status == network::LprStatus::Ok){
+            QJsonObject payload = outcome.result;
+            payload.insert(QStringLiteral("backend"), outcome.note);
+            if (audit_ != nullptr){
+                audit_->record(user.toStdString(), "lpr_recognize");
+            }
+            promise->addResult(QHttpServerResponse(
+                payload, QHttpServerResponder::StatusCode::Ok));
+            promise->finish();
+            return;
+        }
+        // 画面里没车牌 ≠ 服务端故障：分开给 NO_PLATE / LPR_FAILED，网页端据此
+        // 提示「换张照片」，而不是一句没有信息量的「识别失败」。
+        const bool noPlate = outcome.status == network::LprStatus::NoPlate;
+        QJsonObject error = errorObject(
+            noPlate ? "NO_PLATE" : "LPR_FAILED",
+            noPlate ? QStringLiteral("未识别到车牌：请换一张更清晰、车牌完整入镜的照片")
+                    : QStringLiteral("识别失败：%1").arg(outcome.note));
+        if (!outcome.detail.isEmpty()){
+            error.insert(QStringLiteral("detail"), outcome.detail);
+        }
+        // 用 422 而不是 500：5xx 的 JSON 体在 Linux/Qt 上实测不会被送出
+        // （客户端只看到一句 "Internal Server Error"），等于把原因吞掉。
+        promise->addResult(QHttpServerResponse(
+            error, QHttpServerResponder::StatusCode::UnprocessableEntity));
+        promise->finish();
+    });
+    return future;
 }
 
 QHttpServerResponse RestGateway::handleOrderList(

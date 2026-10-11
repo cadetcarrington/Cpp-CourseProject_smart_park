@@ -21,6 +21,8 @@
 #include "network/TcpClient.h"
 
 #import "LoginViewController.h"
+#import "OperationsViewController.h"
+#import "LocalRecognitionService.h"
 #import "TableView.h"
 #import "MainWindowController.h"
 #import "TextUtil.h"   // smartpark_ui::toNSString：中文安全的 QString -> NSString
@@ -51,6 +53,39 @@
 - (void)createReservation:(id)sender;
 - (void)checkIn:(id)sender;
 - (void)cancel:(id)sender;
+@end
+
+@interface OperationsViewController (SmartParkRecognitionTest)
+- (void)runRecognitionForImage:(NSString *)imagePath;
+- (void)cancelRecognition:(id)sender;
+- (void)stopLocalRecognitionService:(NSNotification *)notification;
+- (NSString *)localRecognitionSocketForScript:(NSString *)script
+                              detectorPython:(NSString *)detectorPython
+                                   ocrPython:(NSString *)ocrPython
+                                 environment:(NSDictionary<NSString *, NSString *> *)environment;
+@end
+
+@interface LocalRecognitionProbe : OperationsViewController
+@property (nonatomic, strong) NSDictionary *candidate;
+@property (nonatomic, copy) NSString *failure;
+@property (nonatomic, copy) NSString *residentFixture;
+@end
+@implementation LocalRecognitionProbe
+- (NSString *)localRecognitionSocketForScript:(NSString *)script
+                              detectorPython:(NSString *)detectorPython
+                                   ocrPython:(NSString *)ocrPython
+                                 environment:(NSDictionary<NSString *, NSString *> *)environment{
+    return [super localRecognitionSocketForScript:self.residentFixture ?: script
+        detectorPython:detectorPython ocrPython:ocrPython environment:environment];
+}
+- (void)handleRecognitionOutput:(NSString *)output error:(NSString *)error exitCode:(int)exitCode{
+    if (exitCode != 0){
+        self.failure = error;
+    } else {
+        self.candidate = [NSJSONSerialization JSONObjectWithData:
+            [output dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+    }
+}
 @end
 
 static int failures = 0;
@@ -683,7 +718,207 @@ int main(int argc, char **argv){
             }
         }
 
-    // ---- 服务端识别：照片发给服务端，本机不跑推理 ----
+    // ---- 管理端远程连接时，图片仍在本机识别 ----
+    @autoreleasepool{
+        if (bridge != nullptr){
+            QTemporaryDir fixture;
+            NSString *script = smartpark_ui::toNSString(fixture.filePath("local_lpr.py").toStdString());
+            NSString *image = smartpark_ui::toNSString(fixture.filePath("photo.jpg").toStdString());
+            [@"local-photo-fixture" writeToFile:image atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            NSString *source = @"import json,sys\nfrom pathlib import Path\n"
+                @"assert Path(sys.argv[1]).read_text() == 'local-photo-fixture'\n"
+                @"print(json.dumps({'plate':'京A12345','detection_confidence':0.9,'recognition_confidence':0.99}))\n";
+            [source writeToFile:script atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            NSDictionary *savedEnvironment = [[NSProcessInfo processInfo] environment];
+            setenv("SMARTPARK_LPR_SCRIPT", script.UTF8String, 1);
+            setenv("SMARTPARK_LPR_PY", "/usr/bin/python3", 1);
+            setenv("SMARTPARK_OCR_PY", "/usr/bin/python3", 1);
+            LocalRecognitionProbe *operations = [[LocalRecognitionProbe alloc] init];
+            operations.bridge = bridge;
+            (void)operations.view;
+            [operations runRecognitionForImage:image];
+            // NSTask completes on dispatch_get_main_queue, while the older
+            // remote tests pump only Qt events. Drive the Cocoa run loop too.
+            spin([&]{
+                [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                    beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+                return operations.candidate != nil || operations.failure != nil;
+            }, 10000);
+            expect([operations.candidate[@"plate"] isEqualToString:@"京A12345"],
+                   "远程管理端执行本机脚本并接收本机候选车牌");
+            expect(bridge->remoteMode(), "图片识别后仍保留远程停车数据源");
+            NSString *sleeper = @"import time\ntime.sleep(10)\n";
+            [sleeper writeToFile:script atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            operations.candidate = nil;
+            operations.failure = nil;
+            [operations runRecognitionForImage:image];
+            [operations cancelRecognition:nil];
+            spin([&]{
+                [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                    beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+                return readPointerIvar(operations, "_recognitionTask") == nullptr;
+            }, 3000);
+            expect(readPointerIvar(operations, "_recognitionTask") == nullptr,
+                   "取消本机识别会结束子进程并解除忙碌状态");
+            expect(operations.candidate == nil && operations.failure == nil,
+                   "取消后不弹出迟到的识别候选结果");
+            // Exercise the default resident branch with the real client,
+            // private socket and service ownership. Only inference is stubbed.
+            NSString *servicePath = smartpark_ui::toNSString(
+                fixture.filePath("lpr_service.py").toStdString());
+            NSString *clientMarker = smartpark_ui::toNSString(
+                fixture.filePath("lpr_client.py").toStdString());
+            [@"# fixture marker" writeToFile:clientMarker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            NSString *serviceSource = @"import argparse,json,signal,socketserver,os,time\n"
+                @"p=argparse.ArgumentParser();p.add_argument('--socket');p.add_argument('--ocr-python');a=p.parse_args()\n"
+                @"class Handler(socketserver.StreamRequestHandler):\n"
+                @" def handle(self):\n"
+                @"  r=json.loads(self.rfile.readline())\n"
+                @"  if 'slow' in r['image']: time.sleep(10)\n"
+                @"  self.wfile.write((json.dumps({'result':{'plate':'京A12345'},'seconds':0.01})+'\\n').encode())\n"
+                @"def stop(*args): raise KeyboardInterrupt\n"
+                @"signal.signal(signal.SIGTERM,stop)\n"
+                @"try:\n"
+                @" with socketserver.UnixStreamServer(a.socket,Handler) as server: server.serve_forever(poll_interval=0.01)\n"
+                @"except KeyboardInterrupt: pass\n"
+                @"finally:\n"
+                @" if os.path.exists(a.socket): os.unlink(a.socket)\n";
+            [serviceSource writeToFile:servicePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            operations.residentFixture = script;
+            unsetenv("SMARTPARK_LPR_SCRIPT");
+            auto waitForCandidate = [&]{
+                return spin([&]{
+                    [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                        beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+                    return operations.candidate != nil || operations.failure != nil;
+                }, 10000);
+            };
+            [operations runRecognitionForImage:image];
+            waitForCandidate();
+            expect([operations.candidate[@"plate"] isEqualToString:@"京A12345"],
+                   "默认常驻路径通过真实轻量客户端返回本机结果");
+            NSTask *resident = (__bridge NSTask *)readPointerIvar(operations, "_localRecognitionService");
+            expect(resident.running, "本机常驻推理进程保持运行");
+            operations.candidate = nil;
+            operations.failure = nil;
+            [operations runRecognitionForImage:image];
+            waitForCandidate();
+            expect(operations.candidate != nil
+                       && (__bridge void *)resident == readPointerIvar(operations, "_localRecognitionService"),
+                   "后续图片复用同一个本机推理进程");
+            operations.candidate = nil;
+            operations.failure = nil;
+            [operations runRecognitionForImage:[image stringByAppendingString:@"-slow"]];
+            NSTask *clientTask = (__bridge NSTask *)readPointerIvar(operations, "_recognitionTask");
+            [operations stopLocalRecognitionService:
+                [NSNotification notificationWithName:NSApplicationWillTerminateNotification object:nil]];
+            spin([&]{
+                [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                    beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+                return !resident.running && !clientTask.running;
+            }, 3000);
+            expect(!resident.running && !clientTask.running,
+                   "应用退出同时停止本机服务和客户端子进程");
+            expect(readPointerIvar(operations, "_recognitionTask") == nullptr
+                       && operations.candidate == nil && operations.failure == nil,
+                   "退出后丢弃尚未送达的识别回调");
+
+            for (NSString *key in @[@"SMARTPARK_LPR_SCRIPT", @"SMARTPARK_LPR_PY", @"SMARTPARK_OCR_PY"]){
+                NSString *value = savedEnvironment[key];
+                if (value != nil){ setenv(key.UTF8String, value.UTF8String, 1); }
+                else { unsetenv(key.UTF8String); }
+            }
+        }
+    }
+
+    // ---- 启动预热不等待模型；期间的请求等待同一进程就绪 ----
+    @autoreleasepool{
+        QTemporaryDir fixture;
+        NSString *script = smartpark_ui::toNSString(fixture.filePath("recognize_plate.py").toStdString());
+        NSString *servicePath = smartpark_ui::toNSString(fixture.filePath("lpr_service.py").toStdString());
+        NSString *source = @"import argparse,json,os,signal,socketserver,time\n"
+            @"p=argparse.ArgumentParser();p.add_argument('--socket');p.add_argument('--ocr-python');p.add_argument('--warmup-image');p.add_argument('--parent-pid');a=p.parse_args()\n"
+            @"time.sleep(1) # simulate slow model loading before accepting requests\n"
+            @"class H(socketserver.StreamRequestHandler):\n"
+            @" def handle(self):\n"
+            @"  json.loads(self.rfile.readline());self.wfile.write(b'{\"result\":{\"plate\":\"TEST123\"}}\\n')\n"
+            @"def stop(*args): raise KeyboardInterrupt\n"
+            @"signal.signal(signal.SIGTERM,stop)\n"
+            @"try:\n"
+            @" with socketserver.UnixStreamServer(a.socket,H) as server: server.serve_forever(poll_interval=0.01)\n"
+            @"except KeyboardInterrupt: pass\n"
+            @"finally:\n"
+            @" if os.path.exists(a.socket): os.unlink(a.socket)\n";
+        [source writeToFile:servicePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        LocalRecognitionService *models = [[LocalRecognitionService alloc] init];
+        QElapsedTimer clock;
+        clock.start();
+        NSString *socket = [models startWithScript:script detectorPython:@"/usr/bin/python3"
+            ocrPython:@"/usr/bin/python3" environment:[[NSProcessInfo processInfo] environment]];
+        expect(clock.elapsed() < 300, "启动预热立即返回，不等待模型加载");
+        NSString *again = [models startWithScript:script detectorPython:@"/usr/bin/python3"
+            ocrPython:@"/usr/bin/python3" environment:[[NSProcessInfo processInfo] environment]];
+        expect([socket isEqualToString:again], "加载期间的重复启动复用同一 socket");
+        NSTask *request = [[NSTask alloc] init];
+        request.executableURL = [NSURL fileURLWithPath:@"/usr/bin/python3"];
+        NSString *client = [[@SMARTPARK_LPR_SCRIPT_PATH stringByDeletingLastPathComponent]
+            stringByAppendingPathComponent:@"lpr_client.py"];
+        request.arguments = @[@"-B", client, @"fixture.jpg", @"--socket", socket, @"--wait-ready", @"5"];
+        NSPipe *output = [NSPipe pipe];
+        request.standardOutput = output;
+        request.standardError = [NSFileHandle fileHandleWithNullDevice];
+        NSError *error = nil;
+        expect([request launchAndReturnError:&error], "预热期间可以提交识别请求");
+        spin([&]{
+            [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+            return !request.running;
+        }, 10000);
+        NSData *reply = [output.fileHandleForReading readDataToEndOfFile];
+        NSDictionary *result = [NSJSONSerialization JSONObjectWithData:reply options:0 error:nil];
+        expect(request.terminationStatus == 0 && [result[@"plate"] isEqualToString:@"TEST123"],
+               "早期请求等待后台加载完成并收到同一服务的结果");
+        NSTask *resident = models.task;
+        expect(resident.running, "首次请求复用已预热进程");
+        // A service can die without stop() clearing its retained NSTask.
+        [resident terminate];
+        spin([&]{
+            [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+            return !resident.running;
+        }, 3000);
+        NSString *replacement = [models startWithScript:script detectorPython:@"/usr/bin/python3"
+            ocrPython:@"/usr/bin/python3" environment:[[NSProcessInfo processInfo] environment]];
+        expect(models.task != resident && ![replacement isEqualToString:socket],
+               "进程意外退出后重试不暴露旧 PID");
+        NSTask *retry = [[NSTask alloc] init];
+        retry.executableURL = request.executableURL;
+        retry.arguments = @[@"-B", client, @"fixture.jpg", @"--socket", replacement, @"--wait-ready", @"5"];
+        retry.standardOutput = [NSFileHandle fileHandleWithNullDevice];
+        retry.standardError = [NSFileHandle fileHandleWithNullDevice];
+        expect([retry launchAndReturnError:&error], "恢复进程后可以再次请求识别");
+        spin([&]{
+            [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+            return !retry.running;
+        }, 10000);
+        expect(retry.terminationStatus == 0, "预加载失败后可成功重试同一识别链路");
+        resident = models.task;
+        [models stop];
+        spin([&]{
+            [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+            return !resident.running;
+        }, 3000);
+        expect(!resident.running, "共享预热进程可正常停止");
+        [models startWithScript:script detectorPython:@"/usr/bin/python3"
+            ocrPython:@"/usr/bin/python3" environment:[[NSProcessInfo processInfo] environment]];
+        [models stop];
+        spin([]{ return false; }, 200);
+        expect(models.task == nil, "取消尚未完成的启动不会发布迟到进程");
+    }
+
+    // ---- 服务端识别 API 仍供其他客户端使用，与管理端图片路由独立 ----
     @autoreleasepool{
         if (bridge != nullptr){
             // mock 后端按图片内容哈希出车牌，这里只要一段非空字节即可；

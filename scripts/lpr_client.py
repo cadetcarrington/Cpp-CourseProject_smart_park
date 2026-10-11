@@ -3,19 +3,43 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
+import math
+import os
 import socket
 import sys
+import time
 from pathlib import Path
 
 
-def request(image, address, timeout=55):
+def connect(address, timeout, wait_ready=0, service_pid=None):
+    if not math.isfinite(wait_ready) or wait_ready < 0:
+        raise ValueError("Startup wait must be finite and nonnegative")
+    deadline = time.monotonic() + wait_ready
+    while True:
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.settimeout(timeout)
+        try:
+            connection.connect(str(Path(address).expanduser().absolute()))
+            return connection
+        except OSError as error:
+            connection.close()
+            if error.errno not in (errno.ENOENT, errno.ECONNREFUSED) or time.monotonic() >= deadline:
+                raise
+            if service_pid is not None:
+                try:
+                    os.kill(service_pid, 0)
+                except ProcessLookupError:
+                    raise RuntimeError("Local inference service exited during startup") from error
+            time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+
+
+def request(image, address, timeout=55, *, wait_ready=0, service_pid=None):
     payload = (json.dumps({"image": str(Path(image).expanduser().resolve())}) + "\n").encode()
     if len(payload) > 8192:
         raise ValueError("Image path is too long")
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(timeout)
-        connection.connect(str(Path(address).expanduser().absolute()))
+    with connect(address, timeout, wait_ready, service_pid) as connection:
         connection.sendall(payload)
         with connection.makefile("rb") as stream:
             line = stream.readline(65537)
@@ -36,9 +60,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("image", type=Path)
     parser.add_argument("--socket", required=True, type=Path)
+    parser.add_argument("--wait-ready", type=float, default=0)
+    parser.add_argument("--service-pid", type=int)
     args = parser.parse_args()
     try:
-        print(json.dumps(request(args.image, args.socket)["result"], ensure_ascii=False))
+        print(json.dumps(request(args.image, args.socket, wait_ready=args.wait_ready,
+                                 service_pid=args.service_pid)["result"], ensure_ascii=False))
         return 0
     except (OSError, ValueError, RuntimeError) as error:
         print(str(error), file=sys.stderr)
