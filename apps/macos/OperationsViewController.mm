@@ -350,7 +350,11 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
     }
     auto record = self.bridge->leaveVehicle(plate.UTF8String);
     if (!record){
-        _statusLabel.stringValue = [NSString stringWithFormat:@"车牌 %@ 不存在可离场的在场记录。", plate];
+        // 结算成功但时间待确认、或服务端拒绝，都要说清原因，不能都推给「不在场」。
+        NSString *reason = smartpark_ui::toNSString(self.bridge->lastError());
+        _statusLabel.stringValue = reason.length > 0
+            ? [NSString stringWithFormat:@"出库未完成：%@", reason]
+            : [NSString stringWithFormat:@"车牌 %@ 不存在可离场的在场记录。", plate];
         return;
     }
     // 车已离场，之前那条进场路线不再代表任何东西，别留在地图上。

@@ -918,6 +918,35 @@ int main(int argc, char **argv){
         expect(models.task == nil, "取消尚未完成的启动不会发布迟到进程");
     }
 
+    // 远程出库必须返回本次停车的真实入场时间与时长，而不是用当前时间重建记录。
+    if (!external && bridge != nullptr){
+        const auto entry = service->activeRecord("京A10002");
+        expect(entry.has_value(), "结算回归保留三小时前入场的在场记录");
+        const auto departed = bridge->leaveVehicle("京A10002");
+        expect(departed.has_value(), "远程出库返回完整结算记录");
+        if (entry && departed){
+            const auto ms = [](auto time){
+                return std::chrono::duration_cast<std::chrono::milliseconds>(
+                    time.time_since_epoch());
+            };
+            expect(ms(departed->entryTime()) == ms(entry->entryTime()),
+                   "结算使用真实入场时间而不是出场时刻");
+            expect(departed->vehicleType() == smartpark::VehicleType::Truck,
+                   "结算保留真实车型");
+            expect(departed->duration() >= std::chrono::hours(3),
+                   "跨时段远程停车不会被重建为零分钟");
+            bool sameSettlement = false;
+            for (const auto &record : service->records()){
+                if (record.plateNumber() == "京A10002" && record.isClosed()
+                    && ms(record.entryTime()) == ms(entry->entryTime())){
+                    sameSettlement = departed->fee() == record.fee()
+                        && ms(*departed->exitTime()) == ms(*record.exitTime());
+                }
+            }
+            expect(sameSettlement, "结算费用与离场时间来自服务端同一笔记录");
+        }
+    }
+
     // ---- 服务端识别 API 仍供其他客户端使用，与管理端图片路由独立 ----
     @autoreleasepool{
         if (bridge != nullptr){

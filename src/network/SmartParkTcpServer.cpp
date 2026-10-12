@@ -447,6 +447,12 @@ QJsonObject SmartParkTcpServer::actionLeave(const QJsonObject &payload,
     response.insert(QStringLiteral("plate"), plate);
     response.insert(QStringLiteral("spotId"), QString::fromStdString(closed->spotId()));
     response.insert(QStringLiteral("fee"), closed->fee());
+    response.insert(QStringLiteral("entryTimeMs"), timeToMs(closed->entryTime()));
+    response.insert(QStringLiteral("exitTimeMs"), timeToMs(*closed->exitTime()));
+    response.insert(QStringLiteral("vehicleType"),
+                    protocol::vehicleTypeToString(closed->vehicleType()));
+    response.insert(QStringLiteral("durationSeconds"),
+                    static_cast<qint64>(closed->duration().count()));
     response.insert(QStringLiteral("durationMin"),
                     static_cast<double>(std::chrono::duration_cast<
                         std::chrono::minutes>(closed->duration()).count()));

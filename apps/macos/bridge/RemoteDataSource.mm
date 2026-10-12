@@ -495,6 +495,15 @@ std::optional<ParkingRecord> RemoteDataSource::leaveVehicle(const std::string &p
         setError(QStringLiteral("未连接服务端，无法出库"));
         return std::nullopt;
     }
+    // awaitRequest 的嵌套事件循环可能处理出场事件并替换 records_；必须先
+    // 拷贝本次在场记录，不能在应答后按车牌误取上一轮停车的历史记录。
+    std::optional<ParkingRecord> activeRecord;
+    for (const ParkingRecord &record : records_){
+        if (record.plateNumber() == plate && !record.isClosed()
+            && (!activeRecord || record.entryTime() > activeRecord->entryTime())){
+            activeRecord = record;
+        }
+    }
     QJsonObject body;
     QString error;
     const bool ok = awaitRequest(QStringLiteral("parking.leave"),
@@ -506,16 +515,57 @@ std::optional<ParkingRecord> RemoteDataSource::leaveVehicle(const std::string &p
         return std::nullopt;
     }
     requestSnapshot();
-    const QString spotId = body.value(QStringLiteral("spotId")).toString();
-    const auto now = ParkingRecord::Clock::now();
-    try{
-        ParkingRecord record(plate, spotId.toStdString(), now);
-        record.close(now, body.value(QStringLiteral("fee")).toDouble());
-        return record;
-    } catch (const std::exception &){
-        // 服务端已结算，只是本地记录无法重建：仍算出场成功，由快照刷新体现。
-        return ParkingRecord(plate, spotId.toStdString(), now);
+    const std::string spotId =
+        body.value(QStringLiteral("spotId")).toString().toStdString();
+    const double fee = body.value(QStringLiteral("fee")).toDouble();
+    const auto type = protocol::vehicleTypeFromString(
+        body.value(QStringLiteral("vehicleType")).toString());
+    // 新服务端直接回传已结算记录的时间与车型，不依赖客户端缓存或时钟。
+    if (!spotId.empty() && type
+        && body.value(QStringLiteral("entryTimeMs")).isDouble()
+        && body.value(QStringLiteral("exitTimeMs")).isDouble()){
+        ParkingRecord record(plate, spotId,
+            timeFromMs(body.value(QStringLiteral("entryTimeMs")).toInteger()), *type);
+        if (record.close(
+                timeFromMs(body.value(QStringLiteral("exitTimeMs")).toInteger()), fee)){
+            setError(QString());
+            return record;
+        }
     }
+    if (activeRecord && activeRecord->spotId() == spotId){
+        // 旧服务端只回车位和费用：事件带来的快照若已到达，优先使用本次
+        // 会话的已结算记录。车牌、车位、入场时刻三者都一致才是同一轮停车。
+        for (const ParkingRecord &record : records_){
+            if (record.isClosed() && record.plateNumber() == plate
+                && record.spotId() == spotId
+                && record.entryTime() == activeRecord->entryTime()){
+                setError(QString());
+                return record;
+            }
+        }
+        // 快照尚未到达时保留真实入场时间与车型，仅用本地应答时刻估计出场。
+        if (activeRecord->close(ParkingRecord::Clock::now(), fee)){
+            setError(QString());
+            return activeRecord;
+        }
+    }
+    // 旧服务端还可能只回 durationMin：用它反推入场时刻，弹出结算时不会变成
+    // 0 分钟；出场取本地应答时刻，误差仅在一次网络往返之内。
+    const double durationMinutes = body.value(QStringLiteral("durationMin")).toDouble();
+    if (!spotId.empty() && durationMinutes > 0.0){
+        const auto exitTime = ParkingRecord::Clock::now();
+        ParkingRecord record(plate, spotId,
+            exitTime - std::chrono::milliseconds(
+                static_cast<long long>(durationMinutes * 60000.0)),
+            type.value_or(VehicleType::Car));
+        if (record.close(exitTime, fee)){
+            setError(QString());
+            return record;
+        }
+    }
+    // 服务端已结算，但旧协议与缓存不足以确认本次会话，不能编造零分钟记录。
+    setError(QStringLiteral("服务端已完成结算，停车记录时间待快照刷新确认"));
+    return std::nullopt;
 }
 
 // 旧服务端的 reservation.checkin 只回 spotId：到场后的订单状态要从快照缓存里补。
