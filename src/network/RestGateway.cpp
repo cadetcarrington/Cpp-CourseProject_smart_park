@@ -1356,6 +1356,19 @@ QJsonObject RestGateway::performLeave(const QString &plate,
                    static_cast<double>(
                        std::chrono::duration_cast<std::chrono::minutes>(
                            closed->duration()).count()));
+    // 与 TCP 的 parking.leave 保持一致：客户端据实际时刻结算，不用当前时间重建。
+    payload.insert(QStringLiteral("entryTimeMs"),
+                   static_cast<qint64>(std::chrono::duration_cast<
+                       std::chrono::milliseconds>(
+                           closed->entryTime().time_since_epoch()).count()));
+    payload.insert(QStringLiteral("exitTimeMs"),
+                   static_cast<qint64>(std::chrono::duration_cast<
+                       std::chrono::milliseconds>(
+                           closed->exitTime()->time_since_epoch()).count()));
+    payload.insert(QStringLiteral("vehicleType"),
+                   protocol::vehicleTypeToString(closed->vehicleType()));
+    payload.insert(QStringLiteral("durationSeconds"),
+                   static_cast<qint64>(closed->duration().count()));
     // 该车牌未支付的停车费订单随出口结算关闭，避免悬空订单。
     for (auto it = orders_.begin(); it != orders_.end(); ++it){
         if (it.value().status == QStringLiteral("pending")
