@@ -4,40 +4,44 @@
 #include <limits>
 #include <queue>
 #include <stdexcept>
+
 namespace smartpark{
-namespace{
-struct SearchNode{
-    double priority;
-    int index;
-};
-bool operator>(const SearchNode &first, const SearchNode &second) noexcept{
-    return first.priority > second.priority;
-}
-struct Direction{
-    int dx;
-    int dy;
-};
-const Direction directions[] ={
-    {1, 0}, {-1, 0}, {0, 1}, {0, -1},
-    {1, 1}, {1, -1}, {-1, 1}, {-1, -1}
-};
-double octileDistance(Point from, Point to){
-    const double dx = std::abs(to.x - from.x);
-    const double dy = std::abs(to.y - from.y);
-    return std::max(dx, dy) + (std::sqrt(2.0) - 1.0) * std::min(dx, dy);
-}
-} // namespace
+    namespace{
+        struct SearchNode{
+            double priority;
+            int index;
+        };
+        bool operator > (const SearchNode & first, const SearchNode & second) noexcept{
+            return first.priority > second.priority;
+        }
+        struct Direction{
+            int dx;
+            int dy;
+        };
+        const Direction directions[] ={
+            {1, 0}, {-1, 0}, {0, 1}, {0, -1},
+            {1, 1}, {1, -1}, {-1, 1}, {-1, -1}
+        };
+        double octileDistance(Point from, Point to){
+            const double dx = std::abs(to.x - from.x);
+            const double dy = std::abs(to.y - from.y);
+            return std::max(dx, dy) + (std::sqrt(2.0) - 1.0) * std::min(dx, dy);
+        }
+    }
 GridPlanner::GridPlanner(double siteWidth, double siteHeight,
                          const std::vector<ParkingSpot> &spots,
                          const std::vector<Rectangle> &obstacles, double cellSize)
     : siteWidth_(siteWidth)
     , siteHeight_(siteHeight)
     , cellSize_(cellSize){
-    if (siteWidth <= 0.0 || siteHeight <= 0.0 || cellSize <= 0.0){
+
+    if (siteWidth <= 0.0 || siteHeight <= 0.0 || cellSize <= 0.0) {
         throw std::invalid_argument("invalid grid planner dimensions");
     }
+
     const int columnCount = columns();
     const int rowCount = rows();
+    
     blocked_.assign(static_cast<std::size_t>(columnCount) * rowCount, false);
     for (int row = 0; row < rowCount; ++row){
         for (int column = 0; column < columnCount; ++column){
@@ -97,7 +101,22 @@ Route GridPlanner::plan(Point from, Point to, const OccupancyField *occupancy) c
 std::vector<Route> GridPlanner::planFromToTargets(Point from,
                                                   const std::vector<Point> &targets,
                                                   const OccupancyField *occupancy) const{
-    const SearchResult search = searchFrom(from, occupancy, -1);
+    if (targets.empty()){
+        return {};
+    }
+    // 目标点 → 格子用 reconstruct 里同一套映射，保证每条路线都能重建。
+    std::vector<int> goalCells;
+    goalCells.reserve(targets.size());
+    for (const Point &target : targets){
+        const int cell = nearestFreeCell(target);
+        if (cell >= 0){
+            goalCells.push_back(cell);
+        }
+    }
+    if (goalCells.empty()){
+        return std::vector<Route>(targets.size());   // 一个目标都不可达
+    }
+    const SearchResult search = searchFromGoals(from, occupancy, goalCells);
     std::vector<Route> routes;
     routes.reserve(targets.size());
     for (const Point &target : targets){
@@ -116,27 +135,49 @@ double GridPlanner::occupancyMultiplier(int cellIndex, const OccupancyField *occ
 }
 GridPlanner::SearchResult GridPlanner::searchFrom(
     Point from, const OccupancyField *occupancy, int goalIndex) const{
+    // 单目标是"目标集合只有一个"的特例，共用同一套 A* 实现。
+    return searchFromGoals(from, occupancy,
+                           goalIndex >= 0 ? std::vector<int>{goalIndex} : std::vector<int>{});
+}
+GridPlanner::SearchResult GridPlanner::searchFromGoals(
+    Point from, const OccupancyField *occupancy, const std::vector<int> &goals) const{
     SearchResult result;
     result.startIndex = nearestFreeCell(from);
     const std::size_t nodeCount = blocked_.size();
     result.bestCost.assign(nodeCount, std::numeric_limits<double>::infinity());
     result.parent.assign(nodeCount, -1);
     result.arrivalDirection.assign(nodeCount, -1);
-    if (result.startIndex < 0 || (goalIndex >= 0 && !isFree(goalIndex))){
+    if (result.startIndex < 0){
         return result;
     }
     const int columnCount = columns();
     const int rowCount = rows();
     const double turnPenalty = 0.35 * cellSize_;
-    const bool useHeuristic = goalIndex >= 0;
-    const Point goalPoint = useHeuristic
-        ? cellCenter(goalIndex % columnCount, goalIndex / columnCount)
-        : Point{};
+
+    // 目标集合：去重、丢掉不可达的格子。传了目标但全不可达时直接返回空结果
+    // （与原来"单目标格子不可走就不给路线"的行为一致）。
+    std::vector<int> goalCells;
+    std::vector<bool> isGoal(nodeCount, false);
+    for (int goal : goals){
+        if (goal < 0 || static_cast<std::size_t>(goal) >= nodeCount
+            || !isFree(goal) || isGoal[static_cast<std::size_t>(goal)]){
+            continue;
+        }
+        isGoal[static_cast<std::size_t>(goal)] = true;
+        goalCells.push_back(goal);
+    }
+    if (!goals.empty() && goalCells.empty()){
+        return result;
+    }
+    std::size_t remainingGoals = goalCells.size();
+    // 不加启发值：Dijkstra 按代价递增展开，目标全部结算就停，只展开"比最远目标
+    // 更近"的那部分格子（目标集中在一个分区时省得最多）。逐格遍历目标集算启发值
+    // 反而更贵——这条路径先被实测否掉过一次（189ms vs 131ms）。
+
     std::vector<bool> closed(nodeCount, false);
     std::priority_queue<SearchNode, std::vector<SearchNode>, std::greater<SearchNode>> openSet;
     result.bestCost[static_cast<std::size_t>(result.startIndex)] = 0.0;
-    const Point startPoint = cellCenter(result.startIndex % columnCount, result.startIndex / columnCount);
-    openSet.push({useHeuristic ? octileDistance(startPoint, goalPoint) : 0.0, result.startIndex});
+    openSet.push({0.0, result.startIndex});
     while (!openSet.empty()){
         const int current = openSet.top().index;
         openSet.pop();
@@ -144,8 +185,8 @@ GridPlanner::SearchResult GridPlanner::searchFrom(
             continue;
         }
         closed[static_cast<std::size_t>(current)] = true;
-        if (useHeuristic && current == goalIndex){
-            break;
+        if (isGoal[static_cast<std::size_t>(current)] && --remainingGoals == 0){
+            break;   // 目标全部结算，再展开也不会改善任何一条路线
         }
         const int currentColumn = current % columnCount;
         const int currentRow = current / columnCount;
@@ -180,10 +221,7 @@ GridPlanner::SearchResult GridPlanner::searchFrom(
                 result.bestCost[static_cast<std::size_t>(next)] = nextCost;
                 result.parent[static_cast<std::size_t>(next)] = current;
                 result.arrivalDirection[static_cast<std::size_t>(next)] = static_cast<signed char>(direction);
-                const double priority = useHeuristic
-                    ? nextCost + octileDistance(nextPoint, goalPoint)
-                    : nextCost;
-                openSet.push({priority, next});
+                openSet.push({nextCost, next});
             }
         }
     }

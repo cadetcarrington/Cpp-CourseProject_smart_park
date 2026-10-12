@@ -55,6 +55,15 @@ const smartpark::ParkingSpot *findSpot(const smartpark::ParkingService &service,
     }
     return &(*spot);
 }
+const smartpark::ParkingSpot *findSpotById(const std::vector<smartpark::ParkingSpot> &spots,
+                                            const std::string &identifier){
+    for (const smartpark::ParkingSpot &spot : spots){
+        if (spot.identifier() == identifier){
+            return &spot;
+        }
+    }
+    return nullptr;
+}
 void testVehicle(){
     const smartpark::Vehicle vehicle(u8"晋A12345", smartpark::VehicleType::Car);
     expect(vehicle.plateNumber() == u8"晋A12345", "vehicle keeps its plate number");
@@ -434,6 +443,51 @@ void testCongestionAvoidanceAndStrategies(){
            "weighted cost avoids a congested nearby cluster");
     expect(diverted->nearbyOccupiedSpots == 0, "the chosen cluster is not locally congested");
 }
+// 出口评分：两个出口按系数加权的平均距离参与评分；实际指派走的出口取
+// 「系数 × 距离」最小者。这里用两个出口一西一东、车位偏西的对称场景验证。
+void testExitCoefficientWeighting(){
+    const std::string description =
+        "site 100 60\n"
+        "entrance 0 8\n"
+        "exit 0 52\n"
+        "exit 100 52\n"
+        "region A 40 20 1 4 2.0 5.0 3.0 up normal\n";
+    const auto layout = smartpark::ParkingLayout::fromDescription(description);
+    const std::vector<smartpark::ParkingSpot> spots = layout.spots();
+    const smartpark::GridPlanner planner(layout.siteWidth(), layout.siteHeight(), spots);
+    smartpark::SpotAllocator allocator(layout, planner);
+    const smartpark::Vehicle vehicle(u8"晋E00001", smartpark::VehicleType::Car);
+
+    smartpark::AllocationWeights weights;
+    weights.exitCoefficients = {1.0, 1.0};      // 两个出口等权
+    allocator.setWeights(weights);
+    const auto equal = allocator.propose(vehicle, spots);
+    expect(equal.has_value(), "exit weighting: allocation succeeds");
+    const smartpark::ParkingSpot *spot = findSpotById(spots, equal->spotId);
+    expect(spot != nullptr, "exit weighting: proposed spot exists");
+    const smartpark::Point access = spot->accessPoint();
+    const double toWest = planner.plan(layout.exits()[0], access).distance;
+    const double toEast = planner.plan(layout.exits()[1], access).distance;
+    expect(toWest < toEast, "exit weighting: the west exit really is nearer");
+    // 等权：指派更近的西出口；评分用两个出口的平均距离（不是只取最近的）
+    expect(equal->exitIndex == 0, "equal coefficients assign the nearer exit");
+    expect(std::abs(equal->score.exitPathCost
+                    - weights.exitPath * (toWest + toEast) / 2.0) < 1e-6,
+           "score uses the coefficient-weighted mean of both exits");
+
+    // 西出口系数 10：系数×距离后东出口更"便宜"，指派应改成东出口；
+    // 评分按 10:1 加权（西出口权重大，距离被算得更重）。
+    weights.exitCoefficients = {10.0, 1.0};
+    allocator.setWeights(weights);
+    const auto weightedProposal = allocator.propose(vehicle, spots);
+    expect(weightedProposal.has_value(), "exit weighting: allocation succeeds with coefficients");
+    expect(weightedProposal->exitIndex == 1,
+           "a heavier-weighted exit is assigned away from");
+    expect(std::abs(weightedProposal->score.exitPathCost
+                    - weights.exitPath * (10.0 * toWest + toEast) / 11.0) < 1e-6,
+           "score weights each exit by its coefficient");
+    std::printf("exit weighting: equal + 10:1 coefficients OK\n");
+}
 void testZonePressureBalancing(){
     const std::string description =
         "site 100 60\n"
@@ -453,24 +507,28 @@ void testZonePressureBalancing(){
     weights.zonePressure = 0.0;
     service.setWeights(weights);
     const auto now = smartpark::ParkingRecord::Clock::from_time_t(4000000000);
+    // 分区优先（WeightedCost）：每次只评估「对应类型里车辆最少的分区」。
+    // 两个分区都空时按名称取 A；第二辆就会去车辆更少的 B —— 这一步与
+    // zonePressure 权重无关，所以 zonePressure=0 时同样是 A/B 交替填充。
+    const char *expectedZones[2] = {"A", "B"};
     for (int index = 0; index < 2; ++index){
         const auto result = service.enter(
             {std::string(u8"晋Z000") + std::to_string(index), smartpark::VehicleType::Car}, now);
         expect(result.has_value(), "zone-balancing setup car can enter");
         const auto *spot = result ? findSpot(service, result->spotId) : nullptr;
-        expect(spot != nullptr && spot->zone() == "A",
-               "with zone balancing disabled, the closer symmetric cluster fills first");
+        expect(spot != nullptr && spot->zone() == expectedZones[index],
+               "least-occupied matching zone takes the next car (spreads A/B)");
     }
-    // 新压力语义：计入本车后的分区负载取平方，乘权重与场地对角线，
-    // 换算成等效步行米数。半满的 A 区代价已超过空 B 区与 A 区的微小距离差。
+    // zonePressure 继续负责「分区内」的分级压力代价；跨分区选择由分区优先决定，
+    // 半满的 A 区之后下一辆仍然落到 B 区。
     weights.zonePressure = 0.8;
     service.setWeights(weights);
     for (int index = 0; index < 2; ++index){
         const auto diverted = service.enter(
             {std::string(u8"晋Z9999") + std::to_string(index), smartpark::VehicleType::Car}, now);
         const auto *divertedSpot = diverted ? findSpot(service, diverted->spotId) : nullptr;
-        expect(divertedSpot != nullptr && divertedSpot->zone() == "B",
-               "zone pressure sends the next cars to the under-occupied zone");
+        expect(divertedSpot != nullptr && divertedSpot->zone() == expectedZones[index],
+               "zone pressure keeps the A/B alternation going");
         expect(diverted && diverted->breakdown.zonePressureCost > 0.0
                    && diverted->breakdown.zonePressureCost
                           < weights.zonePressure * 116.62,
@@ -2188,6 +2246,7 @@ int main(){
     testLayoutTypesAndMultipleGates();
     testReservationTtlAndConflict();
     testZonePressureBalancing();
+    testExitCoefficientWeighting();
     testZonePressureSpreadsLoadAcrossZones();
     testTypeMatching();
     testCongestionAvoidanceAndStrategies();

@@ -21,6 +21,10 @@ struct AllocationWeights{
     // 分区压力权重：乘以场地对角线得到“满区等效步行米数”。
     // 0.8 表示压满一个分区约等于多走 0.8 倍对角线的距离。
     double zonePressure{0.8};
+    // 出口评分系数：每个出口一个权重（缺失或 <=0 的按 1.0 处理）。
+    // 评分用「按系数加权的平均出口距离」，而不是只取最近出口——两个出口都顺路的
+    // 车位更优；实际指派走的出口仍取「系数 × 距离」最小的那个。默认全 1.0=等权。
+    std::vector<double> exitCoefficients;
 };
 struct ScoreBreakdown{
     double entryPathCost{0.0};
@@ -54,6 +58,13 @@ public:
         const std::vector<ParkingSpot> &spots,
         const std::string &requiredSpotId = {}) const;
 private:
+    // 对给定候选车位集合做一次完整评估：入口/出口搜索 + 评分 + 选最优。
+    // 分区优先策略下每次只传一个分区的候选，搜索量取决于该分区而不是全场。
+    std::optional<AllocationProposal> evaluateCandidates(
+        const Vehicle &vehicle,
+        const std::vector<ParkingSpot> &spots,
+        const std::vector<std::size_t> &candidateIndices) const;
+    double exitCoefficient(std::size_t exitIndex) const noexcept;
     ScoreBreakdown makeScore(const Vehicle &vehicle, const ParkingSpot &spot,
                              const Route &entryRoute, const Route &exitRoute,
                              int nearbyOccupied, double zoneLoadAfter) const;
