@@ -2,6 +2,7 @@
 
 #import "ParkingMapView.h"
 #import "PlatePhotoArchive.h"
+#import "RecognitionConfidence.h"
 #include "bridge/ParkingBridge.h"
 
 #include <QCoreApplication>
@@ -340,6 +341,19 @@ int main(int argc, char **argv){
                 unsetenv("SMARTPARK_PLATE_PHOTO_DIR");
                 std::printf("plate photo archive: 2 archived, latest lookup OK (%s)\n",
                             secondArchived.lastPathComponent.UTF8String);
+            }
+
+            // 置信度闸门：够高直接办理，低于阈值或结果被标记不可靠才要人工确认。
+            {
+                require(!smartpark_lpr::needsConfirmation(0.99, true, 0.85),
+                        "high confidence should be processed without confirmation");
+                require(!smartpark_lpr::needsConfirmation(0.85, true, 0.85),
+                        "confidence at the threshold should not ask again");
+                require(smartpark_lpr::needsConfirmation(0.8499, true, 0.85),
+                        "confidence below the threshold must ask for confirmation");
+                require(smartpark_lpr::needsConfirmation(0.99, false, 0.85),
+                        "an invalid result must ask even at high confidence");
+                std::printf("recognition gate: auto at >=85%%, confirm below\n");
             }
 
             [NSApplication sharedApplication];

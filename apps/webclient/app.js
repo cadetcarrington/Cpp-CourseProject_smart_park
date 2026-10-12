@@ -969,12 +969,13 @@ const SPOT_FILL = {
   reserved:   'rgba(181,71,8,.55)',
   disabled:   'rgba(102,112,133,.55)',
   normal:     'rgba(15,118,110,.55)',
-  accessible: 'rgba(79,70,229,.55)',
+  // 无障碍车位按普通车位配色（不再有专属紫色），车位上的「无障碍」文字也一并去掉。
+  accessible: 'rgba(15,118,110,.55)',
   charging:   'rgba(2,106,162,.55)',
   vip:        'rgba(124,58,237,.55)',
 };
 
-const SPOT_TYPE_TEXT = { accessible: '无障碍', charging: '充电', vip: 'VIP' };
+const SPOT_TYPE_TEXT = { charging: '充电', vip: 'VIP' };
 
 // 车位上的文字：主行编号；占用时第二行写车牌，非普通车位空闲时写类型。
 // 与 macOS 端 ParkingMapView 的 spotLabel 同一套规则。

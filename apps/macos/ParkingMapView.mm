@@ -32,12 +32,12 @@ NSColor *stallFill(const smartpark::ParkingSpot &spot){
         break;
     }
     switch (spot.type()){
-    case smartpark::SpotType::Accessible:
-        return rgba(79, 70, 229, 140);
+    // 无障碍车位按普通车位配色：地图上不再用紫色区分（用户要求）。
     case smartpark::SpotType::Charging:
         return rgba(2, 106, 162, 140);
     case smartpark::SpotType::Vip:
         return rgba(124, 58, 237, 140);
+    case smartpark::SpotType::Accessible:
     case smartpark::SpotType::Normal:
     default:
         return rgba(15, 118, 110, 140);
@@ -52,8 +52,9 @@ NSColor *labelColor(smartpark::SpotStatus status){
 
 const char *spotTypeText(smartpark::SpotType type){
     switch (type){
+    // 悬停信息里也不再把无障碍单列：地图上它就当普通车位看。
     case smartpark::SpotType::Accessible:
-        return "无障碍";
+        return "普通";
     case smartpark::SpotType::Charging:
         return "充电";
     case smartpark::SpotType::Vip:
@@ -83,8 +84,10 @@ NSString *spotLabel(const smartpark::ParkingSpot &spot){
     if (spot.parkedVehicle()){
         label = [label stringByAppendingFormat:@"\n%@",
                  smartpark_ui::toNSString(spot.parkedVehicle()->plateNumber())];
-    } else if (spot.type() != smartpark::SpotType::Normal
-               && spot.status() == smartpark::SpotStatus::Available){
+    } else if (spot.status() == smartpark::SpotStatus::Available
+               // 无障碍不再单列（按普通车位画），所以只有充电/VIP 会在车位上写字。
+               && (spot.type() == smartpark::SpotType::Charging
+                   || spot.type() == smartpark::SpotType::Vip)){
         label = [label stringByAppendingFormat:@"\n%@",
                  smartpark_ui::toNSString(spotTypeText(spot.type()))];
     }

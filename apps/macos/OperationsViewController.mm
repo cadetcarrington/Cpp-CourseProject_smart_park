@@ -3,6 +3,7 @@
 #import "TextUtil.h"
 #import "LocalRecognitionService.h"
 #import "PlatePhotoArchive.h"
+#import "RecognitionConfidence.h"
 #import "bridge/ParkingBridge.h"
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -771,15 +772,48 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
     NSNumber *rec = result[@"recognition_confidence"];
     double detV = [det isKindOfClass:[NSNumber class]] ? det.doubleValue : 0.0;
     double recV = [rec isKindOfClass:[NSNumber class]] ? rec.doubleValue : 0.0;
+    // 自定义脚本可能不给 valid：缺省当作有效，避免把「字段缺失」误判成低置信度。
+    NSNumber *validFlag = result[@"valid"];
+    const BOOL valid = [validFlag isKindOfClass:[NSNumber class]] ? validFlag.boolValue : YES;
 
-    // 识别即办理：按点下的按钮（入场/出场）直接完成，不再弹「是否采用该车牌」。
-    // 置信度仍然写进状态栏，误识别时操作员能立刻看到并把车改回正确车牌。
+    // 识别即办理：按点下的按钮（入场/出场）直接完成，不再弹「是否采用该车牌」；
+    // 但识别置信度不够高时先弹一次确认（阈值见 recognitionConfirmationThreshold）。
     if (_recognitionIntent == SmartParkRecognitionIntentEnter
         || _recognitionIntent == SmartParkRecognitionIntentExit){
+        const BOOL exiting = _recognitionIntent == SmartParkRecognitionIntentExit;
+        NSString *intentText = exiting ? @"出库" : @"入场";
         _statusLabel.stringValue = [NSString stringWithFormat:
             @"识别到 %@（检测 %.1f%% · 识别 %.1f%%），按识别结果办理中…",
             plate, detV * 100.0, recV * 100.0];
-        [self performRecognitionIntentWithPlate:plate result:result];
+
+        // 判据只取「识别置信度」（车牌读对没读对），不把检测置信度算进来：
+        // 样张上检测常常只有 0.8 出头而识别是 0.99，用 min() 会把好读的也拦下来。
+        const double threshold = [self recognitionConfirmationThreshold];
+        if (!smartpark_lpr::needsConfirmation(recV, valid, threshold)){
+            [self performRecognitionIntentWithPlate:plate result:result];
+            return;
+        }
+
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = [NSString stringWithFormat:
+            @"识别置信度偏低（低于 %.0f%%）", threshold * 100.0];
+        alert.informativeText = [NSString stringWithFormat:
+            @"识别到车牌：%@\n检测置信度 %.1f%% · 识别置信度 %.1f%%%@\n"
+             "确认后按该车牌办理%@。",
+            plate, detV * 100.0, recV * 100.0,
+            valid ? @"" : @"（识别结果被标记为不可靠）", intentText];
+        [alert addButtonWithTitle:[NSString stringWithFormat:@"按 %@ 办理%@", plate, intentText]];
+        [alert addButtonWithTitle:@"取消"];
+        [alert beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse response){
+            if (response == NSAlertFirstButtonReturn){
+                [self performRecognitionIntentWithPlate:plate result:result];
+                return;
+            }
+            // 取消：不归档照片、不办理，车牌也不写进输入框。
+            _recognitionIntent = SmartParkRecognitionIntentNone;
+            _statusLabel.stringValue = [NSString stringWithFormat:
+                @"已取消：未按 %@ 办理%@。", plate, intentText];
+        }];
         return;
     }
 
@@ -798,6 +832,19 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
                 @"已采用候选车牌 %@，请核对后再操作入场或出场。", plate];
         }
     }];
+}
+
+// 识别置信度确认阈值（0~1）：低于它才弹一次人工确认。默认 0.85；
+// SMARTPARK_LPR_CONFIRM_THRESHOLD 可覆盖（填 0.01 即「永远自动办理」）。
+- (double)recognitionConfirmationThreshold{
+    const char *value = getenv("SMARTPARK_LPR_CONFIRM_THRESHOLD");
+    if (value != nullptr && value[0] != '\0'){
+        const double parsed = atof(value);
+        if (parsed > 0.0 && parsed <= 1.0){
+            return parsed;
+        }
+    }
+    return 0.85;
 }
 
 @end

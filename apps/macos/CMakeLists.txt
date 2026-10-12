@@ -33,6 +33,7 @@ set(MACOS_ADMIN_SOURCES
     LocalRecognitionService.h
     LocalRecognitionService.mm
     PlatePhotoArchive.h
+    RecognitionConfidence.h
     PlatePhotoArchive.mm
     OperationsViewController.h
     OperationsViewController.mm
