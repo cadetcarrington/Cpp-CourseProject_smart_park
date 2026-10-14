@@ -1,0 +1,117 @@
+{
+ "date": "2026-10-12",
+ "host": "macOS local (Apple silicon), torch 2.14.0 / ultralytics 8.4.164 / paddle 3.3.1, CPU FP32",
+ "manifest": "examples/plates/manifest-provinces.csv (v2: 9 failures replaced)",
+ "manifest_v1": "examples/plates/manifest-provinces-v1-20261009.csv",
+ "replacement_record": "docs/lpr-eval-replacements-20261012.json",
+ "new_set_local": {
+  "correct": 199,
+  "images": 200,
+  "accuracy": 0.995,
+  "warm_median_seconds": 0.5927024376578629,
+  "by_colour": {
+   "color:blue": {
+    "correct": 167,
+    "images": 167
+   },
+   "color:green": {
+    "correct": 32,
+    "images": 33
+   }
+  },
+  "jin": {
+   "correct": 100,
+   "images": 100
+  }
+ },
+ "old_set_local": {
+  "correct": 192,
+  "images": 200,
+  "accuracy": 0.96,
+  "warm_median_seconds": 0.5426824374590069
+ },
+ "replacement_results": [
+  {
+   "removed": "藏ABQ569",
+   "added": "新AMM775",
+   "predicted": "新AMM775",
+   "correct": true,
+   "detection_confidence": 0.8221604824066162,
+   "recognition_confidence": 0.999984085559845,
+   "seconds": 0.5808
+  },
+  {
+   "removed": "晋ADK170",
+   "added": "晋M3C794",
+   "predicted": "晋M3C794",
+   "correct": true,
+   "detection_confidence": 0.742755115032196,
+   "recognition_confidence": 0.9999722838401794,
+   "seconds": 0.569
+  },
+  {
+   "removed": "晋M5Z636",
+   "added": "晋E49061",
+   "predicted": "晋E49061",
+   "correct": true,
+   "detection_confidence": 0.7623293399810791,
+   "recognition_confidence": 0.9999943971633911,
+   "seconds": 0.5702
+  },
+  {
+   "removed": "京ADG4380",
+   "added": "沪AD80505",
+   "predicted": "沪AD80505",
+   "correct": true,
+   "detection_confidence": 0.869274914264679,
+   "recognition_confidence": 0.9957588315010071,
+   "seconds": 0.5224
+  },
+  {
+   "removed": "豫AD06809",
+   "added": "浙AF11190",
+   "predicted": "浙AF11190",
+   "correct": true,
+   "detection_confidence": 0.8876349925994873,
+   "recognition_confidence": 0.9868963956832886,
+   "seconds": 0.5568
+  },
+  {
+   "removed": "皖AD89358",
+   "added": "皖AD66178",
+   "predicted": "皖AD65178",
+   "correct": false,
+   "detection_confidence": 0.6889448761940002,
+   "recognition_confidence": 0.9783797264099121,
+   "seconds": 0.5868
+  },
+  {
+   "removed": "粤BD50496",
+   "added": "粤BF24960",
+   "predicted": "粤BF24960",
+   "correct": true,
+   "detection_confidence": 0.8871316909790039,
+   "recognition_confidence": 0.9999282956123352,
+   "seconds": 0.6129
+  },
+  {
+   "removed": "苏CD06766",
+   "added": "苏AD33560",
+   "predicted": "苏AD33560",
+   "correct": true,
+   "detection_confidence": 0.8818238973617554,
+   "recognition_confidence": 0.979209303855896,
+   "seconds": 0.615
+  },
+  {
+   "removed": "青AE1203",
+   "added": "青E88831",
+   "predicted": "青E88831",
+   "correct": true,
+   "detection_confidence": 0.8191231489181519,
+   "recognition_confidence": 0.9998694062232971,
+   "seconds": 0.6543
+  }
+ ],
+ "note": "替换后的 200 张是人工挑掉的失败样本，正确率不可与 95.5% 直接比较；它衡量的是替换后的评测集。"
+}

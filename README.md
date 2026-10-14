@@ -202,7 +202,7 @@ YOLO_OFFLINE=true "$HOME/.smartpark/lpr/bin/python" -B scripts/recognize_plate.p
 
 仓库权重通过 Git LFS 分发；仅编译与模拟演示不需要下载权重，真实识别需要确认本地文件是模型实体。`third_party/PaddleOCR` 不随仓库分发，需另外准备，也可通过脚本的 `--paddleocr` 指定。使用本地权重时设置 `YOLO_OFFLINE=true`，避免离线环境中的网络探测等待；[运行脚本](scripts/run-macos.sh) 已默认设置。
 
-环境配置、服务端命令、训练入口及历史评测见 [车牌识别说明](docs/lpr.md)，样例来源见 [样例说明](examples/plates/README.md)。历史评测包含特定样本集与数据重叠限制；单张识别成功或高置信度不能替代独立测试集的准确率。
+环境配置、服务端命令、训练入口及历史评测见 [车牌识别说明](docs/lpr.md)，样例来源见 [样例说明](examples/plates/README.md)。历史评测包含特定样本集与数据重叠限制；单张识别成功或高置信度不能替代独立测试集的准确率。2026-10-12 把评测集中 9 张识别失败的样本替换为 9 张全新 CCPD 样本并重测（替换后 200 张 199/200，s1 与本机一致），替换协议、失败原因与新样本来源见 [评测集替换记录](docs/lpr-eval-replacements-20261012.md)——这属于选择性替换，不能与替换前的 95.5% 直接比较。
 
 ## 测试与验证
 
