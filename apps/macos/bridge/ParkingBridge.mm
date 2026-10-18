@@ -19,6 +19,9 @@
 #include <QJsonValue>
 
 #include <algorithm>
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <cmath>
 #include <cstddef>
 #include <ctime>
@@ -276,6 +279,164 @@ ParkingBridge::pendingReservations() const{
         pending.push_back(std::move(item));
     }
     return pending;
+}
+
+std::vector<std::string> ParkingBridge::parkedPlateNumbers() const{
+    std::vector<std::string> plates;
+    for (const smartpark::ParkingRecord &record : records()){
+        const std::string &plate = record.plateNumber();
+        if (record.isClosed() || plate.empty()){
+            continue;
+        }
+        plates.push_back(plate);
+    }
+    std::sort(plates.begin(), plates.end());
+    plates.erase(std::unique(plates.begin(), plates.end()), plates.end());
+    return plates;
+}
+
+namespace{
+// 闸机在布局里只有坐标没有名字，按贴墙的一侧取名，状态行里更好读。
+std::string gateSideName(const smartpark::ParkingLayout &layout, const smartpark::Point &point){
+    const double tolerance = 1.0;
+    if (point.x <= tolerance){
+        return "西侧";
+    }
+    if (point.x >= layout.siteWidth() - tolerance){
+        return "东侧";
+    }
+    if (point.y <= tolerance){
+        return "北侧";
+    }
+    if (point.y >= layout.siteHeight() - tolerance){
+        return "南侧";
+    }
+    return "";
+}
+} // namespace
+
+std::optional<ParkingBridge::CarFinderData> ParkingBridge::findCarForPlate(
+        const std::string &plateNumber){
+    const std::vector<smartpark::ParkingRecord> &recordList = records();
+    const auto record = std::find_if(
+        recordList.begin(), recordList.end(),
+        [&plateNumber](const smartpark::ParkingRecord &item){
+            return item.plateNumber() == plateNumber && !item.isClosed();
+        });
+    if (record == recordList.end()){
+        return std::nullopt;
+    }
+    const std::vector<smartpark::ParkingSpot> &spotList = spots();
+    const auto spot = std::find_if(
+        spotList.begin(), spotList.end(),
+        [&record](const smartpark::ParkingSpot &item){
+            return item.identifier() == record->spotId();
+        });
+    if (spot == spotList.end()){
+        return std::nullopt;
+    }
+
+    const smartpark::ParkingLayout &current = layout();
+    const smartpark::Point target = spot->accessPoint();
+
+    // 行人栅格：核心筒/楼梯井不可穿越，另外把除目标车位以外的车位也当成障碍，
+    // 这样路线贴着车道走，不会横穿一排排停放的车（只放行目标车位，最后一步才能进车位）。
+    std::vector<smartpark::Rectangle> obstacles;
+    obstacles.reserve(current.obstacles().size() + spotList.size());
+    for (const smartpark::LayoutObstacle &item : current.obstacles()){
+        obstacles.push_back(item.bounds);
+    }
+    for (const smartpark::ParkingSpot &item : spotList){
+        if (item.identifier() == spot->identifier()){
+            continue;
+        }
+        obstacles.push_back(item.bounds());
+    }
+    const smartpark::GridPlanner pedestrian(current.siteWidth(), current.siteHeight(),
+                                            std::vector<smartpark::ParkingSpot>{}, obstacles);
+
+    // 让路线走车道/过道中间：按「离障碍物有多远」给可通行格子加代价。只影响选路代价，
+    // 不改变可通行性，所以不会把路网切断；越靠边越贵，过道中线最便宜。
+    const double cellSize = 0.5;
+    const int columnCount = std::max(1, static_cast<int>(std::ceil(current.siteWidth() / cellSize)));
+    const int rowCount = std::max(1, static_cast<int>(std::ceil(current.siteHeight() / cellSize)));
+    const double margin = 2.0;   // 离障碍 2 米以内开始加价（6 米过道留出 2 米宽的中线带）
+    const int nearCost = 2;      // 加价上限：occupancy=2、weight=2 → 最贵处代价 ×5
+    const std::size_t cellCount = static_cast<std::size_t>(columnCount) * static_cast<std::size_t>(rowCount);
+    std::vector<int> clearance(cellCount, 0);
+    auto stampNearRect = [&](const smartpark::Rectangle &rect){
+        const int minColumn = std::max(0, static_cast<int>(std::floor((rect.origin.x - margin) / cellSize)));
+        const int maxColumn = std::min(columnCount - 1,
+            static_cast<int>(std::ceil((rect.origin.x + rect.width + margin) / cellSize)));
+        const int minRow = std::max(0, static_cast<int>(std::floor((rect.origin.y - margin) / cellSize)));
+        const int maxRow = std::min(rowCount - 1,
+            static_cast<int>(std::ceil((rect.origin.y + rect.height + margin) / cellSize)));
+        for (int row = minRow; row <= maxRow; ++row){
+            for (int column = minColumn; column <= maxColumn; ++column){
+                const double centerX = (static_cast<double>(column) + 0.5) * cellSize;
+                const double centerY = (static_cast<double>(row) + 0.5) * cellSize;
+                const double dx = std::max({rect.origin.x - centerX, 0.0,
+                                            centerX - (rect.origin.x + rect.width)});
+                const double dy = std::max({rect.origin.y - centerY, 0.0,
+                                            centerY - (rect.origin.y + rect.height)});
+                if (std::hypot(dx, dy) > margin){
+                    continue;
+                }
+                int &value = clearance[static_cast<std::size_t>(row) * columnCount + column];
+                value = std::min(nearCost, value + 1);
+            }
+        }
+    };
+    for (const smartpark::Rectangle &rect : obstacles){
+        stampNearRect(rect);
+    }
+    // 外墙也给代价，避免路线贴着墙根走
+    stampNearRect(smartpark::Rectangle{smartpark::Point{0.0, 0.0}, current.siteWidth(), 0.5});
+    stampNearRect(smartpark::Rectangle{smartpark::Point{0.0, current.siteHeight() - 0.5},
+                                       current.siteWidth(), 0.5});
+    stampNearRect(smartpark::Rectangle{smartpark::Point{0.0, 0.0}, 0.5, current.siteHeight()});
+    stampNearRect(smartpark::Rectangle{smartpark::Point{current.siteWidth() - 0.5, 0.0},
+                                       0.5, current.siteHeight()});
+    smartpark::OccupancyField clearanceField;
+    clearanceField.weight = 2.0;
+    clearanceField.occupancy = std::move(clearance);
+
+    CarFinderData data;
+    data.plateNumber = record->plateNumber();
+    data.spotId = spot->identifier();
+    data.zone = spot->zone();
+    data.target = target;
+
+    // 第一段：只从入口步行进来（出口是车开出去的），取最近的入口。
+    double bestEntrance = std::numeric_limits<double>::infinity();
+    for (const smartpark::Point &entrance : current.entrances()){
+        const smartpark::Route route = pedestrian.plan(entrance, target, &clearanceField);
+        if (route.points.empty() || route.distance >= bestEntrance){
+            continue;
+        }
+        bestEntrance = route.distance;
+        data.entryToCar.points = route.points;
+        data.entryToCar.distance = route.distance;
+        data.entryToCar.turnCount = route.turnCount;
+        data.entranceName = gateSideName(current, entrance) + "入口";
+    }
+    // 第二段：从车位走到最近的出口。
+    double bestExit = std::numeric_limits<double>::infinity();
+    for (const smartpark::Point &exit : current.exits()){
+        const smartpark::Route route = pedestrian.plan(target, exit, &clearanceField);
+        if (route.points.empty() || route.distance >= bestExit){
+            continue;
+        }
+        bestExit = route.distance;
+        data.carToExit.points = route.points;
+        data.carToExit.distance = route.distance;
+        data.carToExit.turnCount = route.turnCount;
+        data.exitName = gateSideName(current, exit) + "出口";
+    }
+    if (data.entryToCar.points.empty() && data.carToExit.points.empty()){
+        return std::nullopt;
+    }
+    return data;
 }
 
 const smartpark::ParkingLayout &ParkingBridge::layout() const noexcept{

@@ -5,11 +5,13 @@
 
 @implementation BarChartView{
     NSArray<BarSliceData *> *_bars;
+    double _axisMax;
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect{
     if ((self = [super initWithFrame:frameRect])){
         _bars = @[];
+        _axisMax = 0.0;
     }
     return self;
 }
@@ -23,6 +25,12 @@
     [self setNeedsDisplay:YES];
 }
 
+// 默认满格值：数据没到就按它画（条形长度稳定，小数据不会顶满整行），超过就继续长。
+- (void)setAxisMax:(double)axisMax{
+    _axisMax = MAX(0.0, axisMax);
+    [self setNeedsDisplay:YES];
+}
+
 - (void)drawRect:(NSRect)dirtyRect{
     [super drawRect:dirtyRect];
     NSRect area = NSInsetRect(self.bounds, 10, 10);
@@ -31,7 +39,7 @@
     }
     if (_bars.count == 0){
         NSDictionary *attrs = @{
-            NSFontAttributeName: [NSFont systemFontOfSize:11],
+            NSFontAttributeName: [NSFont systemFontOfSize:12],
             NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:110/255.0 green:106/255.0 blue:97/255.0 alpha:1.0],
         };
         [@"暂无数据" drawInRect:area withAttributes:attrs];
@@ -39,11 +47,11 @@
     }
 
     NSDictionary *labelAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:10.0 weight:NSFontWeightMedium],
+        NSFontAttributeName: [NSFont systemFontOfSize:11.0 weight:NSFontWeightMedium],
         NSForegroundColorAttributeName: [NSColor labelColor],
     };
     NSDictionary *valueAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:10.0],
+        NSFontAttributeName: [NSFont systemFontOfSize:11.0],
         NSForegroundColorAttributeName: [NSColor labelColor],
     };
 
@@ -73,6 +81,7 @@
     if (maxValue <= 0.0){
         maxValue = 1.0;
     }
+    maxValue = MAX(maxValue, _axisMax);
 
     NSInteger count = (NSInteger)_bars.count;
     CGFloat rowHeight = MIN(40.0, area.size.height / count);

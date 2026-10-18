@@ -11,7 +11,7 @@
 - (instancetype)initWithFrame:(NSRect)frameRect{
     if ((self = [super initWithFrame:frameRect])){
         _label = [NSTextField labelWithString:@""];
-        _label.font = [NSFont systemFontOfSize:11];
+        _label.font = [NSFont systemFontOfSize:12];
         _label.lineBreakMode = NSLineBreakByTruncatingTail;
         _label.selectable = YES;
         _label.translatesAutoresizingMaskIntoConstraints = NO;
@@ -44,7 +44,7 @@
         [self addSubview:_pill];
 
         _label = [NSTextField labelWithString:@""];
-        _label.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+        _label.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
         _label.alignment = NSTextAlignmentCenter;
         _label.translatesAutoresizingMaskIntoConstraints = NO;
         [self addSubview:_label];

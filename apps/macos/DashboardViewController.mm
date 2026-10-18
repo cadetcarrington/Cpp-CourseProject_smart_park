@@ -1,5 +1,7 @@
 #import "DashboardViewController.h"
 
+#import "ParkingMapViewController.h"
+
 #import "BarChartView.h"
 #import "DonutChartView.h"
 #import "LineChartView.h"
@@ -78,10 +80,17 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 900, 700)];
 
     _scroll = [[NSScrollView alloc] initWithFrame:root.bounds];
-    _scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    _scroll.translatesAutoresizingMaskIntoConstraints = NO;
     _scroll.hasVerticalScroller = YES;
     _scroll.drawsBackground = NO;
     [root addSubview:_scroll];
+    // 顶部对齐安全区，让出工具栏高度：否则 fullSizeContentView 下第一行 KPI 卡片会被栏裁掉。
+    [NSLayoutConstraint activateConstraints:@[
+        [_scroll.topAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.topAnchor],
+        [_scroll.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
+        [_scroll.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],
+        [_scroll.bottomAnchor constraintEqualToAnchor:root.bottomAnchor],
+    ]];
 
     _stack = [[NSStackView alloc] init];
     _stack.orientation = NSUserInterfaceLayoutOrientationVertical;
@@ -101,11 +110,6 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     content.translatesAutoresizingMaskIntoConstraints = NO;
     [content.widthAnchor constraintEqualToAnchor:_scroll.contentView.widthAnchor].active = YES;
 
-    // 标题
-    NSTextField *title = [NSTextField labelWithString:@"仪表盘"];
-    title.font = [NSFont systemFontOfSize:26 weight:NSFontWeightSemibold];
-    [_stack addArrangedSubview:title];
-
     // KPI 行
     NSStackView *kpiRow = [[NSStackView alloc] init];
     kpiRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -121,7 +125,7 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     // 摘要
     _summaryLabel = [NSTextField wrappingLabelWithString:@""];
     _summaryLabel.textColor = [NSColor secondaryLabelColor];
-    _summaryLabel.font = [NSFont systemFontOfSize:12];
+    _summaryLabel.font = [NSFont systemFontOfSize:13];
     [_stack addArrangedSubview:_summaryLabel];
     [_summaryLabel.widthAnchor constraintEqualToAnchor:_stack.widthAnchor].active = YES;
 
@@ -136,6 +140,9 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
         [self quickActionCardWithTitle:@"出库"
                                 detail:@"输入在场车牌，结算并放行"
                                 action:@selector(quickCheckOut:)],
+        [self quickActionCardWithTitle:@"反向寻车"
+                                detail:@"输入或选择在场车牌，查看步行路线"
+                                action:@selector(quickCarFinder:)],
     ]];
     [_stack addArrangedSubview:quickRow];
     [quickRow.widthAnchor constraintEqualToAnchor:_stack.widthAnchor].active = YES;
@@ -143,37 +150,46 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     // 图表：第一行（组合 Donut + 车型 Donut + 预测 Line）
     _compositionChart = [DonutChartView new];
     _typeChart = [DonutChartView new];
+    // 先把所有图表建好，再按卡片顺序排版：车位组合 → 近 7 天收入 → 分区压力
+    // → 近 7 天流量 → 车流统计 → 占用率预测（占用率预测放最后、分区压力放第三）。
     _forecastChart = [LineChartView new];
     [_forecastChart setUnit:@"%"];
+    [_forecastChart setAxisMax:100.0];  // 占用率：固定 0~100%
+    _sevenDayRevenueChart = [LineChartView new];
+    [_sevenDayRevenueChart setUnit:@" 元"];
+    [_sevenDayRevenueChart setAxisMax:100.0];  // 收入：默认 0~100 元
+    // 不设 setValueDecimals：默认 0 位小数，金额刻度取整（0.29 元这种刻度没有意义）。
+    _sevenDayFlowChart = [LineChartView new];
+    [_sevenDayFlowChart setUnit:@" 辆"];
+    [_sevenDayFlowChart setAxisMax:50.0];  // 流量：默认 0~50 辆
+    _flowChart = [BarChartView new];
+    [_flowChart setAxisMax:50.0];  // 车流统计：默认满格 50 辆
+    _zonePressureChart = [BarChartView new];
+    [_zonePressureChart setAxisMax:100.0];  // 分区压力：0~100%
+
+    // 卡片：第一行（车位组合 + 近 7 天收入）
     NSStackView *chartRow1 = [self rowWithViews:@[
         [self cardWithTitle:@"车位组合" content:_compositionChart],
         // 「车位类型」卡片暂时下线：取消下面这行注释即可恢复
         // （_typeChart 仍在 refreshMetrics 中照常计算，恢复后立即有数据）。
         // [self cardWithTitle:@"车位类型" content:_typeChart],
-        (_forecastCard = [self cardWithTitle:@"占用率预测" content:_forecastChart]),
+        [self cardWithTitle:@"近 7 天收入" content:_sevenDayRevenueChart],
     ]];
     [_stack addArrangedSubview:chartRow1];
     [chartRow1.widthAnchor constraintEqualToAnchor:_stack.widthAnchor].active = YES;
 
-    // 图表：第二行（7 天收入 + 7 天流量）
-    _sevenDayRevenueChart = [LineChartView new];
-    [_sevenDayRevenueChart setUnit:@" 元"];
-    [_sevenDayRevenueChart setValueDecimals:2];
-    _sevenDayFlowChart = [LineChartView new];
-    [_sevenDayFlowChart setUnit:@" 辆"];
+    // 卡片：第二行（分区压力 + 近 7 天流量）
     NSStackView *chartRow2 = [self rowWithViews:@[
-        [self cardWithTitle:@"近 7 天收入" content:_sevenDayRevenueChart],
+        (_zonePressureCard = [self cardWithTitle:@"分区压力" content:_zonePressureChart]),
         (_sevenDayFlowCard = [self cardWithTitle:@"近 7 天流量" content:_sevenDayFlowChart]),
     ]];
     [_stack addArrangedSubview:chartRow2];
     [chartRow2.widthAnchor constraintEqualToAnchor:_stack.widthAnchor].active = YES;
 
-    // 图表：第三行（流量 Bar + 分区压力 Bar）
-    _flowChart = [BarChartView new];
-    _zonePressureChart = [BarChartView new];
+    // 卡片：第三行（车流统计 + 占用率预测）
     NSStackView *chartRow3 = [self rowWithViews:@[
         (_flowCard = [self cardWithTitle:@"车流统计" content:_flowChart]),
-        (_zonePressureCard = [self cardWithTitle:@"分区压力" content:_zonePressureChart]),
+        (_forecastCard = [self cardWithTitle:@"占用率预测" content:_forecastChart]),
     ]];
     [_stack addArrangedSubview:chartRow3];
     [chartRow3.widthAnchor constraintEqualToAnchor:_stack.widthAnchor].active = YES;
@@ -220,10 +236,10 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     box.translatesAutoresizingMaskIntoConstraints = NO;
 
     NSTextField *value = [NSTextField labelWithString:@"0"];
-    value.font = [NSFont monospacedDigitSystemFontOfSize:22 weight:NSFontWeightSemibold];
+    value.font = [NSFont monospacedDigitSystemFontOfSize:23 weight:NSFontWeightSemibold];
     NSTextField *nameLabel = [NSTextField labelWithString:name];
     nameLabel.textColor = [NSColor labelColor];
-    nameLabel.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
+    nameLabel.font = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
 
     NSStackView *v = [[NSStackView alloc] init];
     v.orientation = NSUserInterfaceLayoutOrientationVertical;
@@ -248,7 +264,7 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     NSVisualEffectView *box = [self glassCard];
 
     NSTextField *titleLabel = [NSTextField labelWithString:title];
-    titleLabel.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
+    titleLabel.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
 
     content.translatesAutoresizingMaskIntoConstraints = NO;
 
@@ -274,10 +290,10 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     NSVisualEffectView *box = [self glassCard];
 
     NSTextField *titleLabel = [NSTextField labelWithString:title];
-    titleLabel.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
+    titleLabel.font = [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];
 
     NSTextField *detailLabel = [NSTextField wrappingLabelWithString:detail];
-    detailLabel.font = [NSFont systemFontOfSize:11];
+    detailLabel.font = [NSFont systemFontOfSize:12];
     detailLabel.textColor = [NSColor secondaryLabelColor];
 
     NSButton *button = [NSButton buttonWithTitle:@"前往" target:self action:action];
@@ -324,6 +340,52 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     [self notifyQuickAction:SmartParkPageOperations];
 }
 
+- (void)quickCarFinder:(id)sender{
+    (void)sender;
+    NSMutableArray<NSString *> *plates = [NSMutableArray array];
+    if (self.bridge != nullptr){
+        for (const std::string &plate : self.bridge->parkedPlateNumbers()){
+            [plates addObject:[NSString stringWithUTF8String:plate.c_str()]];
+        }
+    }
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"反向寻车";
+    alert.informativeText = plates.count > 0
+        ? @"选择或输入在场车牌，点「寻找」跳到车位地图查看步行路线。"
+        : @"当前没有在场车辆，也可以直接输入车牌号查询。";
+    [alert addButtonWithTitle:@"寻找"];
+    [alert addButtonWithTitle:@"取消"];
+
+    NSComboBox *combo = [[NSComboBox alloc] initWithFrame:NSMakeRect(0, 0, 280, 26)];
+    combo.placeholderString = @"输入或选择在场车牌";
+    combo.completes = YES;
+    combo.numberOfVisibleItems = 8;
+    combo.font = [NSFont systemFontOfSize:13];
+    for (NSString *plate in plates){
+        [combo addItemWithObjectValue:plate];
+    }
+    if (plates.count > 0){
+        combo.stringValue = plates.firstObject;
+    }
+    alert.accessoryView = combo;
+    [alert.window setInitialFirstResponder:combo];   // 弹出来就能直接打字
+    if ([alert runModal] != NSAlertFirstButtonReturn){
+        return;
+    }
+
+    NSString *typed = [combo.stringValue stringByTrimmingCharactersInSet:
+        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    [self notifyQuickAction:SmartParkPageMap];
+    if (typed.length > 0){
+        // 先切页（地图页此时已加载），再让地图页按车牌画路线。
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:SmartParkFindCarRequestNotification
+                          object:nil
+                        userInfo:@{SmartParkFindCarPlateKey: typed}];
+    }
+}
+
 - (NSStackView *)rowWithViews:(NSArray<NSView *> *)views{    NSStackView *row = [[NSStackView alloc] init];
     row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     row.distribution = NSStackViewDistributionFillEqually;
@@ -337,7 +399,7 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
 - (NSTextField *)insightLabel{
     NSTextField *label = [NSTextField wrappingLabelWithString:@""];
     label.textColor = [NSColor labelColor];
-    label.font = [NSFont systemFontOfSize:12];
+    label.font = [NSFont systemFontOfSize:13];
     return label;
 }
 

@@ -141,11 +141,11 @@ static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
     root.state = NSVisualEffectStateActive;
 
     NSTextField *title = [NSTextField labelWithString:@"智能停车系统"];
-    title.font = [NSFont systemFontOfSize:25 weight:NSFontWeightSemibold];
+    title.font = [NSFont systemFontOfSize:26 weight:NSFontWeightSemibold];
     title.textColor = [NSColor labelColor];
 
     NSTextField *subtitle = [NSTextField labelWithString:@"智能停车场管理系统"];
-    subtitle.font = [NSFont systemFontOfSize:12];
+    subtitle.font = [NSFont systemFontOfSize:13];
     subtitle.textColor = [NSColor secondaryLabelColor];
 
     // 登录卡片：在窗口内层再叠一层毛玻璃，形成分层的玻璃卡片质感。
@@ -158,11 +158,11 @@ static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
     card.layer.masksToBounds = YES;
 
     NSTextField *cardTitle = [NSTextField labelWithString:@"管理端登录"];
-    cardTitle.font = [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];
+    cardTitle.font = [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold];
     cardTitle.textColor = [NSColor labelColor];
 
     NSTextField *cardHint = [NSTextField labelWithString:@"使用管理员账号登录。"];
-    cardHint.font = [NSFont systemFontOfSize:11];
+    cardHint.font = [NSFont systemFontOfSize:12];
     cardHint.textColor = [NSColor secondaryLabelColor];
 
     _userNameField = [[NSTextField alloc] init];
@@ -203,7 +203,7 @@ static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
 
     _errorLabel = [NSTextField wrappingLabelWithString:@""];
     _errorLabel.textColor = [NSColor systemRedColor];
-    _errorLabel.font = [NSFont systemFontOfSize:11];
+    _errorLabel.font = [NSFont systemFontOfSize:12];
     _errorLabel.accessibilityIdentifier = @"smartpark.login.error";
     _errorLabel.hidden = YES;
 
@@ -266,7 +266,7 @@ static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
 
     NSTextField *demoHint = [NSTextField wrappingLabelWithString:
         @"账号：admin　密码：smartpark。可注册新账号。"];
-    demoHint.font = [NSFont systemFontOfSize:11];
+    demoHint.font = [NSFont systemFontOfSize:12];
     demoHint.textColor = [NSColor tertiaryLabelColor];
     demoHint.alignment = NSTextAlignmentCenter;
 

@@ -59,10 +59,6 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
 - (void)loadView{
     NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
 
-    NSTextField *title = [NSTextField labelWithString:@"车辆作业"];
-    title.font = [NSFont systemFontOfSize:26 weight:NSFontWeightSemibold];
-    title.translatesAutoresizingMaskIntoConstraints = NO;
-    [root addSubview:title];
 
     NSBox *form = [[NSBox alloc] init];
     form.boxType = NSBoxCustom;
@@ -135,7 +131,7 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
 
     _statusLabel = [NSTextField wrappingLabelWithString:@"输入车牌与车型后自动分配；出库可输入在场车牌。"];
     _statusLabel.textColor = [NSColor labelColor];
-    _statusLabel.font = [NSFont systemFontOfSize:12];
+    _statusLabel.font = [NSFont systemFontOfSize:13];
     _statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [root addSubview:_statusLabel];
 
@@ -172,7 +168,7 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
     [root addSubview:_resultCard];
 
     _resultTitle = [NSTextField labelWithString:@"办理结果"];
-    _resultTitle.font = [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];
+    _resultTitle.font = [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold];
     _resultTitle.translatesAutoresizingMaskIntoConstraints = NO;
     [_resultCard addSubview:_resultTitle];
 
@@ -184,9 +180,9 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
         NSTextField *name = [NSTextField labelWithString:key];
         name.textColor = [NSColor secondaryLabelColor];
         // 「正常字体」：正文用 14pt 常规字重，不用标题那种 semibold。
-        name.font = [NSFont systemFontOfSize:14 weight:NSFontWeightRegular];
+        name.font = [NSFont systemFontOfSize:15 weight:NSFontWeightRegular];
         NSTextField *value = [NSTextField labelWithString:@"—"];
-        value.font = [NSFont systemFontOfSize:14 weight:NSFontWeightRegular];
+        value.font = [NSFont systemFontOfSize:15 weight:NSFontWeightRegular];
         value.selectable = YES;   // 金额/时间可以直接选中复制
         value.lineBreakMode = NSLineBreakByTruncatingMiddle;
         [resultValues addObject:value];
@@ -202,7 +198,7 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
 
     _resultPhotoLabel = [NSTextField wrappingLabelWithString:@"入场车牌照片：—"];
     _resultPhotoLabel.textColor = [NSColor secondaryLabelColor];
-    _resultPhotoLabel.font = [NSFont systemFontOfSize:12];
+    _resultPhotoLabel.font = [NSFont systemFontOfSize:13];
     _resultPhotoLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [_resultCard addSubview:_resultPhotoLabel];
 
@@ -228,9 +224,8 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
     ]];
 
     [NSLayoutConstraint activateConstraints:@[
-        [title.topAnchor constraintEqualToAnchor:root.topAnchor constant:24],
-        [title.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:24],
-        [form.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:14],
+        // 标题已交给窗口工具栏（原生）显示，内容从安全区（栏下方）开始。
+        [form.topAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.topAnchor constant:18],
         [form.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:24],
         [form.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-24],
         [imageCard.topAnchor constraintEqualToAnchor:form.bottomAnchor constant:16],

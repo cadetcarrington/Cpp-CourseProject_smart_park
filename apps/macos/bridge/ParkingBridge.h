@@ -141,6 +141,28 @@ public:
     };
     std::vector<PendingReservation> pendingReservations() const;
 
+    // ---- 反向寻车 ----
+    // 输入车牌 → 车位 + 两段步行路线：最近入口 → 车位（灰色）、车位 → 最近出口（蓝色）。
+    // 行人栅格把「除目标车位以外的所有车位」都当障碍，路线只走车道/过道，不会从车上穿过。
+    struct WalkLeg{
+        std::vector<smartpark::Point> points;  // 模型坐标，单位 m
+        double distance{0.0};
+        int turnCount{0};
+    };
+    struct CarFinderData{
+        std::string plateNumber;
+        std::string spotId;
+        std::string zone;
+        smartpark::Point target{};   // 车位取车点（两段路线的连接点）
+        WalkLeg entryToCar;          // 最近入口 → 车位（地图上画灰色）
+        std::string entranceName;    // 例如「北侧入口」
+        WalkLeg carToExit;           // 车位 → 最近出口（地图上画蓝色）
+        std::string exitName;        // 例如「南侧出口」
+    };
+    std::optional<CarFinderData> findCarForPlate(const std::string &plateNumber);
+    // 当前在场（未离场）车牌，升序去重，供「输入或选择在场车牌」的候选列表。
+    std::vector<std::string> parkedPlateNumbers() const;
+
     // ---- 远程模式 ----
     // 建立到服务端的 TCP 会话并登录。返回是否已发起；登录与连接结果通过
     // onRemoteStateChanged 回调（远程模式下本 bridge 不再读写本地库）。

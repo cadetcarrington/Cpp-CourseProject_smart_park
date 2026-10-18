@@ -126,7 +126,7 @@ MapTransform mapTransform(NSRect bounds, const smartpark::ParkingLayout &layout)
 }
 
 void drawFittedLabel(NSString *text, NSRect rect, NSColor *color,
-                     CGFloat maxFontSize = 10.0){
+                     CGFloat maxFontSize = 11.0){
     NSRect inner = NSInsetRect(rect, 1.5, 1.5);
     if (inner.size.width < 5.0 || inner.size.height < 5.0 || text.length == 0){
         return;
@@ -235,10 +235,27 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
 
 @implementation ParkingMapView{
     NSTrackingArea *_trackingArea;
+    ParkingWalkRoute _walkRoute;
+    BOOL _hasWalkRoute;
 }
 
 - (BOOL)isFlipped{
     return YES;  // 原点左上、y 向下，与 Qt 场景坐标一致
+}
+
+- (void)setWalkRoute:(const ParkingWalkRoute &)route{
+    _walkRoute = route;
+    _hasWalkRoute = !route.entryPoints.empty() || !route.exitPoints.empty();
+    [self setNeedsDisplay:YES];
+}
+
+- (void)clearWalkRoute{
+    if (!_hasWalkRoute){
+        return;
+    }
+    _hasWalkRoute = NO;
+    _walkRoute = ParkingWalkRoute{};
+    [self setNeedsDisplay:YES];
 }
 
 - (void)setFrameSize:(NSSize)newSize{
@@ -366,7 +383,7 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
             [line stroke];
         }
         NSDictionary *axisAttrs = @{
-            NSFontAttributeName: [NSFont systemFontOfSize:10.0 weight:NSFontWeightMedium],
+            NSFontAttributeName: [NSFont systemFontOfSize:11.0 weight:NSFontWeightMedium],
             NSForegroundColorAttributeName: [NSColor labelColor],
         };
         for (int i = 0; i < 8; ++i){
@@ -425,11 +442,11 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
     const NSColor *entryColor = rgba(36, 92, 196, 255);
     const NSColor *exitColor = rgba(214, 108, 20, 255);
     NSDictionary *entryAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:11.0 weight:NSFontWeightSemibold],
+        NSFontAttributeName: [NSFont systemFontOfSize:12.0 weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: entryColor,
     };
     NSDictionary *exitAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:11.0 weight:NSFontWeightSemibold],
+        NSFontAttributeName: [NSFont systemFontOfSize:12.0 weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: exitColor,
     };
     auto drawGate = [&](const smartpark::Point &gate, NSString *text,
@@ -521,12 +538,32 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
                 return;
             }
             NSBezierPath *path = [NSBezierPath bezierPath];
-            [path moveToPoint:NSMakePoint(tx(route.points.front().x),
-                                          ty(route.points.front().y))];
-            for (std::size_t i = 1; i < route.points.size(); ++i){
-                [path lineToPoint:NSMakePoint(tx(route.points[i].x),
-                                              ty(route.points[i].y))];
+            NSPoint previous = NSMakePoint(tx(route.points.front().x),
+                                           ty(route.points.front().y));
+            [path moveToPoint:previous];
+            for (std::size_t i = 1; i + 1 < route.points.size(); ++i){
+                const NSPoint corner = NSMakePoint(tx(route.points[i].x), ty(route.points[i].y));
+                const NSPoint next = NSMakePoint(tx(route.points[i + 1].x), ty(route.points[i + 1].y));
+                const double incoming = std::hypot(corner.x - previous.x, corner.y - previous.y);
+                const double outgoing = std::hypot(next.x - corner.x, next.y - corner.y);
+                const double radius = std::min(12.0, std::min(incoming, outgoing) * 0.45);
+                if (radius < 1.0){
+                    [path lineToPoint:corner];
+                    previous = corner;
+                    continue;
+                }
+                const NSPoint entry = NSMakePoint(
+                    corner.x + (previous.x - corner.x) * radius / incoming,
+                    corner.y + (previous.y - corner.y) * radius / incoming);
+                const NSPoint leave = NSMakePoint(
+                    corner.x + (next.x - corner.x) * radius / outgoing,
+                    corner.y + (next.y - corner.y) * radius / outgoing);
+                [path lineToPoint:entry];
+                [path curveToPoint:leave controlPoint1:corner controlPoint2:corner];
+                previous = leave;
             }
+            [path lineToPoint:NSMakePoint(tx(route.points.back().x),
+                                          ty(route.points.back().y))];
             if (dashed){
                 const CGFloat pattern[] = {7.0, 5.0};
                 [path setLineDash:pattern count:2 phase:0.0];
@@ -552,6 +589,100 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
     [rgba(46, 50, 54, 255) setStroke];
     wall.lineWidth = 2.0;
     [wall stroke];
+
+    // 反向寻车：步行路线画在车位与墙体之上，起点打点、终点车位画环并标注编号。
+    if (_hasWalkRoute){
+        // 反向寻车：灰色 = 入口 → 车位（人走进来），蓝色 = 车位 → 出口（与已规划的进场路线同色）。
+        const NSColor *halo = [rgba(255, 255, 255, 215) colorWithAlphaComponent:0.92];
+        NSColor *entryInk = rgba(110, 116, 124, 245);
+        NSColor *exitInk = rgba(36, 92, 196, 240);
+
+        // 折线转角改成圆弧过渡（二次贝塞尔，拐角两侧各留 radius），避免生硬的直角。
+        void (^strokeLeg)(const std::vector<smartpark::Point> &, NSColor *) =
+            ^(const std::vector<smartpark::Point> &points, NSColor *ink){
+                if (points.size() < 2){
+                    return;
+                }
+                NSBezierPath *path = [NSBezierPath bezierPath];
+                void (^addRoundedCorners)(void) = ^{
+                    NSPoint previous = NSMakePoint(tx(points.front().x), ty(points.front().y));
+                    [path moveToPoint:previous];
+                    for (std::size_t i = 1; i + 1 < points.size(); ++i){
+                        const NSPoint corner = NSMakePoint(tx(points[i].x), ty(points[i].y));
+                        const NSPoint next = NSMakePoint(tx(points[i + 1].x), ty(points[i + 1].y));
+                        const double incoming = std::hypot(corner.x - previous.x, corner.y - previous.y);
+                        const double outgoing = std::hypot(next.x - corner.x, next.y - corner.y);
+                        const double radius = std::min(12.0, std::min(incoming, outgoing) * 0.45);
+                        if (radius < 1.0){
+                            [path lineToPoint:corner];
+                            previous = corner;
+                            continue;
+                        }
+                        const NSPoint entry = NSMakePoint(
+                            corner.x + (previous.x - corner.x) * radius / incoming,
+                            corner.y + (previous.y - corner.y) * radius / incoming);
+                        const NSPoint leave = NSMakePoint(
+                            corner.x + (next.x - corner.x) * radius / outgoing,
+                            corner.y + (next.y - corner.y) * radius / outgoing);
+                        [path lineToPoint:entry];
+                        [path curveToPoint:leave controlPoint1:corner controlPoint2:corner];
+                        previous = leave;
+                    }
+                    [path lineToPoint:NSMakePoint(tx(points.back().x), ty(points.back().y))];
+                };
+                addRoundedCorners();
+                path.lineJoinStyle = NSLineJoinStyleRound;
+                path.lineCapStyle = NSLineCapStyleRound;
+                [halo setStroke];
+                path.lineWidth = 8.0;
+                [path stroke];
+                [ink setStroke];
+                path.lineWidth = 3.5;
+                [path stroke];
+            };
+        strokeLeg(_walkRoute.entryPoints, entryInk);
+        strokeLeg(_walkRoute.exitPoints, exitInk);
+
+        // 入口处的起点圆点
+        if (!_walkRoute.entryPoints.empty()){
+            const NSPoint start = NSMakePoint(tx(_walkRoute.entryPoints.front().x),
+                                              ty(_walkRoute.entryPoints.front().y));
+            [entryInk setFill];
+            [[NSBezierPath bezierPathWithOvalInRect:
+                NSMakeRect(start.x - 5.5, start.y - 5.5, 11.0, 11.0)] fill];
+        }
+        // 出口处的终点方块，和虚线车位区分开
+        if (!_walkRoute.exitPoints.empty()){
+            const NSPoint finish = NSMakePoint(tx(_walkRoute.exitPoints.back().x),
+                                               ty(_walkRoute.exitPoints.back().y));
+            [exitInk setFill];
+            [[NSBezierPath bezierPathWithRect:
+                NSMakeRect(finish.x - 5.0, finish.y - 5.0, 10.0, 10.0)] fill];
+        }
+
+        // 车位取车点：圆环 + 车位编号
+        const NSPoint target = NSMakePoint(tx(_walkRoute.target.x), ty(_walkRoute.target.y));
+        NSBezierPath *ring = [NSBezierPath bezierPathWithOvalInRect:
+            NSMakeRect(target.x - 14.0, target.y - 14.0, 28.0, 28.0)];
+        [[rgba(48, 52, 56, 255) colorWithAlphaComponent:0.20] setFill];
+        [ring fill];
+        [rgba(48, 52, 56, 255) setStroke];
+        ring.lineWidth = 3.0;
+        [ring stroke];
+
+        if (!_walkRoute.spotId.empty()){
+            NSString *label = [NSString stringWithUTF8String:_walkRoute.spotId.c_str()];
+            NSDictionary *attributes = @{
+                NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:13
+                                                                     weight:NSFontWeightSemibold],
+                NSForegroundColorAttributeName: rgba(48, 52, 56, 255),
+            };
+            const NSSize size = [label sizeWithAttributes:attributes];
+            const NSPoint origin = NSMakePoint(MIN(target.x + 18.0, NSMaxX(self.bounds) - size.width - 4.0),
+                                               target.y - size.height / 2.0);
+            [label drawAtPoint:origin withAttributes:attributes];
+        }
+    }
     // 入口 / 出口的文字与墙面标记在上面统一画（drawGate，按最近的一面墙定位）。
 }
 

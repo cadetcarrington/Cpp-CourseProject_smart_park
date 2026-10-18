@@ -31,13 +31,13 @@
     NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 420, 320)];
 
     NSTextField *title = [NSTextField labelWithString:@"注册新账号"];
-    title.font = [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold];
+    title.font = [NSFont systemFontOfSize:17 weight:NSFontWeightSemibold];
     title.textColor = [NSColor labelColor];
 
     NSTextField *hint = [NSTextField wrappingLabelWithString:
         @"账号 2-24 个字符且不含空格；口令至少 6 位。"];
     hint.textColor = [NSColor secondaryLabelColor];
-    hint.font = [NSFont systemFontOfSize:11];
+    hint.font = [NSFont systemFontOfSize:12];
 
     _userNameField = [[NSTextField alloc] init];
     _userNameField.placeholderString = @"账号（2-24 个字符，不含空格）";
@@ -56,12 +56,12 @@
 
     _strengthLabel = [NSTextField wrappingLabelWithString:@""];
     _strengthLabel.textColor = [NSColor secondaryLabelColor];
-    _strengthLabel.font = [NSFont systemFontOfSize:11];
+    _strengthLabel.font = [NSFont systemFontOfSize:12];
     _strengthLabel.accessibilityIdentifier = @"smartpark.register.strength";
 
     _errorLabel = [NSTextField wrappingLabelWithString:@""];
     _errorLabel.textColor = [NSColor systemRedColor];
-    _errorLabel.font = [NSFont systemFontOfSize:11];
+    _errorLabel.font = [NSFont systemFontOfSize:12];
     _errorLabel.accessibilityIdentifier = @"smartpark.register.error";
     _errorLabel.hidden = YES;
 

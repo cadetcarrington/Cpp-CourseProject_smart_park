@@ -30,10 +30,6 @@ bool recordOverlapsRange(const smartpark::ParkingRecord &record,
 - (void)loadView{
     NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
 
-    NSTextField *title = [NSTextField labelWithString:@"停车记录"];
-    title.font = [NSFont systemFontOfSize:26 weight:NSFontWeightSemibold];
-    title.translatesAutoresizingMaskIntoConstraints = NO;
-    [root addSubview:title];
 
     _fromPicker = [self datePicker];
     _toPicker = [self datePicker];
@@ -65,14 +61,13 @@ bool recordOverlapsRange(const smartpark::ParkingRecord &record,
 
     _summaryLabel = [NSTextField wrappingLabelWithString:@""];
     _summaryLabel.textColor = [NSColor secondaryLabelColor];
-    _summaryLabel.font = [NSFont systemFontOfSize:12];
+    _summaryLabel.font = [NSFont systemFontOfSize:13];
     _summaryLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [root addSubview:_summaryLabel];
 
     [NSLayoutConstraint activateConstraints:@[
-        [title.topAnchor constraintEqualToAnchor:root.topAnchor constant:24],
-        [title.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:24],
-        [filterRow.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:14],
+        // 标题已交给窗口工具栏（原生）显示，内容从安全区（栏下方）开始。
+        [filterRow.topAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.topAnchor constant:18],
         [filterRow.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:24],
         [_table.topAnchor constraintEqualToAnchor:filterRow.bottomAnchor constant:12],
         [_table.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:24],

@@ -26,10 +26,6 @@
 - (void)loadView{
     NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
 
-    NSTextField *title = [NSTextField labelWithString:@"预约管理"];
-    title.font = [NSFont systemFontOfSize:26 weight:NSFontWeightSemibold];
-    title.translatesAutoresizingMaskIntoConstraints = NO;
-    [root addSubview:title];
 
     // 表单卡片
     NSBox *form = [[NSBox alloc] init];
@@ -95,7 +91,7 @@
 
     _policyLabel = [NSTextField wrappingLabelWithString:@""];
     _policyLabel.textColor = [NSColor secondaryLabelColor];
-    _policyLabel.font = [NSFont systemFontOfSize:12];
+    _policyLabel.font = [NSFont systemFontOfSize:13];
     _policyLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [form addSubview:_policyLabel];
 
@@ -124,14 +120,13 @@
 
     _statusLabel = [NSTextField wrappingLabelWithString:@""];
     _statusLabel.textColor = [NSColor labelColor];
-    _statusLabel.font = [NSFont systemFontOfSize:12];
+    _statusLabel.font = [NSFont systemFontOfSize:13];
     _statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [root addSubview:_statusLabel];
 
     [NSLayoutConstraint activateConstraints:@[
-        [title.topAnchor constraintEqualToAnchor:root.topAnchor constant:24],
-        [title.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:24],
-        [form.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:14],
+        // 标题已交给窗口工具栏（原生）显示，内容从安全区（栏下方）开始。
+        [form.topAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.topAnchor constant:18],
         [form.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:24],
         [form.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-24],
         [_table.topAnchor constraintEqualToAnchor:form.bottomAnchor constant:14],

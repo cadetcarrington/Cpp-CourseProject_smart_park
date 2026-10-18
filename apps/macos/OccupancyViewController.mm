@@ -37,17 +37,13 @@ NSColor *statusTint(NSString *statusText){
 - (void)loadView{
     NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
 
-    NSTextField *title = [NSTextField labelWithString:@"当前车位"];
-    title.font = [NSFont systemFontOfSize:26 weight:NSFontWeightSemibold];
-    title.translatesAutoresizingMaskIntoConstraints = NO;
-    [root addSubview:title];
 
     NSTextField *hint = [NSTextField wrappingLabelWithString:
         @"选择一条“占用”记录后，可前往“车辆作业”点击“车辆出库”；车牌和车辆类型随状态实时刷新。"
          "“已预约”表示该车位已被预约但还没锁位（延迟锁位：开始前 30 分钟才锁定），"
          "车牌列是预约车牌，“预约时段”列是订单时间段。"];
     hint.textColor = [NSColor secondaryLabelColor];
-    hint.font = [NSFont systemFontOfSize:12];
+    hint.font = [NSFont systemFontOfSize:13];
     hint.translatesAutoresizingMaskIntoConstraints = NO;
     [root addSubview:hint];
 
@@ -85,9 +81,8 @@ NSColor *statusTint(NSString *statusText){
     [root addSubview:columnsRow];
 
     [NSLayoutConstraint activateConstraints:@[
-        [title.topAnchor constraintEqualToAnchor:root.topAnchor constant:24],
-        [title.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:24],
-        [hint.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:10],
+        // 标题已交给窗口工具栏（原生）显示，内容从安全区（栏下方）开始。
+        [hint.topAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.topAnchor constant:18],
         [hint.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:24],
         [hint.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-24],
         [columnsRow.topAnchor constraintEqualToAnchor:hint.bottomAnchor constant:14],

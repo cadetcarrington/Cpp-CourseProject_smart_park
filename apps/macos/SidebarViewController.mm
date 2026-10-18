@@ -19,7 +19,7 @@
     self.view = effect;
 
     self.items = @[
-        @"仪表盘", @"车位地图", @"车辆作业", @"当前车位",
+        @"菜单", @"车位图", @"车辆出入库", @"当前车位",
         @"预约管理", @"停车记录", @"设施配置"
     ];
 
@@ -47,7 +47,7 @@
     separator.boxType = NSBoxSeparator;
 
     self.userLabel = [NSTextField wrappingLabelWithString:@""];
-    self.userLabel.font = [NSFont systemFontOfSize:11];
+    self.userLabel.font = [NSFont systemFontOfSize:12];
     self.userLabel.textColor = [NSColor secondaryLabelColor];
 
     NSButton *logoutButton = [NSButton buttonWithTitle:@"退出登录"
@@ -55,7 +55,7 @@
                                                 action:@selector(requestLogout:)];
     logoutButton.bezelStyle = NSBezelStyleRounded;
     logoutButton.controlSize = NSControlSizeSmall;
-    logoutButton.font = [NSFont systemFontOfSize:11];
+    logoutButton.font = [NSFont systemFontOfSize:12];
     logoutButton.accessibilityIdentifier = @"smartpark.logout";
 
     NSStackView *footer = [NSStackView stackViewWithViews:@[
@@ -188,7 +188,7 @@
         cell.identifier = @"NavCell";
 
         label = [NSTextField labelWithString:@""];
-        label.font = [NSFont systemFontOfSize:14];
+        label.font = [NSFont systemFontOfSize:15];
         label.textColor = [NSColor labelColor];
         label.lineBreakMode = NSLineBreakByTruncatingTail;
         label.translatesAutoresizingMaskIntoConstraints = NO;

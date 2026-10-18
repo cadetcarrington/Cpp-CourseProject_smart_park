@@ -33,11 +33,6 @@
 - (void)loadView{
     NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
 
-    NSTextField *title = [NSTextField labelWithString:@"设施配置"];
-    title.font = [NSFont systemFontOfSize:26 weight:NSFontWeightSemibold];
-    title.textColor = [NSColor labelColor];
-    title.translatesAutoresizingMaskIntoConstraints = NO;
-    [root addSubview:title];
 
     // ---- 停车场布局卡片 ----
     NSBox *layoutCard = [[NSBox alloc] init];
@@ -48,7 +43,7 @@
     [root addSubview:layoutCard];
 
     NSTextField *layoutTitle = [NSTextField labelWithString:@"停车场布局"];
-    layoutTitle.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
+    layoutTitle.font = [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];
     layoutTitle.textColor = [NSColor labelColor];
     layoutTitle.translatesAutoresizingMaskIntoConstraints = NO;
     [layoutCard addSubview:layoutTitle];
@@ -58,7 +53,7 @@
         @"region 名称 x y 行 列 车位宽 车位长 通道宽 left|right|up|down [类型]｜"
         @"obstacle x y 宽 高 [名称]。应用后按新布局重建车位数据。"];
     layoutHint.textColor = [NSColor secondaryLabelColor];
-    layoutHint.font = [NSFont systemFontOfSize:12];
+    layoutHint.font = [NSFont systemFontOfSize:13];
     layoutHint.translatesAutoresizingMaskIntoConstraints = NO;
     [layoutCard addSubview:layoutHint];
 
@@ -74,7 +69,7 @@
     _layoutView.selectable = YES;
     _layoutView.richText = NO;
     _layoutView.allowsUndo = YES;   // 原生撤销/重做：⌘Z / ⇧⌘Z
-    _layoutView.font = [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular];
+    _layoutView.font = [NSFont monospacedSystemFontOfSize:13 weight:NSFontWeightRegular];
     _layoutView.textColor = [NSColor labelColor];
     _layoutView.backgroundColor = [NSColor textBackgroundColor];
     _layoutView.textContainerInset = NSMakeSize(8.0, 8.0);
@@ -126,7 +121,7 @@
     [layoutCard addSubview:buttons];
 
     _layoutStatus = [NSTextField wrappingLabelWithString:@""];
-    _layoutStatus.font = [NSFont systemFontOfSize:12];
+    _layoutStatus.font = [NSFont systemFontOfSize:13];
     _layoutStatus.textColor = [NSColor secondaryLabelColor];
     _layoutStatus.translatesAutoresizingMaskIntoConstraints = NO;
     [layoutCard addSubview:_layoutStatus];
@@ -161,14 +156,14 @@
     [root addSubview:billingCard];
 
     NSTextField *billingTitle = [NSTextField labelWithString:@"计费规则"];
-    billingTitle.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
+    billingTitle.font = [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];
     billingTitle.textColor = [NSColor labelColor];
     billingTitle.translatesAutoresizingMaskIntoConstraints = NO;
     [billingCard addSubview:billingTitle];
 
     _billingLabel = [NSTextField wrappingLabelWithString:@""];
     _billingLabel.textColor = [NSColor secondaryLabelColor];
-    _billingLabel.font = [NSFont systemFontOfSize:12];
+    _billingLabel.font = [NSFont systemFontOfSize:13];
     _billingLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [billingCard addSubview:_billingLabel];
 
@@ -183,9 +178,8 @@
     ]];
 
     [NSLayoutConstraint activateConstraints:@[
-        [title.topAnchor constraintEqualToAnchor:root.topAnchor constant:24],
-        [title.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:24],
-        [layoutCard.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:14],
+        // 标题已交给窗口工具栏（原生）显示，内容从安全区（栏下方）开始。
+        [layoutCard.topAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.topAnchor constant:18],
         [layoutCard.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:24],
         [layoutCard.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-24],
         [billingCard.topAnchor constraintEqualToAnchor:layoutCard.bottomAnchor constant:14],

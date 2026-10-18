@@ -107,12 +107,12 @@
     centreStyle.alignment = NSTextAlignmentCenter;
     centreStyle.lineBreakMode = NSLineBreakByTruncatingTail;
     NSDictionary *titleAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:12.0 weight:NSFontWeightMedium],
+        NSFontAttributeName: [NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium],
         NSForegroundColorAttributeName: [NSColor labelColor],
         NSParagraphStyleAttributeName: centreStyle,
     };
     NSDictionary *valueAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:20.0 weight:NSFontWeightSemibold],
+        NSFontAttributeName: [NSFont systemFontOfSize:21.0 weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: [NSColor labelColor],
         NSParagraphStyleAttributeName: centreStyle,
     };
@@ -129,7 +129,7 @@
     // 图例（两列、紧凑）：苹方 + 次要色，底边对齐 area 下缘。
     const CGFloat columnWidth = area.size.width / 2.0;
     NSDictionary *legendAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:11.0],
+        NSFontAttributeName: [NSFont systemFontOfSize:12.0],
         NSForegroundColorAttributeName: [NSColor labelColor],
     };
     const CGFloat legendTop = NSMaxY(area) - legendHeight + 2.0;

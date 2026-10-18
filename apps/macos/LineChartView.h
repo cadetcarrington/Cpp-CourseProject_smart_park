@@ -16,4 +16,6 @@
 - (void)setSeries:(NSArray<LineSeriesData *> *)series;
 - (void)setUnit:(NSString *)unit;
 - (void)setValueDecimals:(NSInteger)decimals;
+// 纵轴默认上限（0 = 纯自动）：数据没到就按它铺满刻度，超过就继续往上加。
+- (void)setAxisMax:(double)axisMax;
 @end

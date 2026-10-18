@@ -14,6 +14,22 @@
 
 #include <memory>
 
+namespace{
+// 页面标题交给窗口工具栏显示（原生）：索引与侧边栏顺序一致。
+NSString *pageTitleForIndex(NSInteger index){
+    switch (index){
+        case 0: return @"仪表盘";
+        case 1: return @"车位图";
+        case 2: return @"车辆出入库";
+        case 3: return @"当前车位";
+        case 4: return @"预约管理";
+        case 5: return @"停车记录";
+        case 6: return @"设施配置";
+        default: return @"智能停车系统";
+    }
+}
+} // namespace
+
 // 内容区容器：在 Sidebar 切换时替换当前页面 VC。
 @interface PageHostViewController : NSViewController
 @property (nonatomic, strong) NSViewController *childViewController;
@@ -38,10 +54,12 @@
 
 @end
 
-@interface MainWindowController () <SidebarDelegate>
+@interface MainWindowController () <SidebarDelegate, NSToolbarDelegate>
 @property (nonatomic, strong) PageHostViewController *pageHost;
 @property (nonatomic, strong) NSArray<NSViewController *> *pages;
 @property (nonatomic, strong) SidebarViewController *sidebar;
+@property (nonatomic, strong) NSTextField *toolbarTitleLabel;
+@property (nonatomic, assign) NSInteger currentPageIndex;
 @end
 
 @implementation MainWindowController{
@@ -80,9 +98,21 @@
 
         window.title = @"SmartPark Admin";
         window.accessibilityIdentifier = @"smartpark.main.window";
-        window.titlebarAppearsTransparent = YES;
+        // 原生标题栏 + 工具栏（与「系统设置」的详情区一致）：系统标题隐藏，
+        // 改由工具栏里一个居中的标题项绘制，内容延伸到栏下面滚动。
+        window.titlebarAppearsTransparent = NO;
         window.titleVisibility = NSWindowTitleHidden;
         window.contentMinSize = NSMakeSize(960, 600);
+
+        NSToolbar *toolbar = [[NSToolbar alloc] initWithIdentifier:@"smartpark.main.toolbar"];
+        toolbar.delegate = self;
+        toolbar.displayMode = NSToolbarDisplayModeIconOnly;
+        toolbar.allowsUserCustomization = NO;
+        toolbar.autosavesConfiguration = NO;
+        if (@available(macOS 11.0, *)){
+            window.toolbarStyle = NSWindowToolbarStyleUnified;
+        }
+        window.toolbar = toolbar;
 
         NSSplitViewController *split = [[NSSplitViewController alloc] init];
         split.splitView.vertical = YES;
@@ -137,8 +167,9 @@
         window.contentViewController = split;
         [window center];
 
-        // 初始显示仪表盘。
+        // 初始显示仪表盘（标题由工具栏显示）。
         self.pageHost.childViewController = dashboard;
+        [self applyPageTitleForIndex:0];
 
         // 车辆作业/预约等操作后广播数据变更，驱动各页面刷新。
         [[NSNotificationCenter defaultCenter] addObserver:self
@@ -255,6 +286,7 @@
 - (void)sidebar:(SidebarViewController *)sidebar didSelectIndex:(NSInteger)index{
     NSViewController *vc = [self pageForIndex:index];
     self.pageHost.childViewController = vc;
+    [self applyPageTitleForIndex:index];
     if ([vc respondsToSelector:@selector(refresh)]){
         [vc performSelector:@selector(refresh)];
     }
@@ -272,6 +304,68 @@
             [vc performSelector:@selector(refresh)];
         }
     }
+}
+
+#pragma mark - 工具栏（原生）
+
+static NSString *const kSmartParkRefreshItem = @"smartpark.toolbar.refresh";
+static NSString *const kSmartParkTitleItem = @"smartpark.toolbar.title";
+
+// 页面标题同时写进窗口标题（Dock / 窗口菜单 / 辅助功能）和工具栏里的居中标题项。
+- (void)applyPageTitleForIndex:(NSInteger)index{
+    self.currentPageIndex = index;
+    NSString *title = pageTitleForIndex(index);
+    self.window.title = title;
+    if (self.toolbarTitleLabel != nil){
+        self.toolbarTitleLabel.stringValue = title;
+    }
+}
+
+- (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(NSToolbar *)toolbar{
+    return @[ kSmartParkTitleItem, kSmartParkRefreshItem, NSToolbarFlexibleSpaceItemIdentifier ];
+}
+
+- (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(NSToolbar *)toolbar{
+    return @[ NSToolbarFlexibleSpaceItemIdentifier, kSmartParkTitleItem,
+              NSToolbarFlexibleSpaceItemIdentifier, kSmartParkRefreshItem ];
+}
+
+- (NSToolbarItem *)toolbar:(NSToolbar *)toolbar
+     itemForItemIdentifier:(NSToolbarItemIdentifier)itemIdentifier
+     willBeInsertedIntoToolbar:(BOOL)flag{
+    if ([itemIdentifier isEqualToString:kSmartParkTitleItem]){
+        NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:itemIdentifier];
+        if (self.toolbarTitleLabel == nil){
+            NSTextField *label = [NSTextField labelWithString:pageTitleForIndex(self.currentPageIndex)];
+            label.font = [NSFont systemFontOfSize:16.0 weight:NSFontWeightSemibold];
+            label.textColor = [NSColor labelColor];
+            label.alignment = NSTextAlignmentCenter;
+            label.accessibilityIdentifier = @"smartpark.toolbar.title";
+            self.toolbarTitleLabel = label;
+        }
+        item.view = self.toolbarTitleLabel;
+        item.label = @"标题";
+        item.paletteLabel = @"标题";
+        return item;
+    }
+    if (![itemIdentifier isEqualToString:kSmartParkRefreshItem]){
+        return nil;
+    }
+    NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:itemIdentifier];
+    item.label = @"刷新";
+    item.paletteLabel = @"刷新";
+    item.toolTip = @"重新加载当前页面的数据";
+    item.target = self;
+    item.action = @selector(refreshToolbarItem:);
+    if (@available(macOS 11.0, *)){
+        item.image = [NSImage imageWithSystemSymbolName:@"arrow.clockwise"
+                              accessibilityDescription:@"刷新"];
+    }
+    return item;
+}
+
+- (void)refreshToolbarItem:(id)sender{
+    [self refreshVisiblePage];
 }
 
 @end
