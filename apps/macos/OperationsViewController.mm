@@ -9,6 +9,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include <cstdlib>
+#include <QObject>
 
 // 识别之后的自动动作：入库识别自动入场、出库识别自动出场（不再要求再点一次按钮）。
 typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
@@ -17,11 +18,43 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
     SmartParkRecognitionIntentExit,
 };
 
+namespace{
+// 出库后照片改名要用这笔停车记录里的时间：system_clock → epoch 秒 → NSDate。
+NSDate *epochDate(smartpark::ParkingRecord::TimePoint time){
+    return [NSDate dateWithTimeIntervalSince1970:
+        (NSTimeInterval)smartpark::ParkingRecord::Clock::to_time_t(time)];
+}
+
+// 置信度展示：整图兜底识别没有检测这一步，detection_confidence 是 null，
+// 显示「—」比「0.0%」诚实，也不会让人以为检测真的只有百分之零。
+NSString *confidenceText(NSNumber *value){
+    if (![value isKindOfClass:[NSNumber class]]){
+        return @"—";
+    }
+    return [NSString stringWithFormat:@"%.1f%%", value.doubleValue * 100.0];
+}
+
+// 识别程序的英文报错直接甩给用户不好懂：常见的「没检测到车牌」翻成下一步该怎么做。
+NSString *recognitionFailureText(NSString *error){
+    NSString *text = [error stringByTrimmingCharactersInSet:
+        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([text containsString:@"No license plate detected"]){
+        return @"没有识别到车牌：请换一张车牌清楚、完整入镜的照片。";
+    }
+    return text.length > 0 ? text : @"识别程序异常退出。";
+}
+} // namespace
+
 @implementation OperationsViewController{
+    BOOL _allocationPending;
+    std::unique_ptr<QObject> _allocationContext;
     NSTextField *_plateField;
     NSPopUpButton *_typePopup;
     NSPopUpButton *_strategyPopup;
     NSTextField *_statusLabel;
+    // 评分明细：默认收起，点「评分明细」展开，避免成功反馈一上来就是一串数字。
+    NSTextField *_scoreDetailLabel;
+    NSButton *_scoreDetailToggle;
     NSImageView *_imageView;
     NSTask *_recognitionTask;
     NSTask *_localRecognitionService;
@@ -36,6 +69,8 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
     NSString *_recognitionImagePath;
     // 本次入场刚归档的照片：只交给紧接着的那次 allocate:，手工入场不会沿用旧照片。
     NSString *_pendingEntryPhotoPath;
+    // 识别并出场刚归档的那张：出库失败（车牌对不上/不在场）时删掉，别留在在场目录里混淆。
+    NSString *_pendingExitPhotoPath;
     // 右下角结果面板：出库后显示车辆信息 / 停车时间 / 应付款。
     NSBox *_resultCard;
     NSTextField *_resultTitle;
@@ -77,7 +112,7 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
     _strategyPopup = [[NSPopUpButton alloc] init];
     [_strategyPopup addItemsWithTitles:@[@"加权代价（推荐）", @"最近车位"]];
 
-    NSButton *allocateButton = [NSButton buttonWithTitle:@"自动分配车位" target:self action:@selector(allocate:)];
+    NSButton *allocateButton = [NSButton buttonWithTitle:@"办理入场并分配车位" target:self action:@selector(allocate:)];
     // 识别即办理：识别成功直接入场/出场，不用再点一次按钮。
     NSButton *recognizeEnterButton = [NSButton buttonWithTitle:@"识别并入场"
                                                         target:self
@@ -134,6 +169,23 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
     _statusLabel.font = [NSFont systemFontOfSize:13];
     _statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [root addSubview:_statusLabel];
+
+    _scoreDetailToggle = [NSButton buttonWithTitle:@"评分明细" target:self action:@selector(toggleScoreDetail:)];
+    _scoreDetailToggle.bezelStyle = NSBezelStyleInline;
+    _scoreDetailToggle.font = [NSFont systemFontOfSize:12];
+    _scoreDetailToggle.imagePosition = NSImageLeading;
+    _scoreDetailToggle.image = [NSImage imageWithSystemSymbolName:@"chevron.right"
+                                          accessibilityDescription:nil];
+    _scoreDetailToggle.translatesAutoresizingMaskIntoConstraints = NO;
+    _scoreDetailToggle.hidden = YES;
+    [root addSubview:_scoreDetailToggle];
+
+    _scoreDetailLabel = [NSTextField wrappingLabelWithString:@""];
+    _scoreDetailLabel.textColor = [NSColor secondaryLabelColor];
+    _scoreDetailLabel.font = [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightRegular];
+    _scoreDetailLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    _scoreDetailLabel.hidden = YES;
+    [root addSubview:_scoreDetailLabel];
 
     // 车牌预览
     NSVisualEffectView *imageCard = [[NSVisualEffectView alloc] init];
@@ -196,7 +248,7 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
     resultGrid.translatesAutoresizingMaskIntoConstraints = NO;
     [_resultCard addSubview:resultGrid];
 
-    _resultPhotoLabel = [NSTextField wrappingLabelWithString:@"入场车牌照片：—"];
+    _resultPhotoLabel = [NSTextField wrappingLabelWithString:@"车牌照片：—"];
     _resultPhotoLabel.textColor = [NSColor secondaryLabelColor];
     _resultPhotoLabel.font = [NSFont systemFontOfSize:13];
     _resultPhotoLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -240,6 +292,11 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
         [_statusLabel.topAnchor constraintEqualToAnchor:imageCard.bottomAnchor constant:12],
         [_statusLabel.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:24],
         [_statusLabel.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-24],
+        [_scoreDetailToggle.topAnchor constraintEqualToAnchor:_statusLabel.bottomAnchor constant:6],
+        [_scoreDetailToggle.leadingAnchor constraintEqualToAnchor:_statusLabel.leadingAnchor],
+        [_scoreDetailLabel.topAnchor constraintEqualToAnchor:_scoreDetailToggle.bottomAnchor constant:4],
+        [_scoreDetailLabel.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:24],
+        [_scoreDetailLabel.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-24],
     ]];
 
     self.view = root;
@@ -285,26 +342,58 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
         _statusLabel.stringValue = @"自动分配前请输入车辆车牌。";
         return;
     }
+    if (_allocationPending){
+        _statusLabel.stringValue = @"正在规划上一辆车的路线，请稍候。";
+        return;
+    }
     self.bridge->setStrategy(_strategyPopup.indexOfSelectedItem == 1
         ? smartpark::AllocationStrategy::Nearest
         : smartpark::AllocationStrategy::WeightedCost);
-    auto result = self.bridge->enterVehicle(plate.UTF8String, [self selectedType]);
+    const auto type = [self selectedType];
+    NSString *entryPhoto = _pendingEntryPhotoPath;
+    _pendingEntryPhotoPath = nil;
+    if (!_allocationContext){
+        _allocationContext = std::make_unique<QObject>();
+    }
+    _allocationPending = YES;
+    _statusLabel.stringValue = @"正在规划入场路线…";
+    [self setScoreDetail:@"" collapsed:YES];
+    __weak OperationsViewController *weakSelf = self;
+    self.bridge->enterVehicleAsync(plate.UTF8String, type, _allocationContext.get(),
+        [weakSelf, plate, type, entryPhoto](smartpark::AsyncEntryOutcome outcome){
+        OperationsViewController *controller = weakSelf;
+        if (controller){
+            [controller completeAllocation:outcome plate:plate type:type photo:entryPhoto];
+        }
+    });
+}
+
+- (void)completeAllocation:(const smartpark::AsyncEntryOutcome &)outcome
+                     plate:(NSString *)plate
+                      type:(smartpark::VehicleType)type
+                     photo:(NSString *)entryPhoto{
+    _allocationPending = NO;
+    const auto &result = outcome.allocation;
     if (!result){
-        _statusLabel.stringValue = @"无可用车位：当前停车场已满或没有可达车位。";
+        _statusLabel.stringValue = smartpark_ui::toNSString(outcome.error);
+        [self setScoreDetail:@"" collapsed:YES];
         return;
     }
     _statusLabel.stringValue = [NSString stringWithFormat:
-        @"已分配车位：%@ | 入口 %.1f m | 出口 %.1f m | 拥堵 %d | 分区压力 %.1f | 转向 %d | 类型成本 %.1f | 综合评分 %.1f",
-        smartpark_ui::toNSString(result->spotId), result->entryRoute.distance, result->exitRoute.distance,
+        @"入场成功：%@ → 车位 %@｜行驶 %.1f 米、%d 个转弯",
+        plate, smartpark_ui::toNSString(result->spotId),
+        result->entryRoute.distance, result->entryRoute.turnCount];
+    [self setScoreDetail:[NSString stringWithFormat:
+        @"入口 %.1f m｜出口 %.1f m｜周边占用 %d 个｜分区压力 %.1f｜转向 %d 次｜类型成本 %.1f｜综合评分 %.1f",
+        result->entryRoute.distance, result->exitRoute.distance,
         result->nearbyOccupiedSpots, result->breakdown.zonePressureCost,
         result->entryRoute.turnCount + result->exitRoute.turnCount,
-        result->breakdown.typePenalty, result->score];
+        result->breakdown.typePenalty, result->score]
+                 collapsed:YES];
     // 这次分配的路线交给车位图：地图上直接画出进场/出场路线。
     self.bridge->setPlannedRoute(result->entryRoute, result->exitRoute);
     // 右下角结果面板：车辆信息 + 入场时间 + 留档照片（出库时按车牌取回这张）。
     // 照片只认本次识别刚归档的那张；手工输入车牌入场时没有照片，如实显示「—」。
-    NSString *entryPhoto = _pendingEntryPhotoPath;
-    _pendingEntryPhotoPath = nil;
     [self showResult:@"入场办理"
               values:@[plate,
                        smartpark_ui::toNSString(
@@ -315,6 +404,22 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
                        @"—", @"—", @"—"]
                photo:entryPhoto];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SmartParkDataChanged" object:nil];
+}
+
+// 成功反馈两段式：主行说清「谁、哪个车位、多远」，评分明细默认折叠。
+- (void)setScoreDetail:(NSString *)detail collapsed:(BOOL)collapsed{
+    const BOOL hasDetail = detail.length > 0;
+    _scoreDetailLabel.stringValue = detail ?: @"";
+    _scoreDetailToggle.hidden = !hasDetail;
+    _scoreDetailLabel.hidden = !hasDetail || collapsed;
+    const BOOL isCollapsed = !hasDetail || collapsed;
+    _scoreDetailToggle.title = isCollapsed ? @"评分明细" : @"收起明细";
+    _scoreDetailToggle.image = [NSImage imageWithSystemSymbolName:(isCollapsed ? @"chevron.right" : @"chevron.down")
+                                          accessibilityDescription:nil];
+}
+
+- (void)toggleScoreDetail:(id)sender{
+    [self setScoreDetail:_scoreDetailLabel.stringValue collapsed:!_scoreDetailLabel.hidden];
 }
 
 - (void)updateType:(id)sender{
@@ -339,6 +444,7 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
 }
 
 - (void)release:(id)sender{
+    [self setScoreDetail:@"" collapsed:YES];
     NSString *plate = [self plate];
     if (plate.length == 0){
         _statusLabel.stringValue = @"请先在“当前车位”选中占用车辆，或输入在场车牌。";
@@ -351,6 +457,11 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
         _statusLabel.stringValue = reason.length > 0
             ? [NSString stringWithFormat:@"出库未完成：%@", reason]
             : [NSString stringWithFormat:@"车牌 %@ 不存在可离场的在场记录。", plate];
+        // 识别并出场时先归档了出库照片；车没走成就把这张删掉，别污染在场目录。
+        if (_pendingExitPhotoPath.length > 0){
+            [[NSFileManager defaultManager] removeItemAtPath:_pendingExitPhotoPath error:nil];
+            _pendingExitPhotoPath = nil;
+        }
         return;
     }
     // 车已离场，之前那条进场路线不再代表任何东西，别留在地图上。
@@ -362,14 +473,33 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
         smartpark_ui::toNSString(record->spotId()),
         (long long)duration.count(), record->fee()];
 
-    // 入库时留档的车牌照片：出库时取回同车牌最近一张，放在预览区做人工核对。
-    NSString *entryPhoto = [PlatePhotoArchive latestPhotoForPlate:
-        smartpark_ui::toNSString(record->plateNumber())];
-    if (entryPhoto.length > 0){
+    // 出库办完：这次在场的车牌照片从 examples/platephoto/ 挪进 history/，
+    // 文件名换成「车牌_入库时间_出库时间」；预览和结果面板仍显示入场那张。
+    NSString *plateText = smartpark_ui::toNSString(record->plateNumber());
+    const auto exitPoint = record->exitTime() ? *record->exitTime()
+                                              : smartpark::ParkingRecord::Clock::now();
+    NSError *historyError = nil;
+    NSArray<NSString *> *movedPhotos = [PlatePhotoArchive movePhotosForPlate:plateText
+                                                                  entryTime:epochDate(record->entryTime())
+                                                                   exitTime:epochDate(exitPoint)
+                                                                      error:&historyError];
+    NSString *entryPhoto = movedPhotos.firstObject;
+    _pendingExitPhotoPath = nil;
+    if (movedPhotos.count > 0){
+        _statusLabel.stringValue = [NSString stringWithFormat:
+            @"%@ | 车牌照片已移入 history（共 %lu 张）：%@",
+            _statusLabel.stringValue, (unsigned long)movedPhotos.count,
+            entryPhoto.lastPathComponent];
         NSImage *image = [[NSImage alloc] initWithContentsOfFile:entryPhoto];
         if (image != nil){
             _imageView.image = image;
         }
+    } else if (historyError != nil){
+        // 手工入场本来就没有照片，不算错误；真挪失败了才提示。
+        entryPhoto = [PlatePhotoArchive latestPhotoForPlate:plateText];
+        _statusLabel.stringValue = [NSString stringWithFormat:
+            @"%@ | 车牌照片挪入 history 失败：%@",
+            _statusLabel.stringValue, historyError.localizedDescription ?: @"未知原因"];
     }
     [self showResult:@"出库结算"
               values:@[smartpark_ui::toNSString(record->plateNumber()),
@@ -407,12 +537,10 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
         _resultValueLabels[index].stringValue = index < values.count ? values[index] : @"—";
     }
     _lastEntryPhotoPath = photoPath.length > 0 ? [photoPath copy] : nil;
-    NSString *directory = [PlatePhotoArchive directoryWithError:nil] ?: @"—";
+    // 面板只显示文件名；完整路径交给「在访达中显示」按钮，避免长绝对路径把布局撑乱。
     _resultPhotoLabel.stringValue = photoPath.length > 0
-        ? [NSString stringWithFormat:@"入场车牌照片：%@\n照片目录：%@",
-            photoPath.lastPathComponent, directory]
-        : [NSString stringWithFormat:@"入场车牌照片：—（手工入场无照片）\n照片目录：%@",
-            directory];
+        ? [NSString stringWithFormat:@"车牌照片：%@", photoPath.lastPathComponent]
+        : @"车牌照片：—（手工入场无照片）";
     _revealPhotoButton.enabled = photoPath.length > 0;
 }
 
@@ -481,7 +609,26 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
     }];
 }
 
-// 识别成功后按意图直接办理；照片先归档再入场，出库时才能按车牌取回核对。
+// 绿牌即新能源：识别脚本给出 new_energy/color 时自动把车辆类型切成电动车，
+// 省一次手选；用户随后仍可在下拉框里改回其它类型。返回提示语，没改动时返回 nil。
+- (NSString *)applyNewEnergyVehicleTypeForResult:(NSDictionary *)result{
+    NSNumber *newEnergy = result[@"new_energy"];
+    NSString *color = result[@"color"];
+    const BOOL flagged = [newEnergy isKindOfClass:[NSNumber class]] && newEnergy.boolValue;
+    const BOOL green = [color isKindOfClass:[NSString class]] && [color isEqualToString:@"green"];
+    if (!flagged && !green){
+        return nil;
+    }
+    const NSInteger target = smartpark_ui::vehicleTypeIndex(smartpark::VehicleType::Electric);
+    if (target < 0 || target >= (NSInteger)_typePopup.numberOfItems
+        || _typePopup.indexOfSelectedItem == target){
+        return nil;
+    }
+    [_typePopup selectItemAtIndex:target];
+    return @"识别为绿色新能源号牌，车辆类型已自动设为电动车";
+}
+
+// 识别成功后按意图直接办理；出入库都先归档照片，出库时按车牌把这次停车的照片一起挪进 history。
 - (void)performRecognitionIntentWithPlate:(NSString *)plate
                                    result:(NSDictionary *)result{
     const SmartParkRecognitionIntent intent = _recognitionIntent;
@@ -489,9 +636,19 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
     _plateField.stringValue = plate;
 
     if (intent == SmartParkRecognitionIntentExit){
+        // 出库也留一张：先归档成在场照片，release: 里再把它和入场那张一起挪进 history。
+        NSString *exitSource = result[@"crop_image"];
+        if (![exitSource isKindOfClass:[NSString class]] || exitSource.length == 0){
+            exitSource = _recognitionImagePath;
+        }
+        NSString *archivedExit = [PlatePhotoArchive archiveImageAtPath:exitSource plate:plate error:NULL];
+        _pendingExitPhotoPath = archivedExit.length > 0 ? archivedExit : nil;
         [self release:nil];
         return;
     }
+
+    // 先定车辆类型再办理：allocate: 的结果面板会显示刚设好的类型。
+    NSString *typeNote = [self applyNewEnergyVehicleTypeForResult:result];
 
     // 优先归档检测器裁出的车牌图（就是喂给识别模型的那张），缺了退回原图。
     NSString *source = result[@"crop_image"];
@@ -515,6 +672,10 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
         _statusLabel.stringValue = [NSString stringWithFormat:
             @"%@ | 识别车牌 %@，照片已留档：%@",
             _statusLabel.stringValue, plate, archived.lastPathComponent];
+    }
+    if (typeNote.length > 0){
+        _statusLabel.stringValue = [NSString stringWithFormat:@"%@ | %@",
+            _statusLabel.stringValue, typeNote];
     }
 }
 
@@ -739,7 +900,7 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
 
 - (void)handleRecognitionOutput:(NSString *)output error:(NSString *)error exitCode:(int)exitCode{
     if (exitCode != 0){
-        _statusLabel.stringValue = error.length > 0 ? error : @"识别程序异常退出。";
+        _statusLabel.stringValue = recognitionFailureText(error);
         return;
     }
     NSData *data = [output dataUsingEncoding:NSUTF8StringEncoding];
@@ -778,8 +939,8 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
         const BOOL exiting = _recognitionIntent == SmartParkRecognitionIntentExit;
         NSString *intentText = exiting ? @"出库" : @"入场";
         _statusLabel.stringValue = [NSString stringWithFormat:
-            @"识别到 %@（检测 %.1f%% · 识别 %.1f%%），按识别结果办理中…",
-            plate, detV * 100.0, recV * 100.0];
+            @"识别到 %@（检测 %@ · 识别 %@），按识别结果办理中…",
+            plate, confidenceText(det), confidenceText(rec)];
 
         // 判据只取「识别置信度」（车牌读对没读对），不把检测置信度算进来：
         // 样张上检测常常只有 0.8 出头而识别是 0.99，用 min() 会把好读的也拦下来。
@@ -789,14 +950,20 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
             return;
         }
 
+        NSNumber *alertNewEnergy = result[@"new_energy"];
+        NSString *alertColor = result[@"color"];
+        const BOOL alertGreen = ([alertNewEnergy isKindOfClass:[NSNumber class]]
+                                 && alertNewEnergy.boolValue)
+            || ([alertColor isKindOfClass:[NSString class]] && [alertColor isEqualToString:@"green"]);
         NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = [NSString stringWithFormat:
             @"识别置信度偏低（低于 %.0f%%）", threshold * 100.0];
         alert.informativeText = [NSString stringWithFormat:
-            @"识别到车牌：%@\n检测置信度 %.1f%% · 识别置信度 %.1f%%%@\n"
-             "确认后按该车牌办理%@。",
-            plate, detV * 100.0, recV * 100.0,
-            valid ? @"" : @"（识别结果被标记为不可靠）", intentText];
+            @"识别到车牌：%@\n检测置信度 %@ · 识别置信度 %@%@\n"
+             "确认后按该车牌办理%@%@。",
+            plate, confidenceText(det), confidenceText(rec),
+            valid ? @"" : @"（识别结果被标记为不可靠）", intentText,
+            alertGreen ? @"，并记为电动车（绿色新能源号牌）" : @""];
         [alert addButtonWithTitle:[NSString stringWithFormat:@"按 %@ 办理%@", plate, intentText]];
         [alert addButtonWithTitle:@"取消"];
         [alert beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse response){
@@ -816,8 +983,8 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"识别到候选车牌";
     alert.informativeText = [NSString stringWithFormat:
-        @"车牌：%@\n检测置信度 %.1f%% · 识别置信度 %.1f%%\n是否采用该车牌？",
-        plate, detV * 100.0, recV * 100.0];
+        @"车牌：%@\n检测置信度 %@ · 识别置信度 %@\n是否采用该车牌？",
+        plate, confidenceText(det), confidenceText(rec)];
     [alert addButtonWithTitle:@"采用"];
     [alert addButtonWithTitle:@"取消"];
     [alert beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse response){
@@ -827,6 +994,34 @@ typedef NS_ENUM(NSInteger, SmartParkRecognitionIntent){
                 @"已采用候选车牌 %@，请核对后再操作入场或出场。", plate];
         }
     }];
+}
+
+#pragma mark - 主菜单「操作」入口
+
+// 聚焦车牌输入框并全选，键盘直接可输入。
+- (void)focusPlateField{
+    if (_plateField == nil){
+        return;
+    }
+    [self.view.window makeFirstResponder:_plateField];
+    [_plateField selectText:nil];
+}
+
+- (void)beginCheckIn{
+    _statusLabel.stringValue =
+        @"入库：输入车牌后点「办理入场并分配车位」；有照片可用「识别并入场」直接办理。";
+    [self focusPlateField];
+}
+
+- (void)beginCheckOutWithPlate:(NSString *)plate{
+    if (plate.length > 0){
+        // 复用车牌输入框，出库仍走原来的「车辆出库」流程（结算、放行、照片改名）。
+        _plateField.stringValue = plate;
+    }
+    _statusLabel.stringValue = plate.length > 0
+        ? [NSString stringWithFormat:@"出库：已填好 %@，核对后点「车辆出库」结算并放行。", plate]
+        : @"出库：输入在场车牌后点「车辆出库」结算并放行。";
+    [self focusPlateField];
 }
 
 // 识别置信度确认阈值（0~1）：低于它才弹一次人工确认。默认 0.85；

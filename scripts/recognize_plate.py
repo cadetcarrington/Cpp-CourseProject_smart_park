@@ -29,6 +29,12 @@ BBOX_DETECTOR = ROOT / "model/weights/smartpark_plate_yolo11m_best.pt"
 BALANCED_RECOGNIZER = ROOT / "model/weights/smartpark_plate_ppocrv5_bal.pdparams"
 BASE_RECOGNIZER = ROOT / "model/weights/smartpark_plate_ppocrv5_best.pdparams"
 CROP_MODES = ("auto", "quad", "bbox")
+# 整图兜底：检测器一个框都不给时，如果输入本来就是一张裁好的车牌图（管理端留档的
+# 裁剪图、扫描件等），就把整张图当裁剪图交给识别器。只认格式合法且置信度过线的结果，
+# 免得把随便一张图里的文字当成车牌。
+WHOLE_IMAGE_MIN_CONFIDENCE = 0.9
+WHOLE_IMAGE_ASPECT = (1.8, 8.0)
+WHOLE_IMAGE_MIN_HEIGHT = 32
 
 
 def default_detector() -> Path:
@@ -64,6 +70,18 @@ def save_crop_preview(crop, image: Path, recipe) -> str | None:
     except OSError:
         return None
     return str(target)
+
+
+def plate_like_frame(frame) -> bool:
+    """整张图看起来像一截车牌吗？检测器没给框时用它决定要不要整图兜底。
+
+    车牌裁剪图的宽高比大约 2.6–3.5（蓝牌 440×140、新能源 480×140），再留一点余量；
+    普通照片（4:3、16:9、竖拍）都落在这个区间外，不会被误当成车牌。
+    """
+    height, width = frame.shape[0], frame.shape[1]
+    if height < WHOLE_IMAGE_MIN_HEIGHT:
+        return False
+    return WHOLE_IMAGE_ASPECT[0] <= width / height <= WHOLE_IMAGE_ASPECT[1]
 
 
 def parse_paddle_result(content: str, image: Path) -> tuple[str, float]:
@@ -225,6 +243,54 @@ def pick_flipped(first: tuple[str, float], second: tuple[str, float]) -> int:
     return 0 if first[1] >= second[1] else 1
 
 
+def result_payload(plate, detection_confidence, recognition_confidence, bounds, crop, mode,
+                   image: Path, recipe, quad_source, flip_checked) -> dict:
+    """组装单图识别结果：普通路径与整图兜底共用，保证输出字段一致。"""
+    import plate_color
+
+    color = plate_color.classify(crop, plate)
+    return {
+        "plate": plate,
+        "detection_confidence": detection_confidence,
+        "recognition_confidence": recognition_confidence,
+        "bounding_box": list(bounds),
+        "valid": valid_plate(plate),
+        "crop": mode,
+        "crop_image": save_crop_preview(crop, image, recipe),
+        "quad_source": quad_source,
+        "flip_checked": flip_checked,
+        "recipe": f"{recipe.mode}:h{recipe.height}:w{recipe.min_width}-{recipe.max_width}:e{recipe.expand}",
+        # 底色与新能源标记：管理端据此把绿色号牌自动记为电动车。
+        "color": color["color"],
+        "color_confidence": color["color_confidence"],
+        "new_energy": color["new_energy"],
+    }
+
+
+def recognize_whole_image(frame, image: Path, recipe, context: dict) -> dict:
+    """检测不到车牌时的兜底：输入本来就是一张裁好的车牌图。
+
+    管理端会把识别用的裁剪图留档（examples/platephoto/），拿回这种图再识别时车牌
+    铺满画面，按「大图里找车牌」训练的检测器常常一个框都不给。这里把整张图当作
+    裁剪图送去识别，只有格式合法、置信度不低于 WHOLE_IMAGE_MIN_CONFIDENCE 才认，
+    免得把普通照片里的文字误当车牌。
+    """
+    if not plate_like_frame(frame):
+        raise ValueError("No license plate detected")
+    with tempfile.TemporaryDirectory(prefix="smartpark-lpr-") as directory:
+        context["directory"] = Path(directory)
+        plate, recognition_confidence = recognize_crop(frame, "plate", context)
+    if not valid_plate(plate) or recognition_confidence < WHOLE_IMAGE_MIN_CONFIDENCE:
+        raise ValueError(
+            "No license plate detected（整图识别得到「%s」/%.3f，格式或置信度不达标）"
+            % (plate, recognition_confidence))
+    height, width = frame.shape[0], frame.shape[1]
+    # 没有检测这一步：检测置信度留空（前端显示「—」），裁剪方式记为 whole。
+    return result_payload(plate, None, recognition_confidence,
+                          [0, 0, width - 1, height - 1], frame, "whole",
+                          image, recipe, "none", False)
+
+
 def recognize(args: argparse.Namespace, *, detector_model=None, crop_recognizer=None) -> dict:
     from ultralytics import YOLO
     import cv2
@@ -254,11 +320,14 @@ def recognize(args: argparse.Namespace, *, detector_model=None, crop_recognizer=
     frame = cv2.imread(str(image), cv2.IMREAD_COLOR)
     if frame is None:
         raise ValueError(f"Cannot decode image: {image}")
+    context = {"directory": None, "recipe": recipe, "ocr_python": ocr_python, "paddleocr": paddleocr,
+               "config": config, "recognizer": recognizer, "dictionary": dictionary,
+               "crop_recognizer": crop_recognizer}
     model = detector_model if detector_model is not None else YOLO(str(detector))
     detection = model.predict(frame, imgsz=960, conf=args.confidence,
                               device="cpu", verbose=False)[0]
     if len(detection.boxes) == 0:
-        raise ValueError("No license plate detected")
+        return recognize_whole_image(frame, image, recipe, context)
     best = int(detection.boxes.conf.argmax().item())
     confidence = float(detection.boxes.conf[best].item())
     bounds = plate_geometry.clip_bounds(
@@ -281,9 +350,6 @@ def recognize(args: argparse.Namespace, *, detector_model=None, crop_recognizer=
     else:
         crop = plate_geometry.crop_box(frame, bounds)
 
-    context = {"directory": None, "recipe": recipe, "ocr_python": ocr_python, "paddleocr": paddleocr,
-               "config": config, "recognizer": recognizer, "dictionary": dictionary,
-               "crop_recognizer": crop_recognizer}
     flip_checked = False
     with tempfile.TemporaryDirectory(prefix="smartpark-lpr-") as directory:
         context["directory"] = Path(directory)
@@ -296,18 +362,8 @@ def recognize(args: argparse.Namespace, *, detector_model=None, crop_recognizer=
                 plate, recognition_confidence = other
                 crop = flipped
 
-    return {
-        "plate": plate,
-        "detection_confidence": confidence,
-        "recognition_confidence": recognition_confidence,
-        "bounding_box": list(bounds),
-        "valid": valid_plate(plate),
-        "crop": mode,
-        "crop_image": save_crop_preview(crop, image, recipe),
-        "quad_source": quad_source,
-        "flip_checked": flip_checked,
-        "recipe": f"{recipe.mode}:h{recipe.height}:w{recipe.min_width}-{recipe.max_width}:e{recipe.expand}",
-    }
+    return result_payload(plate, confidence, recognition_confidence, bounds, crop, mode,
+                          image, recipe, quad_source, flip_checked)
 
 
 def main() -> int:

@@ -12,16 +12,35 @@
 // 用户端 CLI、协议 reservation.* 同一张表、同一套规则，因此本地模式与远程
 // 服务端模式下的行为完全一致——远程模式由服务端完成校验、选位、收定金与
 // 路线规划。第一版预约（Booking）只剩历史数据，列在下方并标注来源。
+//
+// 选中一条表格记录后，「取消所选预约 / 确认所选预约到场」作用在选中的那条
+// 记录上（而不是表单里随后被改动的车牌）；未选中任何行时保持旧行为——按
+// 输入框里的车牌操作。历史预约（Booking）是只读记录，选中后禁用这两个按钮。
 @implementation BookingViewController{
     NSTextField *_plateField;
     NSPopUpButton *_typePopup;
     NSDatePicker *_startPicker;
     NSPopUpButton *_durationPopup;
     NSButton *_accessibleCheck;
+    NSButton *_checkInButton;
+    NSButton *_cancelButton;
     TableView *_table;
     NSTextField *_statusLabel;
     NSTextField *_policyLabel;
+    // 表格每行对应的业务记录：取消/到场确认必须作用在「选中的那条记录」上，
+    // 而不是用户随后在输入框里改成的车牌。下标与表格行一一对应。
+    NSArray<NSDictionary *> *_rowRecords;
+    // 选中目标的类型：0 = 未选择，1 = 时段预约（可操作），2 = 历史预约（只读）。
+    NSInteger _selectedKind;
+    NSString *_selectedPlate;
+    // refresh 重设表格时抑制选中回调，避免把程序化清空当成用户取消选择。
+    BOOL _resettingSelection;
 }
+
+// 选中目标类型。
+static const NSInteger kBookingTargetNone = 0;
+static const NSInteger kBookingTargetReservation = 1;
+static const NSInteger kBookingTargetBooking = 2;
 
 - (void)loadView{
     NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
@@ -56,12 +75,14 @@
     NSButton *createButton = [NSButton buttonWithTitle:@"创建预约"
                                                 target:self
                                                 action:@selector(createReservation:)];
-    NSButton *checkInButton = [NSButton buttonWithTitle:@"到场确认"
-                                                 target:self
-                                                 action:@selector(checkIn:)];
-    NSButton *cancelButton = [NSButton buttonWithTitle:@"取消预约"
-                                                target:self
-                                                action:@selector(cancel:)];
+    // 这两个动作优先作用于表格里选中的记录；按钮标题写明「所选」，
+    // 与「创建预约」表单的输入框区分开。
+    _checkInButton = [NSButton buttonWithTitle:@"确认所选预约到场"
+                                        target:self
+                                        action:@selector(checkIn:)];
+    _cancelButton = [NSButton buttonWithTitle:@"取消所选预约"
+                                       target:self
+                                       action:@selector(cancel:)];
     createButton.keyEquivalent = @"\r";
 
     NSStackView *formRow = [[NSStackView alloc] init];
@@ -84,8 +105,8 @@
     actionRow.spacing = 10.0;
     actionRow.translatesAutoresizingMaskIntoConstraints = NO;
     [actionRow addArrangedSubview:createButton];
-    [actionRow addArrangedSubview:checkInButton];
-    [actionRow addArrangedSubview:cancelButton];
+    [actionRow addArrangedSubview:_checkInButton];
+    [actionRow addArrangedSubview:_cancelButton];
     [form addSubview:formRow];
     [form addSubview:actionRow];
 
@@ -103,7 +124,7 @@
         [actionRow.topAnchor constraintEqualToAnchor:formRow.bottomAnchor constant:10],
         [actionRow.leadingAnchor constraintEqualToAnchor:form.leadingAnchor constant:14],
         [actionRow.trailingAnchor constraintLessThanOrEqualToAnchor:form.trailingAnchor
-                                                          constant:-14],
+                                                           constant:-14],
         [_policyLabel.topAnchor constraintEqualToAnchor:actionRow.bottomAnchor constant:10],
         [_policyLabel.leadingAnchor constraintEqualToAnchor:form.leadingAnchor constant:14],
         [_policyLabel.trailingAnchor constraintEqualToAnchor:form.trailingAnchor constant:-14],
@@ -116,6 +137,12 @@
     // 第一版的 Booking 只剩历史数据（本地库里的旧记录）。
     [_table setColumns:@[@"编号", @"车牌", @"车位", @"创建时间", @"预约时间",
                          @"宽限截止", @"定金(元)", @"状态", @"来源"]];
+    // 窄窗口下日期/来源不许被压成省略号：每列给足最小宽度，不够就横向滚动。
+    [_table setMinimumColumnWidths:@[@100, @88, @72, @130, @130, @130, @70, @80, @80]];
+    __weak BookingViewController *weakSelf = self;
+    _table.selectionHandler = ^(NSInteger row){
+        [weakSelf bookingTableDidSelectRow:row];
+    };
     [root addSubview:_table];
 
     _statusLabel = [NSTextField wrappingLabelWithString:@""];
@@ -172,6 +199,68 @@
         std::chrono::seconds((long)_startPicker.dateValue.timeIntervalSince1970));
 }
 
+#pragma mark - 选中行 → 操作目标
+
+// 选中行的回调：时段预约可操作（同步车牌、按钮可用并提示目标），
+// 历史预约只读（提示原因并禁用按钮）。清空选择则回到「按输入框车牌」的旧流程。
+- (void)bookingTableDidSelectRow:(NSInteger)row{
+    if (_resettingSelection){
+        return;
+    }
+    if (row < 0 || row >= (NSInteger)_rowRecords.count){
+        const BOOL hadTarget = (_selectedKind != kBookingTargetNone);
+        _selectedKind = kBookingTargetNone;
+        _selectedPlate = nil;
+        [self updateTargetButtons];
+        if (hadTarget){
+            _statusLabel.stringValue =
+                @"未选择记录：可在下方列表点选一行，或直接在输入框填写车牌操作。";
+        }
+        return;
+    }
+    NSDictionary *record = _rowRecords[(NSUInteger)row];
+    const NSInteger kind = [record[@"kind"] integerValue];
+    NSString *plate = record[@"plate"] ?: @"";
+    NSString *spot = record[@"spot"] ?: @"-";
+    NSString *status = record[@"status"] ?: @"";
+    NSString *start = record[@"start"] ?: @"-";
+    NSString *end = record[@"end"] ?: @"-";
+    _selectedKind = kind;
+    if (kind == kBookingTargetReservation){
+        _selectedPlate = plate;
+        // 选中即时同步到输入框，便于用户看清/继续沿用这个车牌。
+        _plateField.stringValue = plate;
+        _statusLabel.stringValue = [NSString stringWithFormat:
+            @"已选择：车牌 %@（车位 %@，状态 %@，时段 %@ – %@）。"
+             "「取消所选预约 / 确认所选预约到场」将作用于这条记录。",
+            plate, spot, status, start, end];
+    } else{
+        _selectedPlate = nil;
+        _statusLabel.stringValue = [NSString stringWithFormat:
+            @"已选择：历史预约 车牌 %@（车位 %@，状态 %@，时段 %@ – %@）。"
+             "历史预约只读，不能取消或确认到场；如需操作请先创建时段预约。",
+            plate, spot, status, start, end];
+    }
+    [self updateTargetButtons];
+}
+
+// 只有「未选择」（保留旧的输入框流程）和「选中时段预约」允许点这两个按钮；
+// 选中历史预约时禁用，动作方法里也再拦一道，避免程序化调用绕过去。
+- (void)updateTargetButtons{
+    const BOOL actionable = (_selectedKind != kBookingTargetBooking);
+    _cancelButton.enabled = actionable;
+    _checkInButton.enabled = actionable;
+}
+
+// 操作目标车牌：选中时段预约时用显式保存的车牌（用户随后改输入框也不影响），
+// 否则沿用旧行为——按输入框车牌操作。
+- (NSString *)targetPlate{
+    if (_selectedKind == kBookingTargetReservation && _selectedPlate.length > 0){
+        return _selectedPlate;
+    }
+    return [self plate];
+}
+
 - (void)createReservation:(id)sender{
     NSString *plate = [self plate];
     if (plate.length == 0){
@@ -218,23 +307,19 @@
             ? [NSString stringWithFormat:@"预约失败：车牌 %@ 无法预约（可能已在场、已有未结束预约或没有可用车位）。", plate]
             : smartpark_ui::toNSString(reason);
     } else{
-        // 到场窗口 = [开始 - 锁位提前量, 宽限截止]，与核心/服务端的判定一致；
-        // 窗口没到就点「到场确认」会被拒绝，所以这里先把时间说清楚。
-        const auto start = result->reservation.startTime();
-        const auto windowFrom = start -
-            std::chrono::minutes(rule.lockLeadTimeMin);
+        // 到场窗口 = [创建时刻, 宽限截止]，与核心/服务端的判定一致：
+        // 预约一创建就能确认到场，最晚到开始后宽限期截止。
         const auto deadline = result->reservation.graceDeadline();
         _statusLabel.stringValue = [NSString stringWithFormat:
             @"预约成功：%@ → 车位 %@；定金 %.2f 元已收。\n"
              "预期路线：入口 %zu 行驶 %.1f 米 / %d 个转弯；离场 %.1f 米 / %d 个转弯。\n"
-             "可到场时间 %@ 至 %@：到点在下方点「到场确认」，或由入口闸机刷牌自动核销。",
+             "现在起就能在下方列表选中这条预约并点「确认所选预约到场」，最晚 %@ 前完成，"
+             "也可由入口闸机刷牌自动核销。",
             plate, smartpark_ui::toNSString(result->reservation.spotId()),
             result->reservation.deposit(),
             result->entranceIndex + 1, result->entryRoute.distance,
             result->entryRoute.turnCount, result->exitRoute.distance,
             result->exitRoute.turnCount,
-            smartpark_ui::toNSString(smartpark_ui::formatTime(
-                smartpark::ParkingRecord::TimePoint(windowFrom.time_since_epoch()))),
             smartpark_ui::toNSString(smartpark_ui::formatTime(
                 smartpark::ParkingRecord::TimePoint(deadline.time_since_epoch())))];
         // 下单时规划好的路线交给车位图：预约之后地图上就能看到进场/出场路线。
@@ -247,7 +332,13 @@
 }
 
 - (void)checkIn:(id)sender{
-    NSString *plate = [self plate];
+    // 选中的是历史预约：只读记录，绝不能拿它的车牌去改真实数据。
+    if (_selectedKind == kBookingTargetBooking){
+        _statusLabel.stringValue =
+            @"历史预约只读，不能确认到场；请选择一条「时段预约」或先创建预约。";
+        return;
+    }
+    NSString *plate = [self targetPlate];
     if (plate.length == 0){
         _statusLabel.stringValue = @"到场确认前请输入预约车牌。";
         return;
@@ -314,18 +405,20 @@
     default:
         break;
     }
-    NSString *opens = smartpark_ui::toNSString(smartpark_ui::formatTime(
-        smartpark::ParkingRecord::TimePoint(
-            (latest->startTime() - std::chrono::minutes(rule.lockLeadTimeMin))
-                .time_since_epoch())));
     return [NSString stringWithFormat:
-        @"还没到可确认时间：%@ 的预约从 %@ 开始，可确认时段为 %@ 至 %@"
-         "（开始前 %d 分钟起）；到点后再点「到场确认」。",
-        plate, start, opens, deadline, rule.lockLeadTimeMin];
+        @"%@ 的预约已创建，现在就可以到场：在下方列表选中这条预约后点"
+         "「确认所选预约到场」；最晚 %@ 前确认，否则按爽约处理。",
+        plate, deadline];
 }
 
 - (void)cancel:(id)sender{
-    NSString *plate = [self plate];
+    // 选中的是历史预约：只读记录，取消动作不能落到真实数据上。
+    if (_selectedKind == kBookingTargetBooking){
+        _statusLabel.stringValue =
+            @"历史预约只读，不能取消；请选择一条「时段预约」或先创建预约。";
+        return;
+    }
+    NSString *plate = [self targetPlate];
     if (plate.length == 0){
         _statusLabel.stringValue = @"取消预约前请输入预约车牌。";
         return;
@@ -358,45 +451,83 @@
     const auto rule = self.bridge->reservationRule();
     _policyLabel.stringValue = [NSString stringWithFormat:
         @"预约规则：定金 %.2f 元（无障碍车位免定金） | 需至少提前 %d 分钟 | "
-         "最短时长 %d 分钟 | 最多提前 %d 天 | 到场窗口：开始前 %d 分钟 至 开始后 %d 分钟。",
+         "最短时长 %d 分钟 | 最多提前 %d 天 | 到场窗口：创建预约后即可 至 开始后 %d 分钟。",
         rule.deposit, rule.minLeadTimeMin, rule.minDurationMin, rule.maxAdvanceDays,
-        rule.lockLeadTimeMin, rule.gracePeriodMin];
+        rule.gracePeriodMin];
 
     // 时段预约是当前模型，排在前面；Booking 是历史数据，排在后面。
     NSMutableArray<NSArray<NSString *> *> *rows = [NSMutableArray array];
+    NSMutableArray<NSDictionary *> *records = [NSMutableArray array];
     for (const smartpark::Reservation &reservation : self.bridge->reservations()){
         auto time = [](smartpark::Reservation::TimePoint t){
             return smartpark_ui::formatTime(
                 smartpark::ParkingRecord::TimePoint(t.time_since_epoch()));
         };
+        NSString *start = [NSString stringWithUTF8String:time(reservation.startTime()).c_str()];
+        NSString *deadline = [NSString stringWithUTF8String:time(reservation.graceDeadline()).c_str()];
+        NSString *plate = [NSString stringWithUTF8String:reservation.plateNumber().c_str()];
+        NSString *status = [NSString stringWithUTF8String:
+            smartpark_ui::reservationStatusText(reservation.status())];
         [rows addObject:@[
             [NSString stringWithUTF8String:reservation.id().c_str()],
-            [NSString stringWithUTF8String:reservation.plateNumber().c_str()],
+            plate,
             [NSString stringWithUTF8String:reservation.spotId().c_str()],
             [NSString stringWithUTF8String:time(reservation.createdAt()).c_str()],
-            [NSString stringWithUTF8String:time(reservation.startTime()).c_str()],
-            [NSString stringWithUTF8String:time(reservation.graceDeadline()).c_str()],
+            start,
+            deadline,
             [NSString stringWithFormat:@"%.2f", reservation.deposit()],
-            [NSString stringWithUTF8String:smartpark_ui::reservationStatusText(reservation.status())],
+            status,
             @"时段预约",
         ]];
+        [records addObject:@{
+            @"kind": @(kBookingTargetReservation),
+            @"plate": plate,
+            @"spot": [NSString stringWithUTF8String:reservation.spotId().c_str()],
+            @"status": status,
+            @"start": start,
+            @"end": deadline,
+        }];
     }
     // 第一版预约（Booking）：本页表单不再创建它，只显示本地库里的历史记录，
     // 免得旧数据像凭空消失。
     for (const smartpark::Booking &booking : self.bridge->bookings()){
+        NSString *start = [NSString stringWithUTF8String:
+            smartpark_ui::formatTime(booking.arrivalTime()).c_str()];
+        NSString *end = [NSString stringWithUTF8String:
+            smartpark_ui::formatTime(booking.arrivalDeadline()).c_str()];
+        NSString *plate = [NSString stringWithUTF8String:booking.plateNumber().c_str()];
+        NSString *status = [NSString stringWithUTF8String:
+            smartpark_ui::bookingStatusText(booking.status())];
         [rows addObject:@[
             [NSString stringWithUTF8String:booking.id().c_str()],
-            [NSString stringWithUTF8String:booking.plateNumber().c_str()],
+            plate,
             [NSString stringWithUTF8String:booking.spotId().c_str()],
             [NSString stringWithUTF8String:smartpark_ui::formatTime(booking.createdAt()).c_str()],
-            [NSString stringWithUTF8String:smartpark_ui::formatTime(booking.arrivalTime()).c_str()],
-            [NSString stringWithUTF8String:smartpark_ui::formatTime(booking.arrivalDeadline()).c_str()],
+            start,
+            end,
             [NSString stringWithFormat:@"%.2f", booking.deposit()],
-            [NSString stringWithUTF8String:smartpark_ui::bookingStatusText(booking.status())],
+            status,
             @"预约(历史)",
         ]];
+        [records addObject:@{
+            @"kind": @(kBookingTargetBooking),
+            @"plate": plate,
+            @"spot": [NSString stringWithUTF8String:booking.spotId().c_str()],
+            @"status": status,
+            @"start": start,
+            @"end": end,
+        }];
     }
+    // 数据变化（其它端取消/到场、本页操作后的快照刷新）会让旧选中行对应到
+    // 另一条记录，因此刷新时必须重置选择；状态栏里的操作结果保留给用户看。
+    _resettingSelection = YES;
+    _rowRecords = records;
     [_table setRows:rows];
+    [_table.tableView deselectAll:nil];
+    _selectedKind = kBookingTargetNone;
+    _selectedPlate = nil;
+    [self updateTargetButtons];
+    _resettingSelection = NO;
 }
 
 @end

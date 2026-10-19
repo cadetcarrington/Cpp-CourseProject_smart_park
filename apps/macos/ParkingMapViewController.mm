@@ -36,7 +36,7 @@ NSString *const SmartParkFindCarPlateKey = @"plate";
 
     // 图例：延迟锁位期间车位本身还是空闲，必须说明虚线框是什么意思。
     NSTextField *legend = [NSTextField wrappingLabelWithString:
-        @"橙色虚线框 = 已被预约、尚未锁位（开始前 30 分钟才锁定车位）；实心橙 = 已锁位的预订；悬停可看预约车牌与时段。"];
+        @"橙色框 = 已被预约（预约创建即锁位）；悬停可看预约车牌与时段。"];
     legend.textColor = [NSColor secondaryLabelColor];
     legend.font = [NSFont systemFontOfSize:13];
     legend.translatesAutoresizingMaskIntoConstraints = NO;
@@ -208,6 +208,12 @@ NSString *const SmartParkFindCarPlateKey = @"plate";
 - (void)clearCarFinding:(id)sender{
     (void)sender;
     [_mapView clearWalkRoute];
+    // 图上还有一层「最近一次规划的入场/出场路线」（蓝实线 + 橙虚线），
+    // 光清步行路线会留下它，所以这里一起清掉。
+    if (self.bridge != nullptr){
+        self.bridge->clearPlannedRoute();
+    }
+    [_mapView setNeedsDisplay:YES];
     _routeStatus.stringValue = @"已清除路线。";
 }
 

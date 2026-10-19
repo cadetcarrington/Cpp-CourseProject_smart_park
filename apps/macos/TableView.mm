@@ -80,6 +80,8 @@
 @property (nonatomic, copy) NSArray<NSArray<NSString *> *> *rows;
 // 各列的期望宽度：布局时按此比例缩放铺满整个表宽。
 @property (nonatomic, copy) NSArray<NSNumber *> *preferredWidths;
+// 各列的最小宽度：表宽不足时不再压扁，而是让表格横向滚动。
+@property (nonatomic, copy) NSArray<NSNumber *> *minimumWidths;
 @property (nonatomic, assign) NSInteger badgeColumn;
 @property (nonatomic, copy) NSColor *(^badgeTintBlock)(NSString *value);
 @end
@@ -95,7 +97,9 @@
         _scroll = [[NSScrollView alloc] initWithFrame:self.bounds];
         _scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         _scroll.hasVerticalScroller = YES;
-        _scroll.hasHorizontalScroller = NO;
+        // 允许横向滚动：窗口变窄时各列保持最小宽度，内容比可视区域宽就横向滚动，
+        // 而不是把日期/类型压成省略号（叠加式滚动条不占固定槽位）。
+        _scroll.hasHorizontalScroller = YES;
         _scroll.drawsBackground = NO;
         // 叠加式滚动条：不占用固定槽位，列宽可以铺满整个可见宽度。
         _scroll.scrollerStyle = NSScrollerStyleOverlay;
@@ -107,7 +111,9 @@
         _tableView.delegate = self;
         _tableView.usesAlternatingRowBackgroundColors = YES;
         _tableView.rowHeight = 24.0;
-        _tableView.columnAutoresizingStyle = NSTableViewUniformColumnAutoresizingStyle;
+        // 列宽完全由 layout 按「期望宽度 + 最小宽度」算好，交给 NSTableView
+        // 自动分配会覆盖最小宽度（窄窗口下又压扁成省略号）。
+        _tableView.columnAutoresizingStyle = NSTableViewNoColumnAutoresizing;
         _tableView.allowsMultipleSelection = NO;
         // 宽度交给下面的 layout 精确设置，不用 autoresizing：否则它跟随滚动视图
         // 外框而不是可视区域，会多出约 30pt 的横向溢出。
@@ -116,45 +122,89 @@
     return self;
 }
 
-// 表格宽度必须跟随滚动视图，否则列会停在初始宽度，
-// 只铺满左边一半、右边留出大片空白。
+// 表格宽度跟随滚动视图；宽度不够容纳全部列的最小宽度时把文档视图撑宽，
+// 由横向滚动条兜底（列宽不再按比例压扁）。
 - (void)layout{
     [super layout];
-    const CGFloat width = NSWidth(_scroll.contentView.bounds);
-    if (width <= 0.0){
+    const CGFloat viewport = NSWidth(_scroll.contentView.bounds);
+    if (viewport <= 0.0){
         return;
     }
-    if (fabs(NSWidth(_tableView.frame) - width) > 0.5){
+    const CGFloat spacing = [self columnSpacing];
+    const CGFloat minTotal = [self minimumWidthsTotal];
+    // 文档宽度 = max(可视宽度, 最小宽度之和 + 列间距)：
+    // 宽窗口铺满可见区域，窄窗口保留最小宽度并可横向滚动。
+    const CGFloat documentWidth = MAX(viewport, minTotal + spacing);
+    if (fabs(NSWidth(_tableView.frame) - documentWidth) > 0.5){
         NSRect frame = _tableView.frame;
-        frame.size.width = width;
+        frame.size.width = documentWidth;
         _tableView.frame = frame;
     }
-    [self distributeColumnsToWidth:width];
+    [self distributeColumnsToWidth:documentWidth];
 }
 
-// 按 preferredWidths 的比例把可用宽度分给各列，保证铺满。
+// 列间距总和（NSTableView 各列之间的 intercellSpacing）。
+- (CGFloat)columnSpacing{
+    const NSUInteger count = _tableView.tableColumns.count;
+    return count > 1 ? _tableView.intercellSpacing.width * (CGFloat)(count - 1) : 0.0;
+}
+
+// 各列最小宽度之和；未设置最小宽度时退回 NSTableColumn.minWidth（默认 56）。
+- (CGFloat)minimumWidthsTotal{
+    CGFloat total = 0.0;
+    const NSUInteger count = _tableView.tableColumns.count;
+    for (NSUInteger index = 0; index < count; ++index){
+        total += [self minimumWidthForColumn:index];
+    }
+    return total;
+}
+
+- (CGFloat)minimumWidthForColumn:(NSUInteger)index{
+    if (index < _minimumWidths.count){
+        return MAX(0.0, _minimumWidths[index].doubleValue);
+    }
+    NSArray<NSTableColumn *> *tableColumns = _tableView.tableColumns;
+    return index < tableColumns.count ? MAX(0.0, tableColumns[index].minWidth) : 0.0;
+}
+
+// 在「每列不低于最小宽度」的前提下按期望宽度比例分配宽度。
+// 先给每列最小宽度，再把剩余宽度按「期望宽度 – 最小宽度」的可伸缩空间
+// 比例分给各列；窗口窄到没有剩余宽度时各列正好停在最小宽度，由横向滚动展示。
 - (void)distributeColumnsToWidth:(CGFloat)width{
     NSArray<NSTableColumn *> *tableColumns = _tableView.tableColumns;
-    if (tableColumns.count == 0 || _preferredWidths.count != tableColumns.count){
+    const NSUInteger count = tableColumns.count;
+    if (count == 0 || _preferredWidths.count != count){
         return;
     }
-    const CGFloat spacing =
-        _tableView.intercellSpacing.width * (CGFloat)(tableColumns.count - 1);
+    const CGFloat spacing = [self columnSpacing];
     const CGFloat available = MAX(0.0, width - spacing);
-    CGFloat totalWeight = 0.0;
-    for (NSNumber *weight in _preferredWidths){
-        totalWeight += weight.doubleValue;
+
+    NSMutableArray<NSNumber *> *minimums = [NSMutableArray arrayWithCapacity:count];
+    NSMutableArray<NSNumber *> *flexible = [NSMutableArray arrayWithCapacity:count];
+    CGFloat minTotal = 0.0;
+    CGFloat flexibleTotal = 0.0;
+    for (NSUInteger index = 0; index < count; ++index){
+        const CGFloat minWidth = [self minimumWidthForColumn:index];
+        // 期望宽度低于最小宽度时按最小宽度算；可伸缩空间至少留 1pt，
+        // 保证窗口变宽时各列都还能长。
+        const CGFloat preferred = MAX(minWidth, _preferredWidths[index].doubleValue);
+        const CGFloat grow = MAX(1.0, preferred - minWidth);
+        [minimums addObject:@(minWidth)];
+        [flexible addObject:@(grow)];
+        minTotal += minWidth;
+        flexibleTotal += grow;
     }
-    if (totalWeight <= 0.0){
-        return;
-    }
+
+    const CGFloat target = MAX(available, minTotal);
+    const CGFloat extra = MAX(0.0, target - minTotal);
     CGFloat assigned = 0.0;
-    for (NSUInteger index = 0; index < tableColumns.count; ++index){
-        const CGFloat target =
-            available * _preferredWidths[index].doubleValue / totalWeight;
-        // 末列吃掉取整误差，避免右侧留下几像素缝隙。
-        const CGFloat finalWidth = (index + 1 == tableColumns.count)
-            ? MAX(0.0, available - assigned) : floor(target);
+    for (NSUInteger index = 0; index < count; ++index){
+        const CGFloat minWidth = minimums[index].doubleValue;
+        const CGFloat grow = extra * (flexible[index].doubleValue / flexibleTotal);
+        // 末列吃掉取整误差，避免右侧留下几像素缝隙；同时不低于最小宽度。
+        const CGFloat finalWidth = (index + 1 == count)
+            ? MAX(minWidth, target - assigned)
+            : MAX(minWidth, floor(minWidth + grow));
         assigned += finalWidth;
         if (fabs(tableColumns[index].width - finalWidth) > 0.5){
             tableColumns[index].width = finalWidth;
@@ -177,7 +227,37 @@
         [widths addObject:@110.0];
     }
     _preferredWidths = widths;
+    // 列集合变了，之前设置的最小宽度不再对应，回到默认（setColumns: 的旧行为）。
+    _minimumWidths = @[];
     [self setNeedsLayout:YES];
+}
+
+- (void)setMinimumColumnWidths:(NSArray<NSNumber *> *)widths{
+    _minimumWidths = [widths copy];
+    // 同步到 NSTableColumn.minWidth，让 AppKit 侧的尺寸计算也知道下限。
+    NSArray<NSTableColumn *> *tableColumns = _tableView.tableColumns;
+    for (NSUInteger index = 0; index < tableColumns.count && index < widths.count; ++index){
+        const CGFloat minWidth = MAX(0.0, widths[index].doubleValue);
+        if (minWidth > 0.0){
+            tableColumns[index].minWidth = minWidth;
+        }
+    }
+    [self setNeedsLayout:YES];
+}
+
+- (nullable NSArray<NSString *> *)rowAtIndex:(NSInteger)row{
+    if (row < 0 || (NSUInteger)row >= _rows.count){
+        return nil;
+    }
+    return _rows[(NSUInteger)row];
+}
+
+- (nullable NSString *)valueAtRow:(NSInteger)row column:(NSInteger)column{
+    NSArray<NSString *> *rowData = [self rowAtIndex:row];
+    if (rowData == nil || column < 0 || (NSUInteger)column >= rowData.count){
+        return nil;
+    }
+    return rowData[(NSUInteger)column];
 }
 
 - (void)setRows:(NSArray<NSArray<NSString *> *> *)rows{
@@ -225,6 +305,9 @@
             cell.identifier = @"BadgeCell";
         }
         [cell applyText:value tint:_badgeTintBlock(value)];
+        // 列宽不够时徽章文字会被截断，悬停显示完整取值。
+        cell.toolTip = value;
+        cell.label.toolTip = value;
         return cell;
     }
 
@@ -234,6 +317,9 @@
         cell.identifier = @"TextCell";
     }
     cell.label.stringValue = value;
+    // 窄窗口下日期等长文本会显示省略号，悬停时给出完整内容。
+    cell.toolTip = value;
+    cell.label.toolTip = value;
     return cell;
 }
 

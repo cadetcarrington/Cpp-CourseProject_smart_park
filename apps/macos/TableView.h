@@ -11,4 +11,12 @@
 // tintBlock 按取值返回主题色，返回 nil 时退化为普通文本。
 - (void)setBadgeColumn:(NSInteger)column
              tintBlock:(NSColor *(^)(NSString *value))tintBlock;
+// 每列的最小宽度（按列顺序，个数应与 setColumns: 一致；缺省或 0 表示不限制）。
+// 表宽不足以容纳全部最小宽度时不再压扁各列，而是横向滚动 —— 窄窗口下
+// 日期、类型这类长文本仍完整可读。必须在 setColumns: 之后调用。
+- (void)setMinimumColumnWidths:(NSArray<NSNumber *> *)widths;
+// 行数据访问：选中一行后，页面据此拿到该行的完整字段再做业务操作。
+// row 越界返回 nil。
+- (nullable NSArray<NSString *> *)rowAtIndex:(NSInteger)row;
+- (nullable NSString *)valueAtRow:(NSInteger)row column:(NSInteger)column;
 @end

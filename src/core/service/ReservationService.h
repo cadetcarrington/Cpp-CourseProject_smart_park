@@ -13,9 +13,10 @@ struct ReservationResult{
     Reservation reservation;
     AllocationResult allocation;
 };
-// 远程时间段预约：时间校验、冲突检查、定金支付、延迟锁位与
-// 取消/到场/爽约状态机。物理车位在到场窗口临近（lockLeadTime）才短时锁定，
-// 同一车位可接受互不重叠的时间段预约。
+// 远程时间段预约：时间校验、冲突检查、定金支付、锁位与
+// 取消/到场/爽约状态机。预约一旦创建就锁住物理车位，到场窗口也从创建时打开，
+// 直到开始后 gracePeriod 截止；同一车位同一时刻只能有一笔有效预约（创建即锁位，
+// 不再允许相邻时段共用同一车位），历史冲突数据在重启恢复时对账修复。
 class ReservationService{
 public:
     // 离场结算中间态：先 apply 入账再持久化，持久化失败时 rollback。
@@ -59,13 +60,20 @@ public:
     void rollbackExitSettlement(ExitSettlement &settlement);
     void restore(ParkingRepository &repository);
 private:
+    friend class ParkingService;
+    std::optional<AllocationResult> checkInImpl(
+        const std::string &plateNumber, ParkingRecord::TimePoint now,
+        const std::optional<AllocationProposal> *prepared);
     Reservation *findOpenPtr(const std::string &plateNumber);
     const Reservation *findOpenPtr(const std::string &plateNumber) const;
     Reservation *findStatusPtr(const std::string &plateNumber,
                                ReservationStatus status);
-    bool overlapsOpenReservation(const std::string &spotId,
-                                 ParkingRecord::TimePoint startTime,
-                                 ParkingRecord::TimePoint endTime) const;
+    bool hasOpenReservationOnSpot(const std::string &spotId) const;
+    // 重启恢复时的历史数据对账：旧版本允许相邻时段复用同一车位锁，
+    // 会留下多笔有效预约指向同一车位而物理锁只属于其中一笔。这里保留
+    // 唯一能继续履约的预约，其余取消并退还定金，避免服务因归属冲突退出。
+    void reconcileConflictingReservations();
+    bool repairConflictingReservation(Reservation &reservation);
     bool releaseLockIfHeld(const Reservation &reservation);
     std::string newReservationId();
     std::string newLedgerId(const char *prefix,

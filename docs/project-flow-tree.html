@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>智慧停车场系统 · 三层模块结构图</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+*{box-sizing:border-box}
+:root{
+  --gap:20px;
+  --ink:#1a1a1a;        /* 主文字 / 最粗线 */
+  --ink-2:#333;         /* 次级标题 */
+  --ink-3:#555;         /* 正文 */
+  --ink-4:#8a8a8a;      /* 说明文字 */
+  --line:#2b2b2b;       /* 结构连线、二层框 */
+  --line-2:#5c5c5c;     /* 三层模块边框 */
+  --line-3:#c9c9c9;     /* 叶子 / 分隔线 */
+  --soft:#f5f5f5;       /* 表头、代码底 */
+}
+html,body{margin:0;padding:0}
+body{
+  background:#fff; color:var(--ink);
+  font:14px/1.62 "PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+code{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+.page{max-width:1700px;min-width:1480px;margin:0 auto;padding:32px 40px 20px;background:#fff}
+
+/* ---------- 页头 ---------- */
+header.page-head{padding-bottom:16px;border-bottom:1px solid var(--line-3)}
+h1{font-size:26px;font-weight:700;letter-spacing:.4px;margin:0}
+.sub{margin:6px 0 0;font-size:12.5px;color:var(--ink-4)}
+.facts{margin:10px 0 0;font-size:12px;color:var(--ink-3)}
+.facts i{font-style:normal;color:var(--line-3);margin:0 7px}
+.legendline{margin:7px 0 0;font-size:11.8px;color:var(--ink-4)}
+.legendline b{color:var(--ink-2);font-weight:600}
+
+/* ---------- 三层树 ---------- */
+section.tree{margin-top:22px}
+
+/* 第一层：系统 */
+.root-line{display:flex;justify-content:center}
+.root{text-align:center;background:#fff;border:1.6px solid var(--ink);border-radius:7px;padding:10px 28px 11px}
+.root h2{margin:0;font-size:18px;font-weight:700;letter-spacing:.4px}
+.root h2 em{font-style:normal;font-weight:400;font-size:12px;color:var(--ink-4);margin-left:8px}
+.root p{margin:3px 0 0;font-size:11.5px;color:var(--ink-4)}
+
+/* 主干 / 总线 / 下垂线 */
+.trunk{width:1px;height:20px;background:var(--line);margin:0 auto}
+.bus{width:calc((100% * 2 + var(--gap) * 2) / 3);height:1px;background:var(--line);margin:0 auto}
+.drops{display:grid;grid-template-columns:repeat(3,1fr);column-gap:var(--gap)}
+.drops i{justify-self:center;width:1px;height:20px;background:var(--line)}
+
+/* 第二层：三大端 */
+.ends{display:grid;grid-template-columns:repeat(3,1fr);column-gap:var(--gap);align-items:start}
+.end{min-width:0}
+.end-head{
+  background:#fff;border:1.2px solid var(--line);border-radius:7px;
+  padding:11px 16px 12px;text-align:center;
+}
+.end-head h2{margin:0;font-size:17px;font-weight:700;letter-spacing:.3px}
+.end-head .end-path{display:inline-block;margin-top:4px;font-size:10.6px;color:var(--ink-4)}
+.end-head p{margin:6px auto 0;font-size:11.5px;line-height:1.55;color:var(--ink-3);max-width:94%}
+
+/* 第二层 → 第三层：竖向导轨 + 肘形连接 */
+.modules{position:relative;padding:12px 0 0 30px}
+.modules::before{content:"";position:absolute;left:10px;top:0;bottom:0;width:1px;background:var(--line)}
+.mod{
+  position:relative;margin-bottom:12px;background:#fff;
+  border:1px solid var(--line-2);border-radius:6px;padding:10px 12px 12px;
+}
+.mod:last-child{margin-bottom:0}
+.mod::before{content:"";position:absolute;left:-20px;top:21px;width:20px;height:1px;background:var(--line)}
+
+/* 第三层：模块 */
+.mod-head{text-align:center}
+.mod-head h3{margin:0;font-size:14.5px;font-weight:700;letter-spacing:.2px}
+.mod-head h3 code{margin-left:7px;font-size:10.4px;color:var(--ink-4);font-weight:400}
+
+/* 叶子：类 / 文件 / 数据表 */
+.leaves{display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin-top:9px}
+.leaf{font-size:11.4px;line-height:1.45;padding:2.5px 8px;border-radius:4px;background:#fff;border:1px solid var(--line-3);color:var(--ink-3);white-space:nowrap}
+.leaf.key{color:var(--ink);border-color:var(--line-2);font-weight:600}
+
+/* ---------- 关键业务流程 ---------- */
+section.flows{margin-top:28px;padding-top:22px;border-top:1px solid var(--line-3)}
+section h2.title{display:flex;align-items:center;gap:10px;font-size:17px;font-weight:700;margin:0 0 12px;letter-spacing:.3px}
+section h2.title::before{content:"";width:3px;height:17px;background:var(--ink)}
+.flow{background:#fff;border:1px solid var(--line-3);border-radius:7px;padding:11px 14px 13px;margin-bottom:10px}
+.flow h3{margin:0 0 9px;font-size:14px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.flow h3 .tag{font-size:10.6px;color:var(--ink-4);border:1px solid var(--line-3);border-radius:999px;padding:1px 8px;font-weight:400}
+.flow ol{list-style:none;display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0;padding:0}
+.flow li{font-size:12.2px;color:var(--ink-3);background:#fff;border:1px solid var(--line-3);border-radius:5px;padding:4px 9px}
+.flow li.hot{color:var(--ink);border-color:var(--line-2);font-weight:600}
+.flow li.arrow{border:0;background:none;padding:0 1px;color:var(--line-2);font-weight:700;font-size:13px}
+
+/* ---------- 部署与通信 ---------- */
+section.deploy{margin-top:28px;padding-top:22px;border-top:1px solid var(--line-3)}
+table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;border:1px solid var(--line-3);border-radius:7px;overflow:hidden;font-size:12.3px}
+th{background:var(--soft);text-align:left;padding:9px 13px;font-size:11.8px;color:var(--ink-3);font-weight:600;border-bottom:1px solid var(--line-3);white-space:nowrap}
+td{padding:9px 13px;border-bottom:1px solid #ececec;vertical-align:top;color:var(--ink-3);line-height:1.6}
+tbody tr:last-child td{border-bottom:0}
+td strong{color:var(--ink)}
+table code{background:var(--soft);border:1px solid #e6e6e6;border-radius:4px;padding:0 5px;font-size:11.3px;color:var(--ink-2)}
+
+footer{margin-top:22px;padding-top:12px;border-top:1px solid var(--line-3);text-align:center;font-size:11.5px;color:var(--ink-4);letter-spacing:.3px}
+
+@media print{
+  body{background:#fff}
+  .page{max-width:none;min-width:0;padding:0;zoom:.86}
+  .mod,.end-head,.flow,.root{break-inside:avoid}
+  @page{size:A3 landscape;margin:9mm}
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="page-head">
+    <h1>智慧停车场系统 · 三层模块结构图</h1>
+    <p class="sub">C++17 / Qt6 + SQLite · TCP v1 / REST / WebSocket · macOS 管理端（Objective-C++ / AppKit）+ 网页端（原生 JS + Canvas）</p>
+    <p class="facts">3 座车库 · 10 个分区 · 330 个车位<i>｜</i>单入口 / 两出口<i>｜</i>120 充电 · 210 普通<i>｜</i>0.5 m 栅格 A* 寻路<i>｜</i>14 个自动化测试（含 REST 端到端）</p>
+    <p class="legendline"><b>三层结构</b>：系统 → 端 → 模块；模块内为实现叶子（类 / 文件 / 数据表）</p>
+  </header>
+
+  <!-- ===================== 三层结构图 ===================== -->
+  <section class="tree">
+
+    <!-- 第一层：系统 -->
+    <div class="root-line">
+      <div class="root">
+        <h2>智慧停车场系统 <em>smartpark</em></h2>
+        <p>一个 C++17 仓库 · 服务端 + macOS 管理端 + 网页端共同组成</p>
+      </div>
+    </div>
+
+    <!-- 第一层 → 第二层：总线 -->
+    <div class="trunk"></div>
+    <div class="bus"></div>
+    <div class="drops"><i></i><i></i><i></i></div>
+
+    <!-- 第二层：三大端 -->
+    <div class="ends">
+
+      <!-- ========== 端 1：服务端 ========== -->
+      <article class="end">
+        <div class="end-head">
+          <h2>服务端</h2>
+          <code class="end-path">apps/server · src/network · src/core</code>
+          <p>单进程同时提供 TCP / HTTP / WebSocket；业务规则、计费与调度都在这里</p>
+        </div>
+
+        <div class="modules">
+          <section class="mod">
+            <div class="mod-head"><h3>进程入口 <code>apps/server/main.cpp</code></h3></div>
+            <div class="leaves">
+              <span class="leaf key">main.cpp</span>
+              <span class="leaf">参数 --port / --http-port / --ws-port</span>
+              <span class="leaf">--db · --layout · --web-root</span>
+              <span class="leaf">--advertise · --site-name</span>
+              <span class="leaf">selftest 自检</span>
+            </div>
+          </section>
+
+          <section class="mod">
+            <div class="mod-head"><h3>网络层 <code>src/network</code></h3></div>
+            <div class="leaves">
+              <span class="leaf key">TCP v1 协议</span>
+              <span class="leaf">SmartParkTcpServer</span>
+              <span class="leaf">ServerSession</span>
+              <span class="leaf">Protocol（QDataStream）</span>
+              <span class="leaf key">REST /api/v1/*</span>
+              <span class="leaf">auth · parking · records</span>
+              <span class="leaf">reservations · payments · guide</span>
+              <span class="leaf key">WebSocket</span>
+              <span class="leaf">EventHub 事件推送</span>
+              <span class="leaf">PlateRecognition → Python LPR</span>
+            </div>
+          </section>
+
+          <section class="mod">
+            <div class="mod-head"><h3>领域模型 <code>src/core/model</code></h3></div>
+            <div class="leaves">
+              <span class="leaf key">ParkingLayout（DSL 解析 + 签名）</span>
+              <span class="leaf">ParkingSpot</span>
+              <span class="leaf">Vehicle</span>
+              <span class="leaf">ParkingRecord</span>
+              <span class="leaf">Reservation</span>
+              <span class="leaf">Booking</span>
+              <span class="leaf">Geometry</span>
+            </div>
+          </section>
+
+          <section class="mod">
+            <div class="mod-head"><h3>业务服务 <code>src/core/service</code></h3></div>
+            <div class="leaves">
+              <span class="leaf key">ParkingService</span>
+              <span class="leaf key">SpotAllocator 分区优先 + 出口系数加权</span>
+              <span class="leaf key">GridPlanner A*（四向/八向 · 离障加价）</span>
+              <span class="leaf">Billing 计费</span>
+              <span class="leaf">ReservationService 预约 / 锁位 / 到场</span>
+              <span class="leaf">UserStore 账号</span>
+              <span class="leaf">AnalyticsEngine</span>
+              <span class="leaf">ParkingInsightEngine 占用率预测</span>
+              <span class="leaf">BackgroundEntryPlanner</span>
+              <span class="leaf">DemoDirector 演示脚本</span>
+              <span class="leaf">AuditLogService</span>
+            </div>
+          </section>
+
+          <section class="mod">
+            <div class="mod-head"><h3>存储与配置 <code>src/core/persistence</code></h3></div>
+            <div class="leaves">
+              <span class="leaf key">SQLite</span>
+              <span class="leaf">users · auth_tokens</span>
+              <span class="leaf">parking_spots · parking_records</span>
+              <span class="leaf">layout_snapshot · bookings</span>
+              <span class="leaf">reservations · deposit_payments</span>
+              <span class="leaf">data/garage-3tower.txt 布局 DSL</span>
+              <span class="leaf">布局签名不符 → 拒绝启动</span>
+            </div>
+          </section>
+        </div>
+      </article>
+
+      <!-- ========== 端 2：macOS 管理端 ========== -->
+      <article class="end">
+        <div class="end-head">
+          <h2>macOS 管理端</h2>
+          <code class="end-path">apps/macos</code>
+          <p>Objective-C++ / AppKit 全代码搭界面，原生工具栏 + 侧边栏 + 7 个功能页</p>
+        </div>
+
+        <div class="modules">
+          <section class="mod">
+            <div class="mod-head"><h3>启动与窗口</h3></div>
+            <div class="leaves">
+              <span class="leaf key">main.mm</span>
+              <span class="leaf">--db / --layout / --check-db</span>
+              <span class="leaf">AppDelegate</span>
+              <span class="leaf key">MainWindowController</span>
+              <span class="leaf">原生工具栏（居中标题 · 刷新）</span>
+              <span class="leaf">SidebarViewController</span>
+              <span class="leaf">PageHostViewController</span>
+              <span class="leaf">MainMenu（⌘C/⌘V · 操作 · 页面 ⌘1–7）</span>
+            </div>
+          </section>
+
+          <section class="mod">
+            <div class="mod-head"><h3>功能页面 ×7</h3></div>
+            <div class="leaves">
+              <span class="leaf key">仪表盘 DashboardViewController</span>
+              <span class="leaf">KPI · 环形/折线/柱状图</span>
+              <span class="leaf">快捷卡片 · 反向寻车</span>
+              <span class="leaf key">车位图 ParkingMapViewController</span>
+              <span class="leaf">ParkingMapView 自绘地图</span>
+              <span class="leaf">车位 / 障碍 / 闸机 / 路线</span>
+              <span class="leaf key">车辆出入库 OperationsViewController</span>
+              <span class="leaf">识别即入库 · 识别即出库</span>
+              <span class="leaf">照片留档 · 结果面板 · 评分明细</span>
+              <span class="leaf">当前车位 OccupancyViewController</span>
+              <span class="leaf">预约管理 BookingViewController</span>
+              <span class="leaf">停车记录 RecordsViewController</span>
+              <span class="leaf">设施配置 SettingsViewController</span>
+            </div>
+          </section>
+
+          <section class="mod">
+            <div class="mod-head"><h3>桥接与本地能力</h3></div>
+            <div class="leaves">
+              <span class="leaf key">ParkingBridge</span>
+              <span class="leaf">本地模式 = 直接调 ParkingService</span>
+              <span class="leaf">远程模式 = TCP v1 RemoteClient</span>
+              <span class="leaf">LocalRecognitionService（车牌识别）</span>
+              <span class="leaf">PlatePhotoArchive 照片留档</span>
+              <span class="leaf">PlatePrompt 选车牌弹窗</span>
+              <span class="leaf">ConfidenceGate 低置信度确认</span>
+            </div>
+          </section>
+
+          <section class="mod">
+            <div class="mod-head"><h3>自绘控件</h3></div>
+            <div class="leaves">
+              <span class="leaf">ParkingMapView</span>
+              <span class="leaf">LineChartView（整数刻度 · 默认量程）</span>
+              <span class="leaf">BarChartView</span>
+              <span class="leaf">DonutChartView</span>
+              <span class="leaf">TableView</span>
+              <span class="leaf">LoginViewController / RegisterViewController</span>
+            </div>
+          </section>
+        </div>
+      </article>
+
+      <!-- ========== 端 3：网页端 ========== -->
+      <article class="end">
+        <div class="end-head">
+          <h2>网页端 H5</h2>
+          <code class="end-path">apps/webclient</code>
+          <p>不依赖框架：index.html + style.css + app.js，Canvas 画车位图，WebSocket 实时刷新</p>
+        </div>
+
+        <div class="modules">
+          <section class="mod">
+            <div class="mod-head"><h3>页面结构</h3></div>
+            <div class="leaves">
+              <span class="leaf key">index.html</span>
+              <span class="leaf">style.css</span>
+              <span class="leaf key">app.js</span>
+              <span class="leaf">单页多视图切换</span>
+            </div>
+          </section>
+
+          <section class="mod">
+            <div class="mod-head"><h3>功能模块</h3></div>
+            <div class="leaves">
+              <span class="leaf key">登录 / 注册</span>
+              <span class="leaf">POST /auth/login · /auth/register</span>
+              <span class="leaf key">车位地图</span>
+              <span class="leaf">Canvas 绘制 · 悬停看车牌与时段</span>
+              <span class="leaf">分区过滤 · 空闲/占用/预约配色</span>
+              <span class="leaf key">预约</span>
+              <span class="leaf">创建 · 取消 · 到场确认</span>
+              <span class="leaf key">停车与缴费</span>
+              <span class="leaf">订单 · 模拟支付 · 记录查询</span>
+            </div>
+          </section>
+
+          <section class="mod">
+            <div class="mod-head"><h3>实时数据</h3></div>
+            <div class="leaves">
+              <span class="leaf key">WS /ws 事件订阅</span>
+              <span class="leaf">事件 → 增量重绘</span>
+              <span class="leaf">入库 / 出库即时反映到车图</span>
+            </div>
+          </section>
+
+          <section class="mod">
+            <div class="mod-head"><h3>与服务端契约</h3></div>
+            <div class="leaves">
+              <span class="leaf">REST /api/v1/*（JSON）</span>
+              <span class="leaf">Bearer token</span>
+              <span class="leaf">静态页由服务端 --web-root 直出</span>
+              <span class="leaf">WS /ws</span>
+            </div>
+          </section>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ===================== 关键业务流程 ===================== -->
+  <section class="flows">
+    <h2 class="title">关键业务流程</h2>
+
+    <div class="flow">
+      <h3>入库 <span class="tag">macOS 管理端 / 网页端</span></h3>
+      <ol>
+        <li>拍照或输入车牌</li>
+        <li class="arrow">→</li>
+        <li class="hot">车牌识别（置信度 &lt; 0.85 弹一次确认）</li>
+        <li class="arrow">→</li>
+        <li>车辆入场（写 parking_records）</li>
+        <li class="arrow">→</li>
+        <li class="hot">SpotAllocator 选位：分区优先 + 出口系数加权</li>
+        <li class="arrow">→</li>
+        <li class="hot">GridPlanner 生成入场路线</li>
+        <li class="arrow">→</li>
+        <li>照片留档 + 结果面板</li>
+        <li class="arrow">→</li>
+        <li>EventHub → WebSocket 推送网页端</li>
+      </ol>
+    </div>
+
+    <div class="flow">
+      <h3>出库 <span class="tag">macOS 管理端 / 网页端</span></h3>
+      <ol>
+        <li>车牌或再次识别</li>
+        <li class="arrow">→</li>
+        <li>找到在场记录与车位</li>
+        <li class="arrow">→</li>
+        <li class="hot">Billing 计费（停车时长 × 费率）</li>
+        <li class="arrow">→</li>
+        <li>支付订单（模拟网关）</li>
+        <li class="arrow">→</li>
+        <li>释放车位 · 生成出库路线</li>
+        <li class="arrow">→</li>
+        <li>记录归档 · 报表与图表更新</li>
+      </ol>
+    </div>
+
+    <div class="flow">
+      <h3>反向寻车 <span class="tag">车位图</span></h3>
+      <ol>
+        <li>选在场车牌（弹窗或下拉）</li>
+        <li class="arrow">→</li>
+        <li class="hot">入口 → 车位：灰色路线（四向 · 走车道中间）</li>
+        <li class="arrow">→</li>
+        <li class="hot">车位 → 出口：蓝色路线</li>
+        <li class="arrow">→</li>
+        <li>端点吸附车位边缘 · 拐角圆弧</li>
+        <li class="arrow">→</li>
+        <li>「清除路线」同时清掉规划路线叠层</li>
+      </ol>
+    </div>
+
+    <div class="flow">
+      <h3>预约 <span class="tag">创建即锁位</span></h3>
+      <ol>
+        <li>选车位与时段（最长提前 7 天）</li>
+        <li class="arrow">→</li>
+        <li class="hot">创建预约 → 立即锁位（Reserved）</li>
+        <li class="arrow">→</li>
+        <li>到场确认 → 生成在场记录（Active）</li>
+        <li class="arrow">→</li>
+        <li>超时未到 → 爽约释放 + 押金处理</li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ===================== 部署与通信 ===================== -->
+  <section class="deploy">
+    <h2 class="title">部署与通信</h2>
+    <table>
+      <thead>
+        <tr><th style="width:15%">角色</th><th style="width:29%">运行形态</th><th style="width:28%">数据 / 依赖</th><th>与本系统其它部分的连接</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>服务端</strong></td>
+          <td><code>smartpark_server</code>（s1 上由 <code>start.sh</code> 拉起）</td>
+          <td>SQLite 库 + <code>data/garage-3tower.txt</code> + 静态页目录</td>
+          <td>TCP 9527 / HTTP 18080 / WS 18081，供 macOS 与网页端接入</td>
+        </tr>
+        <tr>
+          <td><strong>macOS 管理端</strong></td>
+          <td><code>smartpark_admin_macos.app</code>（Qt 6.8.3 + AppKit）</td>
+          <td>本地模式用本地库与本地 LPR；远程模式连服务端</td>
+          <td>本地：直接调 <code>ParkingService</code>；远程：TCP v1 + REST</td>
+        </tr>
+        <tr>
+          <td><strong>网页端</strong></td>
+          <td>静态页（服务端 <code>--web-root</code> 直出）</td>
+          <td>浏览器内运行，无构建步骤</td>
+          <td>REST <code>/api/v1/*</code> + WebSocket <code>/ws</code></td>
+        </tr>
+        <tr>
+          <td><strong>车牌识别</strong></td>
+          <td>Python：<code>scripts/recognize_plate.py</code>（检测 + OCR）</td>
+          <td>ONNX 模型 + 运行缓存</td>
+          <td>由服务端 <code>PlateRecognition</code> 或 macOS 本地进程调用</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <footer>smartpark · 课程设计 · 三层结构：系统 → 端 → 模块（本图由项目源码结构整理）</footer>
+</div>
+</body>
+</html>

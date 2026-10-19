@@ -208,7 +208,8 @@ void SmartParkTcpServer::dispatch(Session &session, const QString &id,
     } else if (action == QStringLiteral("spot.list")){
         result = actionSpotList(payload, &ok, &error);
     } else if (action == QStringLiteral("parking.enter")){
-        result = actionEnter(payload, &ok, &error);
+        startEnter(session, id, payload);
+        return;
     } else if (action == QStringLiteral("parking.leave")){
         result = actionLeave(payload, &ok, &error);
     } else if (action == QStringLiteral("reservation.create")){
@@ -410,29 +411,37 @@ QJsonObject SmartParkTcpServer::actionSpotList(const QJsonObject &, bool *ok,
     return result;
 }
 
-QJsonObject SmartParkTcpServer::actionEnter(const QJsonObject &payload,
-                                            bool *ok, QString *error){
+void SmartParkTcpServer::startEnter(Session &session, const QString &id,
+                                    const QJsonObject &payload){
     const QString plate = payload.value(QStringLiteral("plate")).toString().trimmed();
     const auto type = protocol::vehicleTypeFromString(
         payload.value(QStringLiteral("vehicleType")).toString(QStringLiteral("car")));
-    if (plate.isEmpty() || !type.has_value()){
-        *error = QStringLiteral("车牌或车辆类型无效");
-        return {};
+    if (plate.isEmpty() || !type){
+        respond(session, id, false, {}, QStringLiteral("车牌或车辆类型无效"));
+        return;
     }
-    const auto result = service_->enter({plate.toStdString(), *type});
-    if (!result){
-        *error = QStringLiteral("入场失败：车辆已在场内或无可用车位");
-        return {};
-    }
-    QJsonObject response = allocationToPayload(*result);
-    QJsonObject eventPayload;
-    eventPayload.insert(QStringLiteral("plate"), plate);
-    eventPayload.insert(QStringLiteral("spotId"), QString::fromStdString(result->spotId));
-    eventPayload.insert(QStringLiteral("entryTime"),
-                        QDateTime::currentMSecsSinceEpoch());
-    broadcastEvent(QStringLiteral("parking.entered"), eventPayload);
-    *ok = true;
-    return response;
+    QPointer<QTcpSocket> socket = session.socket;
+    const QString token = session.token;
+    service_->enterAsync({plate.toStdString(), *type}, this,
+        [this, socket, token, id, plate](AsyncEntryOutcome outcome){
+        // 已提交的入场仍广播；连接中断只影响回包。
+        if (outcome.allocation){
+            broadcastEvent(QStringLiteral("parking.entered"),
+                QJsonObject{{QStringLiteral("plate"), plate},
+                    {QStringLiteral("spotId"), QString::fromStdString(outcome.allocation->spotId)},
+                    {QStringLiteral("entryTime"), QDateTime::currentMSecsSinceEpoch()}});
+        }
+        if (!socket){
+            return;
+        }
+        const auto it = sessions_.find(socket.data());
+        if (it == sessions_.end() || !it->authenticated || it->token != token){
+            return;
+        }
+        respond(it.value(), id, outcome.allocation.has_value(),
+                outcome.allocation ? allocationToPayload(*outcome.allocation) : QJsonObject{},
+                QString::fromStdString(outcome.error));
+    });
 }
 
 QJsonObject SmartParkTcpServer::actionLeave(const QJsonObject &payload,

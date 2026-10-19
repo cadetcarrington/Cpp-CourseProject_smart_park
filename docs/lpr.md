@@ -16,7 +16,9 @@ YOLO_OFFLINE=true ~/.smartpark/lpr/bin/python -B scripts/recognize_plate.py \
 
 配套配置见 [OCR 配置](../model/weights/smartpark_plate_ppocrv5_config.yml)。必须使用训练时的完整 [ppocrv5_dict.txt](../scripts/rec/ppocrv5_dict.txt)，不能换成车牌小字典。解释器路径只展开为绝对路径，不能解析掉虚拟环境的 Python 符号链接，否则可能绕过虚拟环境配置。
 
-成功返回一行 JSON，包含 `plate`、检测／识别置信度、`bounding_box`、`valid`、`crop`、`quad_source` 和 `flip_checked`；失败打印原因到 stderr 并返回非零状态。脚本默认使用 CPU，每次请求重新加载模型，暂不提供多图批处理。`valid` 仅表示字符格式合法，不等于模型识别正确；管理端仍要求人工核对。
+成功返回一行 JSON，包含 `plate`、检测／识别置信度、`bounding_box`、`valid`、`crop`、`quad_source`、`flip_checked`、`color`（底色：`blue`/`green`/`yellow`/`white`/`black`/`unknown`，见 [plate_color.py](../scripts/plate_color.py)）与 `new_energy`（号牌为 8 位新能源时为 `true`）；失败打印原因到 stderr 并返回非零状态。脚本默认使用 CPU，每次请求重新加载模型，暂不提供多图批处理。`valid` 仅表示字符格式合法，不等于模型识别正确；管理端仍要求人工核对。`new_energy` 为真时 macOS 管理端与网页端会把车辆类型自动记为电动车（管理端仍可在下拉框改回）。
+
+检测器在整张照片里一个框都没给、而这张图本身就是裁好的车牌（宽高比 1.8–8、高至少 32 像素，例如管理端留在 `examples/platephoto/` 的识别裁剪图）时，脚本把整图直接送识别器兜底：只有车牌格式合法且识别置信度不低于 0.9 才返回结果，否则仍报 `No license plate detected`。兜底结果里 `crop` 为 `whole`、`quad_source` 为 `none`、`detection_confidence` 为 `null`（管理端显示「—」），因为确实没有检测这一步。普通照片检测不到车牌不会走这条路径。
 
 ## 推理检查点与可选加速
 

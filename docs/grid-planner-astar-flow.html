@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GridPlanner 路径规划算法流程（横向）· A* on (cell × direction)</title>
+<style>
+  :root{
+    --bg:#eef2f9; --card:#ffffff; --ink:#1e293b; --muted:#64748b; --line:#dbe3ee;
+    --entry:#2563eb; --init:#7c3aed; --heur:#0d9488; --loop:#d97706; --end:#475569; --recon:#16a34a; --out:#0f172a;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:linear-gradient(180deg,#eaf0f9 0%,#f7fafd 55%,#f7fafd 100%);
+    color:var(--ink); padding:30px 24px 44px;
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  }
+  header{max-width:1560px;margin:0 auto 16px}
+  h1{font-size:23px;line-height:1.3;margin:0 0 6px;letter-spacing:.2px}
+  h1 small{font-size:13px;font-weight:500;color:var(--muted);margin-left:8px}
+  .sub{margin:0;color:var(--muted);font-size:13px}
+  .pills{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .pill{font-size:12px;padding:3px 11px;border-radius:999px;background:#fff;border:1px solid var(--line);color:#334155}
+  .pill b{font-weight:600;color:#0f172a}
+  .canvas{max-width:1560px;margin:18px auto 0;overflow-x:auto;padding-bottom:10px}
+  .flow{display:flex;align-items:stretch;min-width:1500px}
+  .step{
+    flex:0 0 192px;background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:12px 12px 10px;box-shadow:0 2px 7px rgba(15,23,42,.05);
+    display:flex;flex-direction:column;gap:8px;position:relative;
+  }
+  .step::before{content:"";position:absolute;left:0;right:0;top:0;height:3px;border-radius:14px 14px 0 0;background:var(--muted)}
+  .c-entry{border-top-color:transparent}
+  .c-entry::before{background:var(--entry)} .c-init::before{background:var(--init)}
+  .c-heur::before{background:var(--heur)} .c-loop::before{background:var(--loop)}
+  .c-end::before{background:var(--end)} .c-recon::before{background:var(--recon)}
+  .c-out::before{background:var(--out)}
+  .step h3{margin:0;font-size:14px;display:flex;align-items:center;gap:7px;line-height:1.35}
+  .no{width:22px;height:22px;flex:0 0 auto;border-radius:7px;display:inline-grid;place-items:center;
+      font-size:11.5px;font-weight:600;color:#fff;background:var(--muted)}
+  .c-entry .no{background:var(--entry)} .c-init .no{background:var(--init)}
+  .c-heur .no{background:var(--heur)} .c-loop .no{background:var(--loop)}
+  .c-end .no{background:var(--end)} .c-recon .no{background:var(--recon)}
+  .c-out .no{background:var(--out)}
+  .ref{font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#94a3b8;
+       background:#f8fafc;border:1px dashed #e2e8f0;border-radius:6px;padding:2px 5px;width:fit-content}
+  .step ul{margin:0;padding-left:15px;display:flex;flex-direction:column;gap:5px}
+  .step li{font-size:12.5px;color:#334155}
+  .step p{margin:0;font-size:12.5px;color:#334155}
+  .step code{font:11.5px ui-monospace,Menlo,Consolas,monospace;background:#f1f5f9;border-radius:4px;padding:0 4px}
+  .step .badge{margin-top:auto;font-size:11px;color:#b45309;background:#fffbeb;
+      border:1px solid #fcd34d;border-radius:8px;padding:3px 7px;width:fit-content}
+  .arrow{flex:0 0 30px;display:grid;place-items:center;color:#94a3b8;font-size:17px;padding-top:46px;user-select:none}
+  .loopbar{
+    max-width:1560px;margin:12px auto 0;min-width:1500px;
+    border:1.5px dashed #f59e0b;background:#fffdf5;border-radius:12px;
+    color:#92400e;font-size:12.5px;padding:8px 14px;display:flex;gap:10px;align-items:center;
+  }
+  .row{display:flex;gap:14px;max-width:1560px;margin:20px auto 0;flex-wrap:wrap}
+  .panel{flex:1 1 340px;background:#fff;border:1px solid var(--line);border-radius:14px;
+         padding:14px 16px 12px;box-shadow:0 2px 7px rgba(15,23,42,.04)}
+  .panel h2{font-size:14px;margin:0 0 9px;display:flex;align-items:center;gap:7px}
+  .panel h2 .dot{width:8px;height:8px;border-radius:50%;background:var(--entry)}
+  .panel.warn h2 .dot{background:var(--loop)} .panel.perf h2 .dot{background:var(--heur)}
+  .panel ul{margin:0;padding-left:17px;display:flex;flex-direction:column;gap:5px}
+  .panel li{font-size:12.5px;color:#334155}
+  .panel code{font:11.5px ui-monospace,Menlo,Consolas,monospace;background:#f1f5f9;border-radius:4px;padding:0 4px}
+  .table{max-width:1560px;margin:20px auto 0;border-collapse:collapse;width:100%;background:#fff;
+         border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 2px 7px rgba(15,23,42,.04)}
+  .table caption{caption-side:top;text-align:left;font-weight:600;font-size:14px;padding:14px 16px 10px}
+  .table th,.table td{font-size:12.5px;padding:8px 14px;border-top:1px solid #edf1f7;text-align:left;vertical-align:top}
+  .table th{background:#f8fafc;color:#475569;font-weight:600}
+  footer{max-width:1560px;margin:18px auto 0;color:#94a3b8;font-size:12px}
+  @media print{
+    body{background:#fff;padding:10px}
+    .canvas{overflow:visible}
+    .flow{min-width:0;flex-wrap:wrap;gap:8px}
+    .arrow{padding-top:38px}
+    .loopbar{min-width:0}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>GridPlanner 路径规划算法流程 <small>A* · 单源多目标 · 状态 = 格子 × 到达方向</small></h1>
+  <p class="sub">横向流程图。入口来自 <code>plan()</code> / <code>planFromToTargets()</code>；搜索在扩展状态图上做 A*，重建返回最优路线。</p>
+  <div class="pills">
+    <span class="pill"><b>状态</b> 格子 × 8 到达方向 + 无方向起点</span>
+    <span class="pill"><b>启发 h</b> 到最近目标中心的 octile / Manhattan</span>
+    <span class="pill"><b>优先队列</b> f = g + h，二叉堆 + 惰性删除</span>
+    <span class="pill"><b>退化</b> 目标为空 ⇒ h≡0 ⇒ Dijkstra</span>
+    <span class="pill"><b>源码</b> src/core/service/GridPlanner.cpp</span>
+  </div>
+</header>
+
+<div class="canvas">
+  <div class="flow">
+    <!-- 01 -->
+    <section class="step c-entry">
+      <h3><span class="no">01</span>入口与坐标映射</h3>
+      <ul>
+        <li><code>plan(from,to)</code>：单目标</li>
+        <li><code>planFromToTargets(from,targets)</code>：多目标</li>
+        <li><code>nearestFreeCell()</code> 把起点 / 目标点映射到最近空闲格</li>
+        <li>起点或目标全部不可达 ⇒ 返回空 Route</li>
+      </ul>
+      <span class="ref">GridPlanner.cpp:156 · :163</span>
+    </section>
+    <div class="arrow">➜</div>
+
+    <!-- 02 -->
+    <section class="step c-init">
+      <h3><span class="no">02</span>初始化状态空间</h3>
+      <ul>
+        <li>状态编号 = <code>格子 × 8 + 到达方向</code>，另加一个无方向起点状态</li>
+        <li>取当前线程复用的 <code>SearchScratch</code>；<code>generation++</code> 代替整体清零</li>
+        <li>目标格用 <code>goalStamp</code> 去重；目标全不可达 ⇒ 返回空</li>
+      </ul>
+      <span class="ref">GridPlanner.cpp:204–263</span>
+    </section>
+    <div class="arrow">➜</div>
+
+    <!-- 03 -->
+    <section class="step c-heur">
+      <h3><span class="no">03</span>启发值表</h3>
+      <ul>
+        <li><code>h(格子) = min 到各目标格子中心的距离</code></li>
+        <li>8 方向用 octile；四向行人模式用 Manhattan</li>
+        <li>忽略障碍 / 占用 / 转弯 ⇒ 永不高估 ⇒ 最优性不变</li>
+        <li>目标集合为空 ⇒ h 全 0（退化为 Dijkstra）</li>
+      </ul>
+      <span class="ref">GridPlanner.cpp:266–292</span>
+    </section>
+    <div class="arrow">➜</div>
+
+    <!-- 04 -->
+    <section class="step c-loop">
+      <h3><span class="no">04</span>A* 主循环</h3>
+      <ul>
+        <li>从堆中弹出 <code>f = g + h</code> 最小的状态</li>
+        <li>惰性删除：<code>cost &gt; bestCost</code> 的过期堆项直接丢弃</li>
+        <li>目标格首次结算 → 记录；全部目标结算 → <b>break</b></li>
+        <li>展开方向：8 向（四向模式 4 向），检查边界 / 障碍 / 切角</li>
+        <li><code>step = (步长 + 转弯罚分) × 拥堵系数</code></li>
+        <li>g 更优 ⇒ 更新 <code>parent / bestCost</code>，压入 <code>g + h</code></li>
+      </ul>
+      <span class="badge">↻ 循环直到终止条件满足</span>
+      <span class="ref">GridPlanner.cpp:299–380</span>
+    </section>
+    <div class="arrow">➜</div>
+
+    <!-- 05 -->
+    <section class="step c-end">
+      <h3><span class="no">05</span>终止判定</h3>
+      <ul>
+        <li>open 为空：所有可达状态已结算</li>
+        <li>或全部目标格都已结算：提前终止</li>
+        <li>不可达目标不产生路线（由重建返回空）</li>
+      </ul>
+      <span class="ref">GridPlanner.cpp:312–380</span>
+    </section>
+    <div class="arrow">➜</div>
+
+    <!-- 06 -->
+    <section class="step c-recon">
+      <h3><span class="no">06</span>路线重建</h3>
+      <ul>
+        <li>目标格的首结算状态 → 沿 <code>parent</code> 回溯到起点状态</li>
+        <li>路径点 = 起点中心 + 方向变化处 + 目标点</li>
+        <li><code>distance</code> = 欧氏距离和；<code>turnCount</code> = 方向变化数；<code>cost</code> = 目标状态 bestCost</li>
+      </ul>
+      <span class="ref">GridPlanner.cpp:380</span>
+    </section>
+    <div class="arrow">➜</div>
+
+    <!-- 07 -->
+    <section class="step c-out">
+      <h3><span class="no">07</span>输出路线</h3>
+      <p><code>Route { points, distance, cost, turnCount }</code></p>
+      <ul>
+        <li><code>plan()</code> → 1 条路线</li>
+        <li><code>planFromToTargets()</code> → N 条路线，共享同一棵搜索树</li>
+      </ul>
+      <span class="ref">GridPlanner.h:7 · :30</span>
+    </section>
+  </div>
+
+  <div class="loopbar">
+    <span>↻</span>
+    <span><b>主循环</b>（步骤 04）反复执行：弹出 f 最小状态 → 过期检查 → 目标结算 → 展开 8 个方向 → 松弛并压堆；直到 open 为空或全部目标结算后进入步骤 06。</span>
+  </div>
+</div>
+
+<div class="row">
+  <div class="panel">
+    <h2><span class="dot"></span>关键数据结构</h2>
+    <ul>
+      <li><code>bestCost[state]</code> / <code>parent[state]</code>：按“状态”存而不是按格子，保证每格首个结算状态即最优</li>
+      <li><code>firstSettledState[cell]</code> + <code>firstSettledStamp</code>：多目标提前终止与路线重建的落点</li>
+      <li><code>goalStamp[cell]</code>：目标格去重；<code>openSet</code>：<code>std::push_heap / pop_heap</code> 二叉堆</li>
+      <li><code>SearchScratch</code>（thread_local）：容量只增不减，<code>generation</code> 标记表示“本次搜索写过该槽位”，省掉每次 ≈1.3&nbsp;MB 的分配与清零</li>
+    </ul>
+  </div>
+
+  <div class="panel warn">
+    <h2><span class="dot"></span>分支与退化情况</h2>
+    <ul>
+      <li><b>目标集合为空</b>：h≡0，退化为单源全图 Dijkstra（保留给需要全场距离场的调用）</li>
+      <li><b>四向行人模式</b> <code>allowDiagonal=false</code>：只展开上下左右 4 向，启发值用 Manhattan；状态空间仍按 8 向分配</li>
+      <li><b>不可达</b>：起点/目标无空闲格，或目标格全部不可达 → 空 Route</li>
+      <li><b>多入口寻车</b>：当前是每个入口各跑一次单源搜索后比较，不是一次多源 A*</li>
+    </ul>
+  </div>
+
+  <div class="panel perf">
+    <h2><span class="dot"></span>性能与复杂度</h2>
+    <ul>
+      <li>状态数 ≈ 格子数 × 8：真实车库 9,860 格 → 78,881 状态</li>
+      <li>最坏复杂度同 Dijkstra <code>O(E log V)</code>；h 越紧扩展越少</li>
+      <li>启发表一次预计算 <code>O(格子数 × 目标数)</code> —— 多目标批量调用的主要开销</li>
+      <li>惰性删除替代 closed 数组；配合 scratch 复用：Release 快 6–15%，Debug 寻车串行快约 2.7×</li>
+      <li>A* 相比 Dijkstra 单目标显著更快（行人单目标规划 736→84&nbsp;µs 量级）</li>
+    </ul>
+  </div>
+</div>
+
+<table class="table">
+  <caption>入口 → 搜索 → 输出对照</caption>
+  <thead>
+    <tr><th>入口</th><th>源 / 目标</th><th>搜索方式</th><th>输出</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>plan(from, to)</code></td><td>1 源 → 1 目标</td><td>单目标 A*（经 <code>searchFrom</code>）</td><td>1 条 <code>Route</code></td></tr>
+    <tr><td><code>planFromToTargets(from, targets)</code></td><td>1 源 → N 目标</td><td>一次多目标 A*，全部目标结算后提前结束</td><td>N 条 <code>Route</code>（共享一棵搜索树）</td></tr>
+    <tr><td>寻车（多入口）</td><td>每个入口/出口各 1 源 → 同 1 目标</td><td>N 次独立的单目标 A*，再比较结果取最优</td><td>最优一条路线 + 距离/代价</td></tr>
+    <tr><td>目标集合为空（内部调用）</td><td>1 源 → 全图</td><td>h≡0，单源全图 Dijkstra</td><td>全场距离场（由调用方使用）</td></tr>
+  </tbody>
+</table>
+
+<footer>
+  依据当前工作区源码绘制（GridPlanner.h / GridPlanner.cpp，2026-10-18）。状态图修复了旧版“每格单状态 + 转弯罚分”导致的反例（7.41 → 6.00）。
+</footer>
+</body>
+</html>

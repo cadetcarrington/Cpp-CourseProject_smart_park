@@ -23,6 +23,7 @@
 #import "LoginViewController.h"
 #import "OperationsViewController.h"
 #import "LocalRecognitionService.h"
+#import "PlatePhotoArchive.h"
 #import "TableView.h"
 #import "MainWindowController.h"
 #import "TextUtil.h"   // smartpark_ui::toNSString：中文安全的 QString -> NSString
@@ -59,6 +60,8 @@
 - (void)runRecognitionForImage:(NSString *)imagePath;
 - (void)cancelRecognition:(id)sender;
 - (void)stopLocalRecognitionService:(NSNotification *)notification;
+- (NSString *)applyNewEnergyVehicleTypeForResult:(NSDictionary *)result;
+- (void)performRecognitionIntentWithPlate:(NSString *)plate result:(NSDictionary *)result;
 - (NSString *)localRecognitionSocketForScript:(NSString *)script
                               detectorPython:(NSString *)detectorPython
                                    ocrPython:(NSString *)ocrPython
@@ -152,6 +155,39 @@ static void *readPointerIvar(id object, const char *name){
         return nullptr;
     }
     return *(void **)((char *)(__bridge void *)object + ivar_getOffset(ivar));
+}
+
+// 私有枚举/整数 ivar（如 _recognitionIntent）用同一个偏移技巧写入和读出。
+static void writeIntegerIvar(id object, const char *name, long long value){
+    Ivar ivar = class_getInstanceVariable([object class], name);
+    if (ivar == nullptr){
+        return;
+    }
+    void *slot = (char *)(__bridge void *)object + ivar_getOffset(ivar);
+    switch (ivar_getTypeEncoding(ivar)[0]){
+    case 'c': *(signed char *)slot = (signed char)value; break;
+    case 's': *(short *)slot = (short)value; break;
+    case 'i': *(int *)slot = (int)value; break;
+    case 'l': *(long *)slot = (long)value; break;
+    case 'q': *(long long *)slot = value; break;
+    default: break;
+    }
+}
+
+static long long readIntegerIvar(id object, const char *name){
+    Ivar ivar = class_getInstanceVariable([object class], name);
+    if (ivar == nullptr){
+        return 0;
+    }
+    void *slot = (char *)(__bridge void *)object + ivar_getOffset(ivar);
+    switch (ivar_getTypeEncoding(ivar)[0]){
+    case 'c': return *(signed char *)slot;
+    case 's': return *(short *)slot;
+    case 'i': return *(int *)slot;
+    case 'l': return *(long *)slot;
+    case 'q': return *(long long *)slot;
+    default: return 0;
+    }
 }
 
 #pragma clang diagnostic pop
@@ -303,17 +339,27 @@ int main(int argc, char **argv){
             expect(bridge->totalSpots() > 0, "车位总数来自服务端");
         }
 
-        // 0.7 延迟锁位：预约生效但车位还没锁定，车位图/当前车位全靠这份列表
-        // 才能显示「已预约」——用户在网页上预约后看的正是这两页。
+        // 0.7 创建即锁位（WIP 新语义）：预约一创建车位就锁住，不再有
+        // 「已预约未锁位」的窗口，pendingReservations 因此为空；预约车位在
+        // 快照里直接是 Reserved，车位图/当前车位页按车位状态显示「已预约」。
         if (!external){
             const auto pending = bridge->pendingReservations();
             std::printf("       未锁位的预约：%zu 笔\n", pending.size());
-            expect(pending.size() == 1,
-                   "延迟锁位的预约进入 pendingReservations（网页预约在车位上也看得见）");
-            if (!pending.empty()){
-                expect(pending.front().plate == "京A20001",
-                       "未锁位预约带回车牌与车位");
+            expect(pending.empty(),
+                   "创建即锁位后没有未锁位的预约（pendingReservations 为空）");
+            bool reservationSpotLocked = false;
+            if (!bridge->reservations().empty()){
+                const std::string reservedSpotId = bridge->reservations().front().spotId();
+                for (const smartpark::ParkingSpot &spot : bridge->spots()){
+                    if (spot.identifier() == reservedSpotId
+                        && spot.status() == smartpark::SpotStatus::Reserved){
+                        reservationSpotLocked = true;
+                        break;
+                    }
+                }
             }
+            expect(reservationSpotLocked,
+                   "网页预约创建后车位在快照里已锁位（Reserved）");
         }
 
         // 这几项原先在远程模式下全是 false，页面与卡片因此被隐藏。
@@ -356,8 +402,7 @@ int main(int argc, char **argv){
                        && rule.lockLeadTimeMin > 0 && rule.deposit > 0.0,
                    "预约规则随快照下发（表单不再用本地默认策略）");
 
-            // 开始时间取「最短提前量 + 3 秒」：既满足提前量，又让到场窗口
-            // （开始前 lockLeadTime 分钟起）在几秒后打开，省掉长等待。
+            // 开始时间取「最短提前量 + 3 秒」：满足提前量即可，到场窗口现在从创建时打开，无需等待。
             const auto nowWrite = smartpark::ParkingRecord::Clock::now();
             const auto startWrite = nowWrite
                 + std::chrono::minutes(rule.minLeadTimeMin) + std::chrono::seconds(3);
@@ -582,15 +627,16 @@ int main(int argc, char **argv){
             expect(viewContainsText(main.contentViewController.view, check.needle), label);
         }
 
-        // 「当前车位」页：延迟锁位的预约要显示为「已预约」并带预约车牌
-        // （用户报的就是「网页预约之后当前车位看不到」）。
+        // 「当前车位」页：创建即锁位的预约要显示为「已预约」并带预约车牌
+        // （用户报的就是「网页预约之后当前车位看不到」）。状态列显示「已预约」，
+        // 车牌/车型/时段取预约订单上的值。
         // NSTableView 只实例化可见行，所以这里断言的是表格的行数据 + 页面提示，
         // 而不是去页面里找那行文字（车位 A0xx 可能正好在可视区之外）。
         [sidebar selectIndex:3];
         spin([]{ return false; }, 450);
         [main.contentViewController.view layoutSubtreeIfNeeded];
         expect(viewContainsText(main.contentViewController.view, @"已预约"),
-               "「当前车位」页在提示里说明「已预约（未锁位）」");
+               "「当前车位」页在提示里说明「已预约（已锁位）」");
         if (!external){
             id occupancyPage = pages[3];
             TableView *left = (__bridge TableView *)readPointerIvar(occupancyPage, "_table");
@@ -607,23 +653,23 @@ int main(int argc, char **argv){
                     [rows addObjectsFromArray:part];
                 }
             }
-            bool pendingRow = false;
+            bool reservedRow = false;
             for (NSArray<NSString *> *row in rows){
                 if (row.count >= 5 && [row[1] isEqualToString:@"已预约"]
                     && [row[2] isEqualToString:@"京A20001"]
                     && ![row[4] isEqualToString:@"-"]){
-                    pendingRow = true;
+                    reservedRow = true;
                 }
             }
-            expect(pendingRow,
-                   "「当前车位」页有一行：已预约 · 京A20001 · 预约时段（延迟锁位也看得见）");
+            expect(reservedRow,
+                   "「当前车位」页有一行：已预约 · 京A20001 · 预约时段（已锁位也看得见）");
         }
-        // 「车位地图」页：虚线框图例（说明「已预约≠已锁位」）。
+        // 「车位地图」页：橙色框图例（说明「已预约」的车位已经锁位）。
         [sidebar selectIndex:1];
         spin([]{ return false; }, 450);
         [main.contentViewController.view layoutSubtreeIfNeeded];
-        expect(viewContainsText(main.contentViewController.view, @"虚线框"),
-               "「车位地图」页渲染出「已预约未锁位」图例");
+        expect(viewContainsText(main.contentViewController.view, @"橙色框"),
+               "「车位地图」页渲染出「橙色框 = 已被预约」图例");
 
         // 「预约管理」页还要显示时段预约（网页端创建的那种）。
         [sidebar selectIndex:4];
@@ -692,7 +738,7 @@ int main(int argc, char **argv){
             // 表单本身也不能是空的：按钮、时长与规则提示（规则来自快照，
             // 远程模式下不再是「至少提前 0 分钟」）。
             expect(viewContainsText(main.contentViewController.view, @"创建预约")
-                       && viewContainsText(main.contentViewController.view, @"到场确认")
+                       && viewContainsText(main.contentViewController.view, @"确认所选预约到场")
                        && viewContainsText(main.contentViewController.view, @"时长")
                        && viewContainsText(main.contentViewController.view, @"无障碍车位"),
                    "「预约管理」页表单渲染出按钮与字段");
@@ -718,10 +764,197 @@ int main(int argc, char **argv){
             }
         }
 
+        // ---- 预约管理的「选中行」操作与窄窗口可读性 ----
+        // 用户报告：在列表里点选一条预约后按「取消预约/到场确认」，实际操作
+        // 的仍是输入框里敲的车牌，选中的记录被静默忽略；窗口缩到 1080×600
+        // 时日期列被压成「2026-10-…」，车位类型也读不出来。
+        if (!external){
+            // 1080×600 接近窗口最小尺寸（960×600），正是用户缩放到的尺寸。
+            [window setContentSize:NSMakeSize(1080, 600)];
+            spin([]{ return false; }, 300);
+            [main.contentViewController.view layoutSubtreeIfNeeded];
+            [sidebar selectIndex:4];
+            spin([]{ return false; }, 450);
+            [main.contentViewController.view layoutSubtreeIfNeeded];
+
+            id bookingPage = pages[4];
+            TableView *bookingTable =
+                (__bridge TableView *)readPointerIvar(bookingPage, "_table");
+            NSTextField *plateField =
+                (__bridge NSTextField *)readPointerIvar(bookingPage, "_plateField");
+            NSTextField *statusLabel =
+                (__bridge NSTextField *)readPointerIvar(bookingPage, "_statusLabel");
+            NSButton *cancelButton =
+                (__bridge NSButton *)readPointerIvar(bookingPage, "_cancelButton");
+            NSButton *checkInButton =
+                (__bridge NSButton *)readPointerIvar(bookingPage, "_checkInButton");
+            expect(bookingTable != nil && plateField != nil && statusLabel != nil
+                       && cancelButton != nil && checkInButton != nil,
+                   "读预约管理页的表格、表单与「所选」操作按钮");
+            if (bookingTable != nil && cancelButton != nil){
+                // 1) 窄窗口：每列都保持在最小宽度以上，整表可横向滚动。
+                const NSInteger minimums[] = {100, 88, 72, 130, 130, 130, 70, 80, 80};
+                NSArray<NSTableColumn *> *columns = bookingTable.tableView.tableColumns;
+                bool widthsOk = (columns.count == 9);
+                for (NSUInteger index = 0; index < columns.count && index < 9; ++index){
+                    if (columns[index].width < (CGFloat)minimums[index] - 0.5){
+                        widthsOk = false;
+                    }
+                }
+                expect(widthsOk, "预约管理页窄窗口下每列不小于最小宽度（日期不被压成省略号）");
+                NSScrollView *bookingScroll = bookingTable.tableView.enclosingScrollView;
+                const CGFloat documentWidth = bookingScroll.documentView.frame.size.width;
+                const CGFloat viewportWidth = bookingScroll.contentView.bounds.size.width;
+                std::printf("       窄窗口表格：内容 %.0f pt，可视 %.0f pt\n",
+                            documentWidth, viewportWidth);
+                expect(bookingScroll.hasHorizontalScroller
+                           && documentWidth > viewportWidth + 0.5,
+                       "预约管理页窄窗口下表格可横向滚动查看完整内容");
+
+                // 2) 单元格 toolTip 带完整取值：被省略的日期悬停可读。
+                NSArray<NSString *> *firstRow = [bookingTable rowAtIndex:0];
+                NSString *fullValue = firstRow.count > 4 ? firstRow[4] : nil;
+                bool tooltipOk = false;
+                if (fullValue.length > 0){
+                    id delegate = bookingTable.tableView.delegate;
+                    NSView *cell = [delegate tableView:bookingTable.tableView
+                                    viewForTableColumn:columns[4]
+                                                   row:0];
+                    tooltipOk = [cell.toolTip isEqualToString:fullValue];
+                    if (!tooltipOk){
+                        for (NSView *child in cell.subviews){
+                            if ([child isKindOfClass:[NSTextField class]]
+                                && [((NSTextField *)child).toolTip isEqualToString:fullValue]){
+                                tooltipOk = true;
+                            }
+                        }
+                    }
+                }
+                std::printf("       预约时间单元格 toolTip：%s\n",
+                            fullValue.length > 0 ? [fullValue UTF8String] : "(无)");
+                expect(tooltipOk, "预约时间单元格的 toolTip 是完整日期（被截断时可悬停查看）");
+
+                // 3) 选中一条已确认的时段预约：表单同步、按钮指向所选。
+                NSInteger reservationRow = -1;
+                NSString *selectedId = nil;
+                NSString *selectedPlate = nil;
+                for (NSInteger row = 0; row < bookingTable.tableView.numberOfRows; ++row){
+                    NSArray<NSString *> *values = [bookingTable rowAtIndex:row];
+                    if (values.count >= 9 && [values[8] isEqualToString:@"时段预约"]
+                        && [values[7] isEqualToString:@"已确认"]){
+                        reservationRow = row;
+                        selectedId = values[0];
+                        selectedPlate = values[1];
+                        break;
+                    }
+                }
+                expect(reservationRow >= 0, "预约管理页有可操作的「时段预约」行");
+                if (reservationRow >= 0){
+                    [bookingTable.tableView selectRowIndexes:
+                        [NSIndexSet indexSetWithIndex:(NSUInteger)reservationRow]
+                                           byExtendingSelection:NO];
+                    spin([]{ return false; }, 200);
+                    expect([plateField.stringValue isEqualToString:selectedPlate],
+                           "选中预约后车牌输入框同步为该记录的车牌");
+                    expect([cancelButton.title containsString:@"所选"]
+                               && [checkInButton.title containsString:@"所选"],
+                           "操作按钮标题标明作用于「所选」预约");
+                    expect([statusLabel.stringValue containsString:@"已选择"]
+                               && [statusLabel.stringValue containsString:selectedPlate],
+                           "状态栏显示选中目标（车牌/车位/状态/时段）");
+
+                    // 选中后用户又改输入框：操作仍必须落在选中的记录上。
+                    plateField.stringValue = @"京A99999";
+                    [cancelButton performClick:nil];
+                    spin([]{ return false; }, 300);
+                    const std::string targetId = selectedId.UTF8String;
+                    const bool cancelled = spin([&]{
+                        for (const smartpark::Reservation &item : bridge->reservations()){
+                            if (item.id() == targetId){
+                                return item.status()
+                                    == smartpark::ReservationStatus::Cancelled;
+                            }
+                        }
+                        return false;
+                    }, 5000);
+                    expect(cancelled,
+                           "改了输入框后点「取消所选预约」仍取消选中的预约");
+                    expect(bridge->lastError().empty(),
+                           "取消所选预约没有残留错误（没拿输入框里的京A99999 去操作）");
+                    expect([statusLabel.stringValue containsString:@"取消成功"],
+                           "取消所选预约后页面报成功");
+                    expect([bookingTable.tableView selectedRow] == -1,
+                           "数据刷新后选中状态被重置（旧行号不会指向别的记录）");
+                }
+
+                // 4) 历史预约（显示用）不可操作：选中后按钮禁用，直接调用也被拒。
+                NSInteger historyRow = -1;
+                for (NSInteger row = 0; row < bookingTable.tableView.numberOfRows; ++row){
+                    NSArray<NSString *> *values = [bookingTable rowAtIndex:row];
+                    if (values.count >= 9 && [values[8] isEqualToString:@"预约(历史)"]){
+                        historyRow = row;
+                        break;
+                    }
+                }
+                expect(historyRow >= 0, "预约管理页显示历史预约行（只读）");
+                if (historyRow >= 0){
+                    [bookingTable.tableView selectRowIndexes:
+                        [NSIndexSet indexSetWithIndex:(NSUInteger)historyRow]
+                                           byExtendingSelection:NO];
+                    spin([]{ return false; }, 200);
+                    expect(!cancelButton.enabled && !checkInButton.enabled,
+                           "选中历史预约后「取消/确认所选」按钮被禁用");
+                    expect([statusLabel.stringValue containsString:@"只读"],
+                           "选中历史预约后状态栏说明只读");
+                    // 按钮已禁用，但程序化调用也不能拿历史记录去改真实数据。
+                    [bookingPage cancel:nil];
+                    spin([]{ return false; }, 200);
+                    expect([statusLabel.stringValue containsString:@"只读"],
+                           "对历史预约调用取消被拒绝并提示只读");
+                }
+            }
+
+            // 5) 「当前车位」页响应式：窄窗口一张表显示全部车位，宽窗口恢复两表。
+            TableView *occupancyLeft =
+                (__bridge TableView *)readPointerIvar(pages[3], "_table");
+            TableView *occupancyRight =
+                (__bridge TableView *)readPointerIvar(pages[3], "_secondTable");
+            expect(occupancyLeft != nil && occupancyRight != nil,
+                   "读当前车位页的两张表（响应式布局用）");
+            const NSUInteger spotCount = bridge->spots().size();
+            if (occupancyLeft != nil && occupancyRight != nil && spotCount > 0){
+                [sidebar selectIndex:3];
+                spin([]{ return false; }, 450);
+                [main.contentViewController.view layoutSubtreeIfNeeded];
+                expect(occupancyRight.hidden, "窄窗口「当前车位」页隐藏右表");
+                expect(occupancyLeft.tableView.numberOfRows == (NSInteger)spotCount,
+                       "窄窗口左表显示全部车位（单表，选中偏移为 0）");
+
+                [window setContentSize:NSMakeSize(1500, 860)];
+                spin([]{ return false; }, 300);
+                [main.contentViewController.view layoutSubtreeIfNeeded];
+                const NSInteger split = (NSInteger)((spotCount + 1) / 2);
+                expect(!occupancyRight.hidden, "宽窗口「当前车位」页恢复右表");
+                expect(occupancyLeft.tableView.numberOfRows == split
+                           && occupancyRight.tableView.numberOfRows
+                               == (NSInteger)spotCount - split,
+                       "宽窗口两张表各显示一半车位");
+
+                // 恢复默认尺寸，后面的用例继续在 1280×860 下跑。
+                [window setContentSize:NSMakeSize(1280, 860)];
+                spin([]{ return false; }, 300);
+                [main.contentViewController.view layoutSubtreeIfNeeded];
+                [sidebar selectIndex:4];
+                spin([]{ return false; }, 300);
+            }
+        }
+
     // ---- 管理端远程连接时，图片仍在本机识别 ----
     @autoreleasepool{
         if (bridge != nullptr){
             QTemporaryDir fixture;
+            // 照片留档也指到临时目录，避免测试往仓库的 examples/platephoto 里写东西。
+            setenv("SMARTPARK_PLATE_PHOTO_DIR", fixture.filePath("plate-photos").toUtf8().constData(), 1);
             NSString *script = smartpark_ui::toNSString(fixture.filePath("local_lpr.py").toStdString());
             NSString *image = smartpark_ui::toNSString(fixture.filePath("photo.jpg").toStdString());
             [@"local-photo-fixture" writeToFile:image atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -747,6 +980,95 @@ int main(int argc, char **argv){
             expect([operations.candidate[@"plate"] isEqualToString:@"京A12345"],
                    "远程管理端执行本机脚本并接收本机候选车牌");
             expect(bridge->remoteMode(), "图片识别后仍保留远程停车数据源");
+
+            // 绿牌＝新能源：识别结果里带 new_energy/color 时车辆类型自动切到电动车。
+            NSPopUpButton *typePopup =
+                (__bridge NSPopUpButton *)readPointerIvar(operations, "_typePopup");
+            NSTextField *statusLabel =
+                (__bridge NSTextField *)readPointerIvar(operations, "_statusLabel");
+            expect(typePopup != nil && statusLabel != nil, "取到车辆类型下拉框与状态栏");
+            [typePopup selectItemAtIndex:0];
+            expect([operations applyNewEnergyVehicleTypeForResult:
+                        @{@"color": @"green", @"new_energy": @YES}] != nil
+                   && typePopup.indexOfSelectedItem == 3,
+                   "绿色号牌把车辆类型自动切成电动车");
+            [typePopup selectItemAtIndex:0];
+            expect([operations applyNewEnergyVehicleTypeForResult:
+                        @{@"color": @"blue", @"new_energy": @NO}] == nil
+                   && typePopup.indexOfSelectedItem == 0,
+                   "蓝色号牌不动车辆类型");
+
+            // 走完整流程：识别即入场那条路要用上刚切好的类型。
+            [typePopup selectItemAtIndex:0];
+            writeIntegerIvar(operations, "_recognitionIntent", 1);  // SmartParkRecognitionIntentEnter
+            [operations performRecognitionIntentWithPlate:@"皖AD12368"
+                result:@{@"color": @"green", @"new_energy": @YES,
+                         @"crop_image": image,
+                         @"detection_confidence": @0.93, @"recognition_confidence": @0.97}];
+            expect(typePopup.indexOfSelectedItem == 3
+                   && [statusLabel.stringValue containsString:@"电动车"],
+                   "识别入场时按绿牌记为电动车并如实提示");
+            bool parkedAsElectric = false;
+            bool parkedAsCar = false;
+            spin([&]{
+                for (const auto &spot : bridge->spots()){
+                    if (spot.parkedVehicle().has_value()
+                        && spot.parkedVehicle()->plateNumber() == "皖AD12368"){
+                        parkedAsElectric =
+                            spot.parkedVehicle()->type() == smartpark::VehicleType::Electric;
+                        parkedAsCar =
+                            spot.parkedVehicle()->type() == smartpark::VehicleType::Car;
+                        return true;
+                    }
+                }
+                return false;
+            }, 5000);
+            expect(parkedAsElectric && !parkedAsCar, "车位上的皖AD12368 记成了电动车");
+            expect([PlatePhotoArchive photosForPlate:@"皖AD12368"].count == 1,
+                   "入场后车牌照片留在 platephoto 根目录");
+
+            // 出库走界面同一条路：入场、出库两张照片都挪进 history/，
+            // 文件名换成「车牌_入库时间_出库时间」，在场目录随即清空。顺带清理测试车。
+            writeIntegerIvar(operations, "_recognitionIntent", 2);  // SmartParkRecognitionIntentExit
+            [operations performRecognitionIntentWithPlate:@"皖AD12368"
+                result:@{@"color": @"green", @"new_energy": @YES,
+                         @"crop_image": image,
+                         @"detection_confidence": @0.93, @"recognition_confidence": @0.97}];
+            expect([statusLabel.stringValue containsString:@"history"],
+                   "出库状态栏提示照片已移入 history");
+            expect([PlatePhotoArchive photosForPlate:@"皖AD12368"].count == 0,
+                   "出库后在场照片目录清空");
+            NSString *photoHistory = [PlatePhotoArchive historyDirectoryWithError:nil];
+            NSArray<NSString *> *archived = [[[NSFileManager defaultManager]
+                contentsOfDirectoryAtPath:photoHistory error:nil]
+                sortedArrayUsingSelector:@selector(compare:)];
+            expect(archived.count == 2, "出库后入场、出库两张照片都进了 history");
+            // 文件名＝车牌 + 入库时间 + 出库时间（都是 yyyyMMdd-HHmmss）；同一趟停车
+            // 第 2 张起带 _2 序号。入库和出库落在同一秒时两个时间相同，序号就顶到第 4 段。
+            auto timestampLike = [](NSString *text){
+                if (text.length != 15 || [text characterAtIndex:8] != '-'){
+                    return false;
+                }
+                NSString *digits = [text stringByReplacingCharactersInRange:NSMakeRange(8, 1)
+                                                                 withString:@""];
+                return [digits rangeOfCharacterFromSet:
+                    [[NSCharacterSet decimalDigitCharacterSet] invertedSet]].location == NSNotFound;
+            };
+            bool namedByStay = archived.count == 2;
+            for (NSString *name in archived){
+                NSArray<NSString *> *parts =
+                    [[name stringByDeletingPathExtension] componentsSeparatedByString:@"_"];
+                if (parts.count == 4){
+                    parts = [parts subarrayWithRange:NSMakeRange(0, 3)];
+                }
+                namedByStay = namedByStay && parts.count == 3
+                    && [parts[0] isEqualToString:@"皖AD12368"]
+                    && timestampLike(parts[1]) && timestampLike(parts[2]);
+            }
+            expect(namedByStay, "history 文件名由车牌和入库、出库两个时间组成");
+            expect([[archived.lastObject stringByDeletingPathExtension] hasSuffix:@"_2"],
+                   "同一趟停车的第二张照片带 _2 后缀");
+
             NSString *sleeper = @"import time\ntime.sleep(10)\n";
             [sleeper writeToFile:script atomically:YES encoding:NSUTF8StringEncoding error:nil];
             operations.candidate = nil;
@@ -823,7 +1145,8 @@ int main(int argc, char **argv){
                        && operations.candidate == nil && operations.failure == nil,
                    "退出后丢弃尚未送达的识别回调");
 
-            for (NSString *key in @[@"SMARTPARK_LPR_SCRIPT", @"SMARTPARK_LPR_PY", @"SMARTPARK_OCR_PY"]){
+            for (NSString *key in @[@"SMARTPARK_LPR_SCRIPT", @"SMARTPARK_LPR_PY",
+                                    @"SMARTPARK_OCR_PY", @"SMARTPARK_PLATE_PHOTO_DIR"]){
                 NSString *value = savedEnvironment[key];
                 if (value != nil){ setenv(key.UTF8String, value.UTF8String, 1); }
                 else { unsetenv(key.UTF8String); }

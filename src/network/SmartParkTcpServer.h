@@ -78,7 +78,7 @@ private:
     QJsonObject actionLogin(Session &session, const QJsonObject &payload, bool *ok, QString *error);
     QJsonObject actionStatus(const QJsonObject &payload, bool *ok, QString *error);
     QJsonObject actionSpotList(const QJsonObject &payload, bool *ok, QString *error);
-    QJsonObject actionEnter(const QJsonObject &payload, bool *ok, QString *error);
+    void startEnter(Session &session, const QString &id, const QJsonObject &payload);
     QJsonObject actionLeave(const QJsonObject &payload, bool *ok, QString *error);
     QJsonObject actionReservationCreate(const QJsonObject &payload, bool *ok, QString *error);
     QJsonObject actionReservationCancel(const QJsonObject &payload, bool *ok, QString *error);

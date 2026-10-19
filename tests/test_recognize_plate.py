@@ -126,15 +126,21 @@ class PlateRecognitionTest(unittest.TestCase):
 
             with patch.dict(sys.modules, {"cv2": cv2, "ultralytics": SimpleNamespace(YOLO=yolo)}), \
                  patch.object(recognize_plate, "DEFAULT_RECIPE_PATH", root / "missing.json"), \
+                 patch.object(recognize_plate, "save_crop_preview", return_value=None), \
                  patch.object(recognize_plate, "run_ocr", side_effect=fake_ocr) as run_ocr:
                 result = recognize_plate.recognize(args)
             self.assertEqual(run_ocr.call_count, 1)
             self.assertEqual(result, {"plate": "京A12345", "detection_confidence": 0.88,
                                       "recognition_confidence": 0.93,
                                       "bounding_box": [2, 3, 10, 9], "valid": True,
-                                      "crop": "bbox", "quad_source": "bbox",
+                                      "crop": "bbox", "crop_image": None,
+                                      "quad_source": "bbox",
                                       "flip_checked": False,
-                                      "recipe": "quad:h64:w160-320:e0.06"})
+                                      "recipe": "quad:h64:w160-320:e0.06",
+                                      # 底色判定拿不到真图（这里是 MagicMock）时如实报 unknown，
+                                      # 7 位车牌不是新能源。
+                                      "color": "unknown", "color_confidence": 0.0,
+                                      "new_energy": False})
 
     def test_main_prints_one_result_or_one_error(self):
         output, errors = io.StringIO(), io.StringIO()
@@ -218,6 +224,11 @@ class QuadCropIntegrationTest(unittest.TestCase):
         self.ocr_python.symlink_to(Path(sys.executable))
         self.corners = [[[200, 200], [400, 230], [390, 280], [190, 250]]]
         self.crops = []
+        # 已经裁好的车牌图（管理端留档的那种）：检测器通常一个框都不给。
+        self.plate_crop = root / "plate-crop.jpg"
+        crop = np.zeros((60, 180, 3), np.uint8)
+        crop[..., 0] = 200
+        cv2.imwrite(str(self.plate_crop), crop)
 
     def tearDown(self):
         self.directory.cleanup()
@@ -232,7 +243,7 @@ class QuadCropIntegrationTest(unittest.TestCase):
 
     def run_recognize(self, args, boxes=None, obb=None, keypoints=None, replies=None):
         detection = SimpleNamespace(
-            boxes=boxes or Boxes([[195, 195, 405, 285]], [0.9]),
+            boxes=boxes if boxes is not None else Boxes([[195, 195, 405, 285]], [0.9]),
             **({"obb": obb} if obb is not None else {}),
             **({"keypoints": keypoints} if keypoints is not None else {}))
         yolo = MagicMock()
@@ -280,6 +291,42 @@ class QuadCropIntegrationTest(unittest.TestCase):
         with self.assertRaises(ValueError) as error:
             self.run_recognize(self.build_args(crop="quad"))
         self.assertIn("四角", str(error.exception))
+
+    def test_plate_like_frame_requires_plate_aspect_ratio(self):
+        self.assertTrue(recognize_plate.plate_like_frame(np.zeros((60, 180, 3), np.uint8)))
+        self.assertFalse(recognize_plate.plate_like_frame(np.zeros((400, 600, 3), np.uint8)))
+        self.assertFalse(recognize_plate.plate_like_frame(np.zeros((16, 48, 3), np.uint8)))
+
+    def test_whole_image_fallback_reads_precropped_plate(self):
+        # 管理端留档的裁剪图再拿来识别：检测器没框时整图直接送识别器。
+        result = self.run_recognize(self.build_args(image=self.plate_crop),
+                                    boxes=Boxes([], []),
+                                    replies={"plate.jpg": ("晋FE3692", 0.99)})
+        self.assertEqual(result["plate"], "晋FE3692")
+        self.assertEqual(result["crop"], "whole")
+        self.assertEqual(result["quad_source"], "none")
+        self.assertIsNone(result["detection_confidence"])
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["bounding_box"], [0, 0, 179, 59])
+        self.assertEqual(self.crops[0], ("plate.jpg", (60, 180, 3)))  # 整图原样送识别器
+
+    def test_whole_image_fallback_only_for_plate_like_frames(self):
+        # 普通照片（600×400）检测不到车牌就是检测不到，不能把整图硬当车牌。
+        with self.assertRaises(ValueError) as error:
+            self.run_recognize(self.build_args(), boxes=Boxes([], []))
+        self.assertIn("No license plate detected", str(error.exception))
+
+    def test_whole_image_fallback_rejects_invalid_text(self):
+        with self.assertRaises(ValueError) as error:
+            self.run_recognize(self.build_args(image=self.plate_crop), boxes=Boxes([], []),
+                               replies={"plate.jpg": ("京A1234", 0.99)})
+        self.assertIn("整图识别", str(error.exception))
+
+    def test_whole_image_fallback_rejects_low_confidence(self):
+        with self.assertRaises(ValueError) as error:
+            self.run_recognize(self.build_args(image=self.plate_crop), boxes=Boxes([], []),
+                               replies={"plate.jpg": ("晋FE3692", 0.50)})
+        self.assertIn("整图识别", str(error.exception))
 
     def test_recipe_bbox_mode_ignores_corners(self):
         recipe = self.root / "recipe.json"

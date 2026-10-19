@@ -57,6 +57,8 @@ bool recordOverlapsRange(const smartpark::ParkingRecord &record,
     _table.translatesAutoresizingMaskIntoConstraints = NO;
     [_table setColumns:@[@"车牌", @"车辆类型", @"车位", @"入场时间",
                          @"离场时间", @"时长(分钟)", @"费用(元)", @"状态"]];
+    // 窄窗口下入场/离场时间不许被压成省略号：给每列最小宽度，不够就横向滚动。
+    [_table setMinimumColumnWidths:@[@100, @100, @82, @130, @130, @96, @90, @80]];
     [root addSubview:_table];
 
     _summaryLabel = [NSTextField wrappingLabelWithString:@""];

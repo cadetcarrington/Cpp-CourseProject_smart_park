@@ -13,7 +13,10 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <functional>
+class QObject;
 namespace smartpark{
+class BackgroundEntryPlanner;
 class ReservationService;
 class AuditLogService;
 struct AllocationResult{
@@ -27,6 +30,11 @@ struct AllocationResult{
     std::size_t entranceIndex{0};
     std::size_t exitIndex{0};
     AllocationStrategy strategy{AllocationStrategy::WeightedCost};
+};
+struct AsyncEntryOutcome{
+    std::optional<AllocationResult> allocation;
+    std::string error;
+    bool busy{false};
 };
 struct BookingResult{
     Booking booking;
@@ -68,6 +76,10 @@ public:
     std::optional<AllocationResult> enter(
         const Vehicle &vehicle,
         ParkingRecord::TimePoint entryTime = ParkingRecord::Clock::now());
+    // 在服务所属事件线程调用并回调；context 销毁后不再提交。
+    // 最多 8 个待完成任务：单个后台工作线程 + 可选 OpenMP 并行搜索。
+    void enterAsync(const Vehicle &vehicle, QObject *context,
+                    std::function<void(AsyncEntryOutcome)> done);
     // 应急生命通道：优先分配出口距离最近的车位；满场时可让位最近车辆。
     std::optional<AllocationResult> emergencyEnter(
         const Vehicle &vehicle,
@@ -112,6 +124,10 @@ public:
     double totalRevenue() const noexcept;
 private:
     friend class ReservationService;
+    friend class BackgroundEntryPlanner;
+    std::optional<AllocationResult> enterImpl(
+        const Vehicle &vehicle, ParkingRecord::TimePoint entryTime,
+        const std::optional<AllocationProposal> *prepared);
     void audit(const char *action, const std::string &detail);
     AllocationResult toResult(const AllocationProposal &proposal) const;
     void restore(ParkingRepository &repository);
@@ -140,5 +156,8 @@ private:
     std::size_t bookingSequence_{0};
     std::unique_ptr<ReservationService> reservations_;
     AuditLogService *audit_{nullptr};
+    std::size_t allocationConfigVersion_{0};
+    // 最先销毁：等待后台纯计算退出，再释放服务状态。
+    std::unique_ptr<BackgroundEntryPlanner> backgroundPlanner_;
 };
 } // namespace smartpark

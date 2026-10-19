@@ -1,6 +1,7 @@
 #import "AppDelegate.h"
 
 #import "LoginViewController.h"
+#import "MainMenu.h"
 #import "MainWindowController.h"
 #import "LocalRecognitionService.h"
 
@@ -24,6 +25,10 @@
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification{
+    // 先把主菜单装上：没有「编辑」菜单项，⌘C / ⌘V / ⌘X / ⌘A / ⌘Z 在任何一个
+    // 输入框里都不会生效（登录窗口也一样），⌘Q / ⌘M 等系统快捷键也一起缺失。
+    SmartParkInstallMainMenu();
+
     // 自定义参数在 main.mm 里就摘出来了（QCoreApplication 只拿到 argv[0]，
     // 下面这个 parser 看不到它们），这里只作为兜底保留。
     QCommandLineParser parser;
@@ -197,6 +202,78 @@
     self.loginWindowController = nil;
 
     [NSApp activateIgnoringOtherApps:YES];
+}
+
+#pragma mark - 主菜单动作
+
+// 下面几个 action 的 target 都留空，由 AppKit 沿响应者链送到 App 委托。
+- (void)smartparkSelectPage:(NSMenuItem *)sender{
+    [self.mainWindowController selectPage:sender.tag];
+}
+
+- (void)smartparkRefreshPage:(id)sender{
+    [self.mainWindowController refreshCurrentPage];
+}
+
+- (void)smartparkLogout:(id)sender{
+    void (^logout)(void) = self.mainWindowController.logoutHandler;
+    if (logout != nil){
+        logout();
+    }
+}
+
+- (void)smartparkCheckOut:(id)sender{
+    [self.mainWindowController beginCheckOut];
+}
+
+- (void)smartparkCheckIn:(id)sender{
+    [self.mainWindowController beginCheckIn];
+}
+
+- (void)smartparkFindCar:(id)sender{
+    [self.mainWindowController beginCarFinder];
+}
+
+- (void)smartparkNewReservation:(id)sender{
+    [self.mainWindowController beginReservation];
+}
+
+- (void)smartparkShowShortcuts:(id)sender{
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"快捷键";
+    alert.informativeText =
+        @"操作　　　　入库 ⌘I · 出库 ⌘O · 寻车 ⌘F · 预约 ⌘N\n"
+         "页面　　　　⌘1 仪表盘 · ⌘2 车位图 · ⌘3 车辆出入库\n"
+         "　　　　　　⌘4 当前车位 · ⌘5 预约管理 · ⌘6 停车记录 · ⌘7 设施配置\n"
+         "刷新当前页　⌘R　　显示/隐藏侧边栏 ⌃⌘S　　全屏 ⌃⌘F\n"
+         "退出登录　　⇧⌘W　　关闭窗口 ⌘W（关闭主窗口即退出）\n\n"
+         "编辑：⌘C 拷贝 · ⌘V 粘贴 · ⌘X 剪切 · ⌘A 全选 · ⌘Z 撤销 · ⇧⌘Z 重做";
+    [alert addButtonWithTitle:@"好"];
+    NSWindow *window = self.mainWindowController.window ?: self.loginWindowController.window;
+    if (window != nil){
+        [alert beginSheetModalForWindow:window completionHandler:nil];
+    } else{
+        [alert runModal];
+    }
+}
+
+// 没有主窗口（还在登录页）时，把「页面切换 / 刷新 / 退出登录」变灰。
+- (BOOL)validateMenuItem:(NSMenuItem *)item{
+    const SEL action = item.action;
+    if (action == @selector(smartparkSelectPage:) || action == @selector(smartparkRefreshPage:) ||
+        action == @selector(smartparkLogout:) || action == @selector(smartparkCheckIn:) ||
+        action == @selector(smartparkCheckOut:) || action == @selector(smartparkFindCar:) ||
+        action == @selector(smartparkNewReservation:)){
+        if (self.mainWindowController == nil){
+            return NO;
+        }
+        if (action == @selector(smartparkSelectPage:)){
+            item.state = (item.tag == self.mainWindowController.currentPageIndex)
+                ? NSControlStateValueOn : NSControlStateValueOff;
+        }
+        return YES;
+    }
+    return YES;
 }
 
 @end

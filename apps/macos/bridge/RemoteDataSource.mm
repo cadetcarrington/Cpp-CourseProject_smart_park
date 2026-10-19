@@ -100,9 +100,8 @@ RemoteDataSource::RemoteDataSource(QObject *parent)
         switch (state){
         case ServerSession::State::Online:
             setError(QString());
-            // 登录成功：取一次全量快照与分析报告。
+            // 登录成功：取一次全量快照（洞察由快照数据在本地算，见 insights()）。
             requestSnapshot();
-            requestAnalytics();
             if (onConnectionChanged){
                 onConnectionChanged(true, QStringLiteral("已连接服务端 %1:%2")
                                               .arg(host_).arg(port_));
@@ -238,18 +237,6 @@ void RemoteDataSource::requestSnapshot(){
         setError(QString());
         if (onSnapshotRefreshed){
             onSnapshotRefreshed();
-        }
-    });
-}
-
-void RemoteDataSource::requestAnalytics(){
-    if (session_->state() != ServerSession::State::Online){
-        return;
-    }
-    session_->request(QStringLiteral("analytics.report"), {},
-                      [this](bool ok, const QString &, const QJsonObject &payload){
-        if (ok){
-            analytics_ = payload;
         }
     });
 }
@@ -404,7 +391,7 @@ bool RemoteDataSource::applySnapshot(const QJsonObject &snapshot, std::string *e
                                        std::move(entrances), std::move(exits));
     spots_ = layout_.spots();
     generatedAtMs_ = snapshot.value(QStringLiteral("generatedAtMs")).toInteger();
-    // dailyRevenue 随快照下发：单独存一份，不要塞进 analytics_。
+    // dailyRevenue 随快照下发：单独存一份，不与其它统计混用。
     dailyRevenue_ = snapshot.value(QStringLiteral("dailyRevenue")).toArray();
     snapshotReady_ = true;
     return true;

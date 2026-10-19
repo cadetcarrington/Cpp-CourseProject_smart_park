@@ -1,4 +1,5 @@
 #include "core/service/ParkingService.h"
+#include "core/service/BackgroundEntryPlanner.h"
 #include "core/service/AuditLogService.h"
 #include "core/util/TimeUtil.h"
 #include "core/service/Billing.h"
@@ -38,8 +39,10 @@ namespace smartpark{
         , spots_(layout_.spots())
         , planner_(layout_.siteWidth(), layout_.siteHeight(), spots_,
                    layoutObstacleBounds(layout_))
+        // 寻车步行路线按四向移动规划：折线严格横平竖直、沿车道走，不斜穿车位。
         , pedestrianPlanner_(layout_.siteWidth(), layout_.siteHeight(),
-                             std::vector<ParkingSpot>{}, layoutObstacleBounds(layout_))
+                             std::vector<ParkingSpot>{}, layoutObstacleBounds(layout_),
+                             0.5, false)
         , allocator_(layout_, planner_)
         , billing_(billingRule)
         , bookingPolicy_(bookingPolicy){
@@ -152,10 +155,12 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
     }
 
     void ParkingService::setStrategy(AllocationStrategy strategy) noexcept{
+        ++allocationConfigVersion_;
         allocator_.setStrategy(strategy);
     }
 
     void ParkingService::setWeights(AllocationWeights weights) noexcept{
+        ++allocationConfigVersion_;
         allocator_.setWeights(weights);
     }
 
@@ -232,13 +237,19 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
 
     std::optional<AllocationResult> ParkingService::enter(
         const Vehicle &vehicle, ParkingRecord::TimePoint entryTime){
+        return enterImpl(vehicle, entryTime, nullptr);
+    }
+
+    std::optional<AllocationResult> ParkingService::enterImpl(
+        const Vehicle &vehicle, ParkingRecord::TimePoint entryTime,
+        const std::optional<AllocationProposal> *prepared){
         if (!timeutil::isValid(entryTime)){
             return std::nullopt;
         }
         expireReservations(entryTime);
         expireBookings(entryTime);
         // 时间段预约到场：车牌匹配时把预约转为 CheckedIn 并占用预约车位。
-        if (auto arrived = reservations_->checkIn(vehicle.plateNumber(), entryTime)){
+        if (auto arrived = reservations_->checkInImpl(vehicle.plateNumber(), entryTime, prepared)){
             return arrived;
         }
         if (activeRecord(vehicle.plateNumber())){
@@ -249,8 +260,9 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
             requiredSpotId = reserved->identifier();
         }
         const std::optional<AllocationProposal> proposal =
-            allocator_.propose(vehicle, spots_, requiredSpotId);
-        if (!proposal){
+            prepared ? *prepared : allocator_.propose(vehicle, spots_, requiredSpotId);
+        if (!proposal || proposal->plateNumber != vehicle.plateNumber()
+            || (!requiredSpotId.empty() && proposal->spotId != requiredSpotId)){
             return std::nullopt;
         }
         ParkingSpot *spot = findSpot(proposal->spotId);
@@ -680,6 +692,10 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
                 total += booking.deposit();
             }
         }
+        // 新版时间段预约的定金同样是待结算金额，仪表盘统一统计，避免漏算。
+        if (reservations_){
+            total += reservations_->heldDeposits();
+        }
         return total;
     }
 
@@ -689,6 +705,10 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
             if (booking.status() == BookingStatus::NoShow){
                 total += booking.deposit();
             }
+        }
+        // 爽约没收的新版预约定金与旧版预约单口径保持一致。
+        if (reservations_){
+            total += reservations_->forfeitedDeposits();
         }
         return total;
     }
@@ -935,18 +955,6 @@ const BookingPolicy &ParkingService::bookingPolicy() const noexcept{
                 || spot->parkedVehicle()->plateNumber() != record.plateNumber()){
                 throw std::runtime_error("active parking record does not match its spot: "
                                         + record.plateNumber());
-            }
-        }
-        for (const ParkingRecord &record : records_){
-            if (record.isClosed()){
-                continue;
-            }
-            const ParkingSpot *spot = findSpot(record.spotId());
-            if (spot == nullptr || spot->status() != SpotStatus::Occupied
-                || !spot->parkedVehicle()
-                || spot->parkedVehicle()->plateNumber() != record.plateNumber()){
-                throw std::runtime_error("active persisted record has inconsistent spot state: "
-                                        + record.spotId());
             }
         }
         const std::vector<Booking> persistedBookings = repository.loadBookings();

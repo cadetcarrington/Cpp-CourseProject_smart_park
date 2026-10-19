@@ -869,27 +869,54 @@ QHttpServerResponse RestGateway::handleActiveRecord(
 
 // ---- 路由 handler：入离场 ----
 
-QHttpServerResponse RestGateway::handleEnter(const QHttpServerRequest &request){
+QFuture<QHttpServerResponse> RestGateway::handleEnter(const QHttpServerRequest &request){
     if (!authenticate(request).has_value()){
-        return jsonError(QHttpServerResponder::StatusCode::Unauthorized,
-                         "AUTH_REQUIRED", QStringLiteral("缺少或无效的 Bearer token"));
+        return readyResponse(jsonError(QHttpServerResponder::StatusCode::Unauthorized,
+                         "AUTH_REQUIRED", QStringLiteral("缺少或无效的 Bearer token")));
     }
     const auto body = bodyJson(request);
     if (!body.has_value()){
-        return jsonError(QHttpServerResponder::StatusCode::BadRequest,
-                         "VALIDATION", QStringLiteral("请求体必须是 JSON 对象"));
+        return readyResponse(jsonError(QHttpServerResponder::StatusCode::BadRequest,
+                         "VALIDATION", QStringLiteral("请求体必须是 JSON 对象")));
     }
-    bool ok = false;
-    QString error;
-    QJsonObject payload = performEnter(
-        body->value(QStringLiteral("plate")).toString().trimmed(),
-        body->value(QStringLiteral("vehicleType")).toString(QStringLiteral("car")),
-        &ok, &error);
-    if (!ok){
-        return jsonError(QHttpServerResponder::StatusCode::Conflict,
-                         "CONFLICT", error);
+    const QString plate = body->value(QStringLiteral("plate")).toString().trimmed();
+    const auto type = protocol::vehicleTypeFromString(
+        body->value(QStringLiteral("vehicleType")).toString(QStringLiteral("car")));
+    if (plate.isEmpty() || !type){
+        return readyResponse(jsonError(QHttpServerResponder::StatusCode::Conflict,
+                         "CONFLICT", QStringLiteral("车牌或车辆类型无效")));
     }
-    return QHttpServerResponse(payload);
+    auto promise = std::make_shared<QPromise<QHttpServerResponse>>();
+    promise->start();
+    auto future = promise->future();
+    service_->enterAsync({plate.toStdString(), *type}, this,
+        [this, promise, plate](AsyncEntryOutcome outcome){
+        if (!outcome.allocation){
+            promise->addResult(jsonError(outcome.busy
+                ? QHttpServerResponder::StatusCode::ServiceUnavailable
+                : QHttpServerResponder::StatusCode::Conflict,
+                outcome.busy ? "BUSY" : "CONFLICT", QString::fromStdString(outcome.error)));
+        } else{
+            const auto &result = *outcome.allocation;
+            QJsonObject payload{
+                {QStringLiteral("plateNumber"), QString::fromStdString(result.plateNumber)},
+                {QStringLiteral("spotId"), QString::fromStdString(result.spotId)},
+                {QStringLiteral("entryDistance"), result.entryRoute.distance},
+                {QStringLiteral("exitDistance"), result.exitRoute.distance},
+                {QStringLiteral("entryTurns"), result.entryRoute.turnCount},
+                {QStringLiteral("exitTurns"), result.exitRoute.turnCount},
+                {QStringLiteral("score"), result.score}};
+            if (hub_){
+                hub_->publish(QStringLiteral("parking.entered"),
+                    QJsonObject{{QStringLiteral("plate"), plate},
+                        {QStringLiteral("spotId"), QString::fromStdString(result.spotId)},
+                        {QStringLiteral("entryTime"), QDateTime::currentMSecsSinceEpoch()}});
+            }
+            promise->addResult(QHttpServerResponse(payload));
+        }
+        promise->finish();
+    });
+    return future;
 }
 
 QHttpServerResponse RestGateway::handleLeave(const QHttpServerRequest &request){
@@ -1303,41 +1330,6 @@ QHttpServerResponse RestGateway::handleGuide(
 }
 
 // ---- 业务动作 ----
-
-QJsonObject RestGateway::performEnter(const QString &plate,
-                                      const QString &vehicleType,
-                                      bool *ok, QString *error){
-    const auto type = protocol::vehicleTypeFromString(vehicleType);
-    if (plate.isEmpty() || !type.has_value()){
-        *error = QStringLiteral("车牌或车辆类型无效");
-        return {};
-    }
-    const auto result = service_->enter({plate.toStdString(), *type});
-    if (!result.has_value()){
-        *error = QStringLiteral("入场失败：车辆已在场内或无可用车位");
-        return {};
-    }
-    QJsonObject payload;
-    payload.insert(QStringLiteral("plateNumber"),
-                   QString::fromStdString(result->plateNumber));
-    payload.insert(QStringLiteral("spotId"),
-                   QString::fromStdString(result->spotId));
-    payload.insert(QStringLiteral("entryDistance"), result->entryRoute.distance);
-    payload.insert(QStringLiteral("exitDistance"), result->exitRoute.distance);
-    payload.insert(QStringLiteral("entryTurns"), result->entryRoute.turnCount);
-    payload.insert(QStringLiteral("exitTurns"), result->exitRoute.turnCount);
-    payload.insert(QStringLiteral("score"), result->score);
-    if (hub_ != nullptr){
-        hub_->publish(QStringLiteral("parking.entered"),
-                      QJsonObject{{QStringLiteral("plate"), plate},
-                                  {QStringLiteral("spotId"),
-                                   QString::fromStdString(result->spotId)},
-                                  {QStringLiteral("entryTime"),
-                                   QDateTime::currentMSecsSinceEpoch()}});
-    }
-    *ok = true;
-    return payload;
-}
 
 QJsonObject RestGateway::performLeave(const QString &plate,
                                       const QString &excludeOrderId,

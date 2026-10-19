@@ -3,6 +3,10 @@
 #include <limits>
 #include <map>
 #include <utility>
+#include <exception>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 namespace smartpark{
 namespace{
 // 分区并列（车辆数相同）时比较"哪个分区离入口更近"用的直线八向距离，
@@ -204,9 +208,36 @@ std::optional<AllocationProposal> SpotAllocator::evaluateCandidates(
                                          std::numeric_limits<double>::infinity());
 
     const std::vector<Point> &entrances = layout_->entrances();
+    const std::vector<Point> &exits = layout_->exits();
+    const auto gateCount = static_cast<std::ptrdiff_t>(entrances.size() + exits.size());
+    std::vector<std::vector<Route>> gateRoutes(static_cast<std::size_t>(gateCount));
+    std::vector<std::exception_ptr> errors(static_cast<std::size_t>(gateCount));
+    // 每个搜索只读网格、拥堵场，各迭代只写自己的结果槽位。
+    // 最多 4 个线程，限制搜索内存，并为识别等任务保留 CPU。
+#ifdef _OPENMP
+    const int threads = std::max(1, std::min({4, omp_get_max_threads(),
+                                            static_cast<int>(gateCount)}));
+#pragma omp parallel for schedule(static) num_threads(threads) if(threads > 1)
+#endif
+    for (std::ptrdiff_t gate = 0; gate < gateCount; ++gate){
+        try{
+            const auto index = static_cast<std::size_t>(gate);
+            const Point anchor = index < entrances.size()
+                ? entrances[index] : exits[index - entrances.size()];
+            gateRoutes[index] = planner_->planFromToTargets(anchor, targets, occupancyPtr);
+        } catch (...){
+            errors[static_cast<std::size_t>(gate)] = std::current_exception();
+        }
+    }
+    // 异常不能跨 OpenMP 区域传播。
+    for (const auto &error : errors){
+        if (error){
+            std::rethrow_exception(error);
+        }
+    }
+    // 按原来的 gate 顺序归并，保留并列选择和浮点累加次序。
     for (std::size_t gate = 0; gate < entrances.size(); ++gate){
-        const std::vector<Route> routes =
-            planner_->planFromToTargets(entrances[gate], targets, occupancyPtr);
+        const std::vector<Route> &routes = gateRoutes[gate];
         for (std::size_t index = 0; index < candidateCount; ++index){
             if (routes[index].points.empty()){
                 continue;
@@ -217,10 +248,8 @@ std::optional<AllocationProposal> SpotAllocator::evaluateCandidates(
             }
         }
     }
-    const std::vector<Point> &exits = layout_->exits();
     for (std::size_t gate = 0; gate < exits.size(); ++gate){
-        const std::vector<Route> routes =
-            planner_->planFromToTargets(exits[gate], targets, occupancyPtr);
+        const std::vector<Route> &routes = gateRoutes[entrances.size() + gate];
         const double coefficient = exitCoefficient(gate);
         for (std::size_t index = 0; index < candidateCount; ++index){
             const Route exitRoute = reversedRoute(routes[index]);

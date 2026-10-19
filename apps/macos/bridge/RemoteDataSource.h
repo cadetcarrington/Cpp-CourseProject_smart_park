@@ -49,8 +49,6 @@ public:
     quint16 port() const noexcept { return port_; }
     // 快照生成时间（服务端本地时钟），界面用于说明数据新鲜度。
     qint64 snapshotGeneratedAtMs() const noexcept { return generatedAtMs_; }
-    // 服务端 analytics.report 的摘要与结论（远程模式没有本地洞察）。
-    const QJsonObject &analyticsReport() const noexcept { return analytics_; }
     // 近 7 日已结算收入（快照 dailyRevenue，服务端已按同样口径算好）。
     double dailyRevenueTotal() const noexcept;
     // 逐日明细：{date: yyyy-MM-dd, fee}，从早到晚固定 7 项。
@@ -97,7 +95,6 @@ public:
 
 private:
     void requestSnapshot();
-    void requestAnalytics();
     // ServerSession 是异步的，而 macOS 界面的写操作是同步取结果的（按一下
     // 按钮就要知道成功还是失败）。这里用局部事件循环等应答，与 Gate 端
     // TcpClient::request 的做法一致；超时按失败返回，绝不假装成功。
@@ -122,9 +119,7 @@ private:
     ReservationRuleView reservationRule_;
     double pendingDeposits_{0.0};
     double forfeitedDeposits_{0.0};
-    QJsonObject analytics_;
-    // 快照随带的 7 日收入。单独存一份：analytics.report 的应答会整体替换
-    // analytics_，混在一起会在报告到达后把收入数据抹掉。
+    // 快照随带的 7 日收入，单独存一份，避免与其它统计混用。
     QJsonArray dailyRevenue_;
     std::string layoutText_;               // 快照只有几何，没有描述文本
     std::string lastError_;

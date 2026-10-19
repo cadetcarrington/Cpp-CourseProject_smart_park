@@ -574,8 +574,8 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
             path.lineCapStyle = NSLineCapStyleRound;
             [path stroke];
         };
-        strokeRoute(planned.entryRoute, rgba(36, 92, 196, 235), 3.0, NO);
-        strokeRoute(planned.exitRoute, rgba(230, 132, 0, 220), 2.0, YES);
+        strokeRoute(planned.entryRoute, rgba(36, 92, 196, 235), 2.0, NO);
+        strokeRoute(planned.exitRoute, rgba(230, 132, 0, 220), 1.8, YES);
     }
 
     // 墙体（带入口/出口缺口）
@@ -634,10 +634,10 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
                 path.lineJoinStyle = NSLineJoinStyleRound;
                 path.lineCapStyle = NSLineCapStyleRound;
                 [halo setStroke];
-                path.lineWidth = 8.0;
+                path.lineWidth = 3.4;
                 [path stroke];
                 [ink setStroke];
-                path.lineWidth = 3.5;
+                path.lineWidth = 2.0;
                 [path stroke];
             };
         strokeLeg(_walkRoute.entryPoints, entryInk);
@@ -663,11 +663,11 @@ void addWallSegment(NSBezierPath *path, NSPoint start, NSPoint end,
         // 车位取车点：圆环 + 车位编号
         const NSPoint target = NSMakePoint(tx(_walkRoute.target.x), ty(_walkRoute.target.y));
         NSBezierPath *ring = [NSBezierPath bezierPathWithOvalInRect:
-            NSMakeRect(target.x - 14.0, target.y - 14.0, 28.0, 28.0)];
-        [[rgba(48, 52, 56, 255) colorWithAlphaComponent:0.20] setFill];
+            NSMakeRect(target.x - 6.5, target.y - 6.5, 13.0, 13.0)];
+        [[rgba(48, 52, 56, 255) colorWithAlphaComponent:0.16] setFill];
         [ring fill];
         [rgba(48, 52, 56, 255) setStroke];
-        ring.lineWidth = 3.0;
+        ring.lineWidth = 2.0;
         [ring stroke];
 
         if (!_walkRoute.spotId.empty()){

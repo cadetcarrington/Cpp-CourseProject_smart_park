@@ -5,6 +5,10 @@ enable_language(OBJCXX)
 
 set(MACOS_ADMIN_SOURCES
     main.mm
+    MainMenu.h
+    MainMenu.mm
+    PlatePrompt.h
+    PlatePrompt.mm
     AppDelegate.h
     AppDelegate.mm
     MainWindowController.h
@@ -83,9 +87,10 @@ target_link_libraries(smartpark_admin_macos PRIVATE ${SECURITY_FRAMEWORK})
 # 全部 ObjC++ 源码启用 ARC，简化内存管理。
 target_compile_options(smartpark_admin_macos PRIVATE -fobjc-arc)
 
+# 识别脚本路径由源码直接使用（OperationsViewController / LocalRecognitionService）；
+# 车牌样例图片路径由 App 运行时在仓库内推导，不再通过编译宏注入。
 target_compile_definitions(smartpark_admin_macos PRIVATE
-    SMARTPARK_LPR_SCRIPT_PATH="${CMAKE_SOURCE_DIR}/scripts/recognize_plate.py"
-    SMARTPARK_PLATE_EXAMPLES_PATH="${CMAKE_SOURCE_DIR}/examples/plates")
+    SMARTPARK_LPR_SCRIPT_PATH="${CMAKE_SOURCE_DIR}/scripts/recognize_plate.py")
 
 set_target_properties(smartpark_admin_macos PROPERTIES
     MACOSX_BUNDLE_BUNDLE_NAME "SmartPark Admin"

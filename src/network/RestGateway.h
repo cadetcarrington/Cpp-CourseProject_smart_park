@@ -114,7 +114,7 @@ private:
     QHttpServerResponse handleRecords(const QHttpServerRequest &request);
     QHttpServerResponse handleActiveRecord(const QString &plate,
                                            const QHttpServerRequest &request);
-    QHttpServerResponse handleEnter(const QHttpServerRequest &request);
+    QFuture<QHttpServerResponse> handleEnter(const QHttpServerRequest &request);
     QHttpServerResponse handleLeave(const QHttpServerRequest &request);
     QHttpServerResponse handleReservationCreate(const QHttpServerRequest &request);
     QHttpServerResponse handleReservationList(const QHttpServerRequest &request);
@@ -148,8 +148,6 @@ private:
                                   const char *code, const QString &message) const;
 
     // ---- 业务动作（发布 EventHub 事件，与 TCP 动作同语义）----
-    QJsonObject performEnter(const QString &plate, const QString &vehicleType,
-                             bool *ok, QString *error);
     QJsonObject performLeave(const QString &plate, const QString &excludeOrderId,
                              bool *ok, QString *error);
     QJsonObject statusPayload() const;

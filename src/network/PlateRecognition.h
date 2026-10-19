@@ -43,8 +43,21 @@ QJsonObject recognizePlate(const QByteArray &imageBytes,
                            const QString &lprCommand, QString *note);
 
 // 异步识别：进程在事件循环里跑，done 在 context 所属线程回调（保证只回调一次）。
-// context 用于生命周期绑定：context 销毁时进程一并销毁，回调不再触发。
-// mock 模式（lprCommand 为空）同样异步回调，调用方不必区分两条路径。
+// context 用于生命周期绑定：context 销毁时排队任务丢弃、运行中进程树被杀，回调
+// 不再触发。mock 模式（lprCommand 为空）同样异步回调，调用方不必区分两条路径。
+//
+// 内部是进程级单例调度器：同时最多跑 N 个脚本进程，多出来的进 FIFO 队列；
+// 队列也满时立刻异步失败（Failed，note = "识别任务排队已满，请稍后重试"）。
+// 每个脚本进程都 setsid() 自成会话/进程组，超时/取消/进程退出时向 -pid 发
+// SIGTERM、宽限后补 SIGKILL，再 waitForFinished 回收，脚本再 Popen 的 Paddle
+// OCR 子进程不会变成孤儿。本函数必须在调度器所属的事件循环线程调用（服务端的
+// REST/TCP 处理器都在同一个主线程；首次调用时创建调度器）。
+//
+// 参数在进程内第一次用到识别时读取一次，之后不再变化（测试靠它缩短超时）：
+//   SMARTPARK_LPR_MAX_CONCURRENCY  同时运行的识别进程数，默认 2；
+//   SMARTPARK_LPR_QUEUE_LIMIT      排队上限，默认 16，超出的请求立刻失败；
+//   SMARTPARK_LPR_TIMEOUT_MS       识别超时（毫秒），默认 60000；
+//                                  异步与同步入口都生效。
 void recognizePlateAsync(const QByteArray &imageBytes, const QString &lprCommand,
                          QObject *context, std::function<void(LprOutcome)> done);
 

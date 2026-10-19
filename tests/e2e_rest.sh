@@ -244,12 +244,8 @@ P888=$(urlenc 京A88888)
 chk "预约列表（按车牌）" "$(api GET "/reservations?plate=$P888" "$UT" | jlen reservations)" 1
 chk "非 admin 不指定车牌被拒" "$(code GET /reservations "$UT")" 400
 chk "admin 可查全部预约" "$(code GET /reservations "$AT")" 200
-EARLY=$(code POST "/reservations/$RID/checkin" "$UT")
-if [ "$EARLY" -ge 400 ] 2>/dev/null; then ok "窗口未到拒绝到场确认 ($EARLY)"; else
-    no "窗口未到却允许确认 ($EARLY)"; fi
-echo "     等到场窗口打开（5 秒）…"
-sleep 6
-chk "到场确认（窗口内）" "$(code POST "/reservations/$RID/checkin" "$UT")" 200
+# 到场窗口从预约创建时打开：创建完立刻核销就该成功（旧版要求开始前 30 分钟内）。
+chk "创建后立刻到场确认" "$(code POST "/reservations/$RID/checkin" "$UT")" 200
 # /guide/<arg> 的参数是**车牌**，不是预约 id
 chk "寻车指引（按车牌）" "$(code GET "/guide/$(urlenc 京A88888)" "$UT")" 200
 

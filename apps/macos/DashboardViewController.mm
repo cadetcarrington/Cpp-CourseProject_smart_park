@@ -3,6 +3,7 @@
 #import "ParkingMapViewController.h"
 
 #import "BarChartView.h"
+#import "PlatePrompt.h"
 #import "DonutChartView.h"
 #import "LineChartView.h"
 #import "bridge/ParkingBridge.h"
@@ -57,7 +58,6 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     NSTextField *_summaryLabel;
 
     DonutChartView *_compositionChart;
-    DonutChartView *_typeChart;
     LineChartView *_forecastChart;
     LineChartView *_sevenDayRevenueChart;
     LineChartView *_sevenDayFlowChart;
@@ -149,7 +149,6 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
 
     // 图表：第一行（组合 Donut + 车型 Donut + 预测 Line）
     _compositionChart = [DonutChartView new];
-    _typeChart = [DonutChartView new];
     // 先把所有图表建好，再按卡片顺序排版：车位组合 → 近 7 天收入 → 分区压力
     // → 近 7 天流量 → 车流统计 → 占用率预测（占用率预测放最后、分区压力放第三）。
     _forecastChart = [LineChartView new];
@@ -170,9 +169,8 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
     // 卡片：第一行（车位组合 + 近 7 天收入）
     NSStackView *chartRow1 = [self rowWithViews:@[
         [self cardWithTitle:@"车位组合" content:_compositionChart],
-        // 「车位类型」卡片暂时下线：取消下面这行注释即可恢复
-        // （_typeChart 仍在 refreshMetrics 中照常计算，恢复后立即有数据）。
-        // [self cardWithTitle:@"车位类型" content:_typeChart],
+        // 「车位类型」卡片已下线：图表实例与切片计算一并移除，不再消耗刷新性能；
+        // 如需恢复，需同时补回图表创建和 refreshMetrics 中的数据计算。
         [self cardWithTitle:@"近 7 天收入" content:_sevenDayRevenueChart],
     ]];
     [_stack addArrangedSubview:chartRow1];
@@ -342,40 +340,12 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
 
 - (void)quickCarFinder:(id)sender{
     (void)sender;
-    NSMutableArray<NSString *> *plates = [NSMutableArray array];
-    if (self.bridge != nullptr){
-        for (const std::string &plate : self.bridge->parkedPlateNumbers()){
-            [plates addObject:[NSString stringWithUTF8String:plate.c_str()]];
-        }
-    }
-
-    NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = @"反向寻车";
-    alert.informativeText = plates.count > 0
-        ? @"选择或输入在场车牌，点「寻找」跳到车位地图查看步行路线。"
-        : @"当前没有在场车辆，也可以直接输入车牌号查询。";
-    [alert addButtonWithTitle:@"寻找"];
-    [alert addButtonWithTitle:@"取消"];
-
-    NSComboBox *combo = [[NSComboBox alloc] initWithFrame:NSMakeRect(0, 0, 280, 26)];
-    combo.placeholderString = @"输入或选择在场车牌";
-    combo.completes = YES;
-    combo.numberOfVisibleItems = 8;
-    combo.font = [NSFont systemFontOfSize:13];
-    for (NSString *plate in plates){
-        [combo addItemWithObjectValue:plate];
-    }
-    if (plates.count > 0){
-        combo.stringValue = plates.firstObject;
-    }
-    alert.accessoryView = combo;
-    [alert.window setInitialFirstResponder:combo];   // 弹出来就能直接打字
-    if ([alert runModal] != NSAlertFirstButtonReturn){
+    // 对话框与主菜单「操作 › 寻车」共用，见 PlatePrompt.h。
+    NSString *typed = SmartParkPromptForParkedPlate(self.bridge, @"反向寻车",
+        @"选择或输入在场车牌，点「寻找」跳到车位地图查看步行路线。", @"寻找");
+    if (typed == nil){
         return;
     }
-
-    NSString *typed = [combo.stringValue stringByTrimmingCharactersInSet:
-        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
     [self notifyQuickAction:SmartParkPageMap];
     if (typed.length > 0){
         // 先切页（地图页此时已加载），再让地图页按车牌画路线。
@@ -451,9 +421,8 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
 
     const smartpark::ParkingInsights insights = b->insights();
 
-    // 组合占比 Donut：直接用车位计数。
-    // 原来用 insights.currentXxx，而远程模式下 insights() 是空的（协议只给
-    // analytics.report 文本），会把停满的车场画成「100% 空闲」。
+    // 组合占比 Donut：直接用车位计数，不依赖 insights 的派生字段，
+    // 避免数据源能力不同时把停满的车场画成「100% 空闲」。
     int disabledN = 0;
     for (const smartpark::ParkingSpot &spot : b->spots()){
         if (spot.status() == smartpark::SpotStatus::Disabled){
@@ -470,25 +439,6 @@ int dayIndexFromNow(const smartpark::ParkingRecord::TimePoint &tp){
         [self donutSlice:@"预留" value:reservedN color:rgba(181, 71, 8, 140)],
         [self donutSlice:@"空闲" value:availableN color:rgba(15, 118, 110, 140)],
         [self donutSlice:@"停用" value:disabledN color:rgba(102, 112, 133, 140)],
-    ]];
-
-    // 车型占比 Donut
-    int normal = 0, accessible = 0, charging = 0, vip = 0;
-    for (const smartpark::ParkingSpot &spot : b->spots()){
-        switch (spot.type()){
-        case smartpark::SpotType::Accessible: ++accessible; break;
-        case smartpark::SpotType::Charging: ++charging; break;
-        case smartpark::SpotType::Vip: ++vip; break;
-        case smartpark::SpotType::Normal: default: ++normal; break;
-        }
-    }
-    [_typeChart setCenterTitle:@"车位类型"];
-    [_typeChart setCenterValue:[NSString stringWithFormat:@"%d", normal + accessible + charging + vip]];
-    [_typeChart setSlices:@[
-        [self donutSlice:@"普通" value:normal color:rgba(15, 118, 110, 140)],
-        [self donutSlice:@"无障碍" value:accessible color:rgba(79, 70, 229, 140)],
-        [self donutSlice:@"充电" value:charging color:rgba(2, 106, 162, 140)],
-        [self donutSlice:@"VIP" value:vip color:rgba(124, 58, 237, 140)],
     ]];
 
     // 预测 Line

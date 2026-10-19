@@ -33,8 +33,8 @@ public:
         bool bookings{true};            // 预约管理页
         bool records{true};             // 停车记录页
         bool layoutEditing{true};       // 设施配置页
-        bool deposits{true};            // 定金指标（快照不提供）
-        bool insights{true};            // 本地分析洞察（远程只有 analytics.report 文本）
+        bool deposits{true};            // 定金指标（快照随带 pending / forfeited）
+        bool insights{true};            // 本地分析洞察（远程同样用快照数据在本地算）
         bool layoutText{true};          // 布局描述文本（快照只有几何，没有描述）
     };
 

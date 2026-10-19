@@ -23,6 +23,10 @@ Makefile
 /data/*.db-wal
 *.log
 
+# 车牌照片留档是运行时产物（入场照片 + 出库后的 history/），只保留 README 说明
+/examples/platephoto/*
+!/examples/platephoto/README.md
+
 # Operating system files
 .DS_Store
 Thumbs.db
@@ -58,5 +62,5 @@ scripts/__pycache__/
 !/third_party/QR-Code-generator/cpp/qrcodegen.hpp
 !/third_party/QR-Code-generator/cpp/qrcodegen.cpp
 
-# Python bytecode (tests/) 
-tests/__pycache__/
+# Python bytecode（tests/、scripts/、docs/report-build/ 等）
+__pycache__/

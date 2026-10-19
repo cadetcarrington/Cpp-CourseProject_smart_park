@@ -217,8 +217,7 @@ int main(int argc, char **argv){
                         "local reservation did not plan a route");
                 require(!bridge.reservations().empty(),
                         "created reservation is not listed");
-                // 到场窗口自「开始前 lockLeadTime 分钟」起：等窗口打开再确认。
-                std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+                // 预约创建即锁位、到场窗口从创建时打开：不需要等窗口。
                 auto arrived = bridge.checkInReservation("京A70001");
                 require(arrived.has_value(),
                         "local checkInReservation failed: " + bridge.lastError());
@@ -247,16 +246,22 @@ int main(int argc, char **argv){
                         "local cancelReservation failed: " + bridge.lastError());
                 plannedEntry = created->entryRoute;
                 plannedExit = created->exitRoute;
-                // 再建一笔两小时后开始的预约：它不在锁位窗口内，
-                // 车位状态仍是「空闲」，正好用来验证车位图的「已预约」标记。
+                // 再建一笔两小时后开始的预约：预约创建即锁位，物理车位马上变
+                // Reserved，车位图上直接就是「已锁位的预订」，不再有未锁位的虚线状态。
                 auto far = bridge.createReservation(
                     "京A70003", smartpark::VehicleType::Car,
                     smartpark::ParkingRecord::Clock::now() + std::chrono::hours(2),
                     std::chrono::minutes(60), false);
                 require(far.has_value(), "far-future reservation failed");
-                pendingSpotId = far->reservation.spotId();
-                require(!bridge.pendingReservations().empty(),
-                        "pending reservation is not exposed for the map");
+                require(bridge.pendingReservations().empty(),
+                        "creation-locked reservation should not be pending");
+                bool farLocked = false;
+                for (const smartpark::ParkingSpot &spot : bridge.spots()){
+                    farLocked = farLocked
+                        || (spot.identifier() == far->reservation.spotId()
+                            && spot.status() == smartpark::SpotStatus::Reserved);
+                }
+                require(farLocked, "far-future reservation did not lock its spot");
                 std::printf("local booking flow: create/checkin/cancel OK "
                             "(spot %s)\n", created->reservation.spotId().c_str());
             }
@@ -338,9 +343,50 @@ int main(int argc, char **argv){
                         "latest lookup returned an older photo");
                 require([PlatePhotoArchive latestPhotoForPlate:@"京B00000"].length == 0,
                         "unknown plate should have no archived photo");
+
+                // 出库：在场照片挪进 history/，文件名由车牌 + 入库时间 + 出库时间组成，
+                // 同一趟停车的第二张（出库那张）带 _2 后缀；在场目录随即清空。
+                NSDate *entry = [NSDate dateWithTimeIntervalSince1970:1700000000];
+                NSDate *exitDate = [NSDate dateWithTimeIntervalSince1970:1700003600];
+                NSError *moveError = nil;
+                NSArray<NSString *> *moved = [PlatePhotoArchive movePhotosForPlate:@"京A12345"
+                                                                         entryTime:entry
+                                                                          exitTime:exitDate
+                                                                             error:&moveError];
+                require(moved.count == 2, "checkout should move both photos into history");
+                NSDateFormatter *stamp = [[NSDateFormatter alloc] init];
+                stamp.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+                stamp.dateFormat = @"yyyyMMdd-HHmmss";
+                NSString *expectedStem = [NSString stringWithFormat:@"京A12345_%@_%@",
+                    [stamp stringFromDate:entry], [stamp stringFromDate:exitDate]];
+                require([moved[0].lastPathComponent hasPrefix:expectedStem],
+                        "history file name should carry entry and exit timestamps");
+                require([moved[0].stringByDeletingLastPathComponent hasSuffix:@"history"],
+                        "photos should land in the history subdirectory");
+                require([[moved[1].lastPathComponent stringByDeletingPathExtension]
+                            hasSuffix:@"_2"], "second photo of the stay should be suffixed");
+                for (NSString *path in moved){
+                    require([[NSFileManager defaultManager] fileExistsAtPath:path],
+                            "moved photo should exist on disk");
+                }
+                require([PlatePhotoArchive photosForPlate:@"京A12345"].count == 0,
+                        "active archive should be empty after checkout");
+                require([PlatePhotoArchive movePhotosForPlate:@"京B00000"
+                                                    entryTime:entry
+                                                     exitTime:exitDate
+                                                        error:nil].count == 0,
+                        "a plate without photos should move nothing");
+
                 unsetenv("SMARTPARK_PLATE_PHOTO_DIR");
-                std::printf("plate photo archive: 2 archived, latest lookup OK (%s)\n",
-                            secondArchived.lastPathComponent.UTF8String);
+                // 不设环境变量时默认目录是仓库里的 examples/platephoto（验收时直接翻项目目录）。
+                NSString *defaultDir = [PlatePhotoArchive directoryWithError:nil];
+                require([defaultDir.lastPathComponent isEqualToString:@"platephoto"],
+                        "default photo directory should be examples/platephoto");
+                require([[defaultDir.stringByDeletingLastPathComponent lastPathComponent]
+                            isEqualToString:@"examples"],
+                        "default photo directory should sit under examples/");
+                std::printf("plate photo archive: 2 archived, checkout moved 2 into history (%s)\n",
+                            moved.lastObject.lastPathComponent.UTF8String);
             }
 
             // 置信度闸门：够高直接办理，低于阈值或结果被标记不可靠才要人工确认。
@@ -396,7 +442,13 @@ int main(int argc, char **argv){
                 std::printf("pending-reservation marker: %d px changed after cancel\n",
                             changed);
             } else {
-                require(false, "no pending reservation spot to check");
+                // 创建即锁位后不再有「已预约但未锁位」的订单，pendingReservations 恒为空：
+                // 车位图上直接显示为已锁位的预订，这里只断言这个不变式。
+                (void)checkPendingHover;   // 悬停工具函数保留，等以后真有未锁位订单再用
+                require(bridge.pendingReservations().empty(),
+                        "creation-locking must not leave pending reservations behind");
+                std::printf("pending-reservation overlay: skipped "
+                            "(creation locks the physical spot)\n");
             }
 
             // 预期路线覆盖层：设置路线后车位图上必须多出一条线（与 Qt 版

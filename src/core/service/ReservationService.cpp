@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -85,7 +86,9 @@ std::optional<ReservationResult> ReservationService::create(
         lastError_ = "该车牌已有生效的预约单";
         return std::nullopt;
     }
-    // 临时副本上选位：窗口开始前到期的短时锁视为空闲，窗口重叠的预约视为占用。
+    // 创建即锁位：同一车位只允许一笔有效预约。已被有效预约（待支付/已确认/
+    // 已到场）锁定的车位不再进入候选，避免相邻时段的第二笔预约复用第一笔的
+    // 物理锁；短时锁到期由 sweep 统一释放。
     std::vector<ParkingSpot> candidates = park_.spots_;
     if (accessible){
         // 无障碍关怀：只在无障碍车位中挑选。
@@ -95,18 +98,13 @@ std::optional<ReservationResult> ReservationService::create(
                 return spot.type() != SpotType::Accessible;
             }), candidates.end());
     }
-    for (ParkingSpot &spot : candidates){
-        if (overlapsOpenReservation(spot.identifier(), startTime, endTime)){
-            if (spot.isAvailable()){
-                spot.occupy(vehicle);
-            }
-            continue;
-        }
-        if (spot.status() == SpotStatus::Reserved && spot.reservationExpiresAt()
-            && *spot.reservationExpiresAt() <= startTime){
-            spot.release();
-        }
-    }
+    const std::size_t selectableSpots = candidates.size();
+    candidates.erase(std::remove_if(
+        candidates.begin(), candidates.end(),
+        [this](const ParkingSpot &spot){
+            return !spot.isAvailable()
+                || hasOpenReservationOnSpot(spot.identifier());
+        }), candidates.end());
     // 无障碍路线：提高转向权重，优先少转弯的直达路径。
     const AllocationWeights savedWeights = park_.allocator_.weights();
     if (accessible){
@@ -118,15 +116,18 @@ std::optional<ReservationResult> ReservationService::create(
         park_.allocator_.propose(vehicle, candidates);
     park_.allocator_.setWeights(savedWeights);
     if (!proposal){
-        lastError_ = accessible ? "暂无空闲无障碍车位" : "没有可预约的车位";
+        if (selectableSpots > 0 && candidates.empty()){
+            lastError_ = accessible
+                ? "暂无空闲无障碍车位（可选车位已被有效预约锁定）"
+                : "没有可预约的车位（可选车位已被有效预约锁定）";
+        } else {
+            lastError_ = accessible ? "暂无空闲无障碍车位" : "没有可预约的车位";
+        }
         return std::nullopt;
     }
     ParkingSpot *spot = findSpot(proposal->spotId);
-    if (spot == nullptr
-        || !(spot->status() == SpotStatus::Available
-             || (spot->status() == SpotStatus::Reserved
-                 && spot->reservationExpiresAt()
-                 && *spot->reservationExpiresAt() <= startTime))){
+    if (spot == nullptr || !spot->isAvailable()
+        || hasOpenReservationOnSpot(spot->identifier())){
         lastError_ = "没有可预约的车位";
         return std::nullopt;
     }
@@ -180,6 +181,17 @@ std::optional<ReservationResult> ReservationService::create(
             DepositPayment::Status::Succeeded, now});
     }
     reservations_.push_back(std::move(reservation));
+    // 创建即锁位：到场窗口从创建时打开，车位必须立刻占住，
+    // 否则普通车辆先停进来，车主到场时才发现没车位。
+    if (ParkingSpot *spot = findSpot(proposal->spotId);
+        spot != nullptr && spot->status() == SpotStatus::Available){
+        if (spot->reserve(vehicle, graceDeadline)){
+            if (park_.repository_ != nullptr
+                && !park_.repository_->saveReservation(*spot)){
+                spot->release();
+            }
+        }
+    }
     park_.audit(accessible ? "reservation_create_accessible" : "reservation_create",
                 vehicle.plateNumber() + "@" + proposal->spotId);
     ReservationResult result{reservations_.back(), park_.toResult(*proposal)};
@@ -245,6 +257,12 @@ bool ReservationService::cancel(const std::string &plateNumber,
 
 std::optional<AllocationResult> ReservationService::checkIn(
     const std::string &plateNumber, ParkingRecord::TimePoint now){
+    return checkInImpl(plateNumber, now, nullptr);
+}
+
+std::optional<AllocationResult> ReservationService::checkInImpl(
+    const std::string &plateNumber, ParkingRecord::TimePoint now,
+    const std::optional<AllocationProposal> *prepared){
     lastError_.clear();
     sweep(now);
     Reservation *reservation = findStatusPtr(plateNumber, ReservationStatus::Confirmed);
@@ -252,11 +270,11 @@ std::optional<AllocationResult> ReservationService::checkIn(
         lastError_ = "该车牌没有待到场的时段预约";
         return std::nullopt;
     }
-    if (now < reservation->startTime() - rule_.lockLeadTime
-        || now > reservation->graceDeadline()){
-        lastError_ = "不在到场时间窗口内（开始前 "
-            + std::to_string(rule_.lockLeadTime.count())
-            + " 分钟起至宽限期截止）";
+    // 到场窗口从预约创建那一刻就打开（车位在创建时已锁），只保留截止时间。
+    if (now > reservation->graceDeadline()){
+        lastError_ = "已过到场截止时间（预约开始后 "
+            + std::to_string(rule_.gracePeriod.count())
+            + " 分钟），预约按爽约处理";
         return std::nullopt;
     }
     ParkingSpot *spot = findSpot(reservation->spotId());
@@ -278,9 +296,10 @@ std::optional<AllocationResult> ReservationService::checkIn(
             return std::nullopt;
         }
     }
-    const std::optional<AllocationProposal> proposal = park_.allocator_.propose(
-        vehicle, park_.spots_, spot->identifier());
-    if (!proposal
+    const std::optional<AllocationProposal> proposal = prepared ? *prepared
+        : park_.allocator_.propose(vehicle, park_.spots_, spot->identifier());
+    if (!proposal || proposal->spotId != spot->identifier()
+        || proposal->plateNumber != plateNumber
         || spot->status() != SpotStatus::Reserved
         || !spot->parkedVehicle()
         || spot->parkedVehicle()->plateNumber() != plateNumber
@@ -352,10 +371,10 @@ void ReservationService::sweep(ParkingRecord::TimePoint now){
         park_.audit("reservation_no_show",
                     reservation.plateNumber() + "@" + reservation.spotId());
     }
-    // 延迟锁位：进入到场窗口的预约把物理车位短时锁定到宽限期截止。
+    // 兜底锁位：预约创建时已锁位，这里只补锁那些（例如写库失败后）还没锁上的预约。
     for (Reservation &reservation : reservations_){
         if (reservation.status() != ReservationStatus::Confirmed
-            || now < reservation.startTime() - rule_.lockLeadTime){
+            || now > reservation.graceDeadline()){
             continue;
         }
         ParkingSpot *spot = findSpot(reservation.spotId());
@@ -532,15 +551,7 @@ void ReservationService::restore(ParkingRepository &repository){
             throw std::runtime_error("duplicate open persisted reservation: "
                                     + reservation.plateNumber());
         }
-        if (reservation.status() == ReservationStatus::Confirmed){
-            if (spot->status() == SpotStatus::Reserved && spot->parkedVehicle()
-                && spot->parkedVehicle()->plateNumber() != reservation.plateNumber()){
-                throw std::runtime_error(
-                    "reserved spot belongs to another vehicle for reservation: "
-                    + reservation.id());
-            }
-            // 停机期间进入锁位窗口且车位空闲时，由下一次 sweep 补锁。
-        } else if (reservation.status() == ReservationStatus::CheckedIn){
+        if (reservation.status() == ReservationStatus::CheckedIn){
             const std::optional<ParkingRecord> record =
                 park_.activeRecord(reservation.plateNumber());
             if (!record || record->spotId() != reservation.spotId()
@@ -550,12 +561,116 @@ void ReservationService::restore(ParkingRepository &repository){
                     "checked-in reservation does not match its parking record: "
                     + reservation.plateNumber());
             }
-        } else if (spot->status() == SpotStatus::Reserved && spot->parkedVehicle()
+        } else if (!reservation.isOpen() && spot->status() == SpotStatus::Reserved
+                   && spot->parkedVehicle()
                    && spot->parkedVehicle()->plateNumber() == reservation.plateNumber()){
             throw std::runtime_error("resolved reservation still holds its spot: "
                                     + reservation.id());
         }
+        // Confirmed 预约与车位现锁归属不一致时不在这里抛错：旧版本允许相邻
+        // 时段复用同一车位的锁，可能留下历史冲突数据，统一交给下面的对账修复。
     }
+    reconcileConflictingReservations();
+}
+
+void ReservationService::reconcileConflictingReservations(){
+    std::map<std::string, std::vector<std::size_t>> claimsBySpot;
+    for (std::size_t index = 0; index < reservations_.size(); ++index){
+        if (reservations_[index].status() == ReservationStatus::Confirmed){
+            claimsBySpot[reservations_[index].spotId()].push_back(index);
+        }
+    }
+    const std::size_t noKeeper = reservations_.size();
+    for (auto &entry : claimsBySpot){
+        ParkingSpot *spot = findSpot(entry.first);
+        if (spot == nullptr){
+            continue;
+        }
+        // 物理锁当前归属的车牌（预约短时锁或已在场占用）。
+        std::string lockOwner;
+        if ((spot->status() == SpotStatus::Reserved
+             || spot->status() == SpotStatus::Occupied)
+            && spot->parkedVehicle()){
+            lockOwner = spot->parkedVehicle()->plateNumber();
+        }
+        std::size_t keeper = noKeeper;
+        if (!lockOwner.empty()){
+            // 锁只属于其中一笔预约：保留与该锁归属一致的预约，其余取消退定金。
+            for (const std::size_t index : entry.second){
+                if (reservations_[index].plateNumber() == lockOwner){
+                    keeper = index;
+                    break;
+                }
+            }
+        } else if (spot->isAvailable()){
+            // 没有物理锁可依（停机期间短时锁过期等）：保留最早开始的一笔，
+            // 补锁由后续 sweep 统一完成。
+            for (const std::size_t index : entry.second){
+                if (keeper == noKeeper
+                    || reservations_[index].startTime() < reservations_[keeper].startTime()
+                    || (reservations_[index].startTime() == reservations_[keeper].startTime()
+                        && reservations_[index].createdAt()
+                               < reservations_[keeper].createdAt())){
+                    keeper = index;
+                }
+            }
+        }
+        for (const std::size_t index : entry.second){
+            if (index == keeper){
+                continue;
+            }
+            if (!repairConflictingReservation(reservations_[index])){
+                throw std::runtime_error(
+                    "cannot repair conflicting persisted reservation: "
+                    + reservations_[index].id() + ": " + lastError_);
+            }
+        }
+    }
+}
+
+bool ReservationService::repairConflictingReservation(Reservation &reservation){
+    if (reservation.deposit() > 0.0
+        && reservation.depositState() == DepositState::Pending
+        && !reservation.chargeTransactionId().empty()){
+        const ParkingRecord::TimePoint now = Reservation::Clock::now();
+        const std::optional<std::string> refundTransaction =
+            gateway_.refund(reservation.chargeTransactionId(),
+                            reservation.deposit(), now);
+        if (!refundTransaction){
+            lastError_ = "无法退还历史冲突预约定金";
+            return false;
+        }
+        if (!reservation.cancel()){
+            lastError_ = "无法取消历史冲突预约";
+            return false;
+        }
+        reservation.setDepositState(DepositState::Refunded);
+        if (park_.repository_ != nullptr){
+            const DepositPayment receipt{*refundTransaction, reservation.id(),
+                reservation.plateNumber(), DepositPayment::Kind::Refund,
+                reservation.deposit(), DepositPayment::Status::Succeeded, now};
+            if (!park_.repository_->saveReservationPayment(reservation, receipt)){
+                lastError_ = "冲突预约退款写入失败: "
+                    + park_.repository_->lastError();
+                return false;
+            }
+            payments_.push_back(receipt);
+        }
+    } else {
+        if (!reservation.cancel()){
+            lastError_ = "无法取消历史冲突预约";
+            return false;
+        }
+        if (park_.repository_ != nullptr
+            && !park_.repository_->saveReservationStatus(reservation)){
+            lastError_ = "冲突预约状态写入失败: "
+                + park_.repository_->lastError();
+            return false;
+        }
+    }
+    park_.audit("reservation_conflict_repair",
+                reservation.plateNumber() + "@" + reservation.spotId());
+    return true;
 }
 
 Reservation *ReservationService::findOpenPtr(const std::string &plateNumber){
@@ -582,16 +697,14 @@ Reservation *ReservationService::findStatusPtr(const std::string &plateNumber,
     return reservation == reservations_.end() ? nullptr : &(*reservation);
 }
 
-bool ReservationService::overlapsOpenReservation(
-    const std::string &spotId, ParkingRecord::TimePoint startTime,
-    ParkingRecord::TimePoint endTime) const{
+bool ReservationService::hasOpenReservationOnSpot(const std::string &spotId) const{
+    // 创建即锁位：任何未结束的预约（待支付/已确认/已到场）都锁着车位，
+    // 不论时间窗是否重叠，都不允许第二笔预约复用同一车位。
     return std::any_of(
         reservations_.begin(), reservations_.end(),
-        [&spotId, startTime, endTime](const Reservation &reservation){
+        [&spotId](const Reservation &reservation){
             return blocksTimeWindow(reservation.status())
-                && reservation.spotId() == spotId
-                && reservation.startTime() < endTime
-                && reservation.endTime() > startTime;
+                && reservation.spotId() == spotId;
         });
 }
 

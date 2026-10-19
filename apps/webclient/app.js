@@ -892,18 +892,22 @@ function viewMore(root) {
     try {
       const image = await fileToJpegBase64(file, 900);
       const r = await api('POST', '/lpr/recognize', { image });
+      // 绿牌＝新能源：入场登记直接记电动车，省一次手选（演示页没有类型下拉）。
+      const newEnergy = !!r.new_energy;
+      const colorText = { blue: '蓝色号牌', green: '绿色新能源号牌', yellow: '黄色号牌',
+                          white: '白色号牌', black: '黑色号牌' }[r.color] || '';
       box.innerHTML = `
         <div class="banner ok">📷 识别结果：<b style="font-size:17px">${esc(r.plate)}</b>
-          <span class="muted">（${{ mock: '演示模式', script: '识别脚本' }[r.backend] || r.backend}${r.confidence ? ' · 置信度 ' + Math.round(r.confidence * 100) + '%' : ''}）</span></div>
+          <span class="muted">（${{ mock: '演示模式', script: '识别脚本' }[r.backend] || r.backend}${r.confidence ? ' · 置信度 ' + Math.round(r.confidence * 100) + '%' : ''}${colorText ? ' · ' + colorText : ''}）</span></div>
         <div class="row2" style="margin-top:10px">
-          <button class="btn ghost" id="lpr-enter">🚗 用作入场登记</button>
+          <button class="btn ghost" id="lpr-enter">🚗 用作入场登记${newEnergy ? '（电动车）' : ''}</button>
           <button class="btn ghost" id="lpr-copy">📋 用作预约车牌</button>
         </div>`;
       box.querySelector('#lpr-enter').onclick = async () => {
         try {
           const enter = await api('POST', '/parking/enter',
-            { plate: r.plate, vehicleType: 'car' });
-          toast(`入场成功！车位 ${enter.spotId}`);
+            { plate: r.plate, vehicleType: newEnergy ? 'electric' : 'car' });
+          toast(`入场成功！车位 ${enter.spotId}${newEnergy ? '（已记为电动车）' : ''}`);
           nav('#/home');
         } catch (e) { toast(e.message || '入场失败'); }
       };

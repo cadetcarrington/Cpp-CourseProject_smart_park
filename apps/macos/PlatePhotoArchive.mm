@@ -36,28 +36,63 @@ NSError *archiveError(NSString *message){
                                code:kPlatePhotoArchiveError
                            userInfo:@{NSLocalizedDescriptionKey: message}];
 }
+
+// 照片要落在仓库的 examples/platephoto 里（老师/验收时直接翻项目目录就能看到），
+// 但 app 是从 build/ 里跑的，不能写死相对路径：从可执行文件所在目录逐级向上找
+// 仓库根（同时有 CMakeLists.txt 和 examples/plates 的目录）。找不到（比如把 app
+// 拷到 /Applications）就退回应用数据目录，功能不受影响。
+NSString *repositoryRoot(void){
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSMutableArray<NSString *> *origins = [NSMutableArray array];
+    NSString *executable = [[NSBundle mainBundle] executablePath];
+    if (executable.length > 0){
+        [origins addObject:[executable stringByDeletingLastPathComponent]];
+    }
+    NSString *working = [manager currentDirectoryPath];
+    if (working.length > 0){
+        [origins addObject:working];
+    }
+    for (NSString *origin in origins){
+        NSString *candidate = origin;
+        for (NSUInteger depth = 0; depth < 10 && candidate.length > 1; ++depth){
+            NSString *marker = [candidate stringByAppendingPathComponent:@"CMakeLists.txt"];
+            NSString *plates = [candidate stringByAppendingPathComponent:@"examples/plates"];
+            if ([manager fileExistsAtPath:marker] && [manager fileExistsAtPath:plates]){
+                return candidate;
+            }
+            candidate = [candidate stringByDeletingLastPathComponent];
+        }
+    }
+    return nil;
+}
 } // namespace
 
 @implementation PlatePhotoArchive
 
 + (NSString *)directoryWithError:(NSError **)error{
-    // 测试与自定义部署可以换目录（指向临时目录/外置盘），默认仍是应用数据目录。
+    // 测试与自定义部署可以换目录（指向临时目录/外置盘），默认落在仓库的 examples/platephoto。
     const char *override = getenv("SMARTPARK_PLATE_PHOTO_DIR");
     NSString *directory = nil;
     if (override != nullptr && override[0] != '\0'){
         directory = [NSString stringWithUTF8String:override];
     } else {
-        NSArray<NSString *> *bases = NSSearchPathForDirectoriesInDomains(
-            NSApplicationSupportDirectory, NSUserDomainMask, YES);
-        NSString *base = bases.firstObject;
-        if (base.length == 0){
-            if (error != nullptr){
-                *error = archiveError(@"找不到应用数据目录");
+        NSString *root = repositoryRoot();
+        if (root != nil){
+            directory = [[root stringByAppendingPathComponent:@"examples"]
+                stringByAppendingPathComponent:@"platephoto"];
+        } else {
+            NSArray<NSString *> *bases = NSSearchPathForDirectoriesInDomains(
+                NSApplicationSupportDirectory, NSUserDomainMask, YES);
+            NSString *base = bases.firstObject;
+            if (base.length == 0){
+                if (error != nullptr){
+                    *error = archiveError(@"找不到应用数据目录");
+                }
+                return nil;
             }
-            return nil;
+            directory = [[base stringByAppendingPathComponent:@"smartpark"]
+                stringByAppendingPathComponent:@"plate-photos"];
         }
-        directory = [[base stringByAppendingPathComponent:@"smartpark"]
-            stringByAppendingPathComponent:@"plate-photos"];
     }
     NSError *createError = nil;
     if (![[NSFileManager defaultManager] createDirectoryAtPath:directory
@@ -71,6 +106,25 @@ NSError *archiveError(NSString *message){
         return nil;
     }
     return directory;
+}
+
++ (NSString *)historyDirectoryWithError:(NSError **)error{
+    NSString *directory = [self directoryWithError:error];
+    if (directory == nil){
+        return nil;
+    }
+    NSString *history = [directory stringByAppendingPathComponent:@"history"];
+    NSError *createError = nil;
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:history
+                                   withIntermediateDirectories:YES
+                                                    attributes:nil
+                                                         error:&createError]){
+        if (error != nullptr){
+            *error = createError ?: archiveError(@"无法创建历史照片目录");
+        }
+        return nil;
+    }
+    return history;
 }
 
 + (NSString *)archiveImageAtPath:(NSString *)sourcePath
@@ -143,6 +197,58 @@ NSError *archiveError(NSString *message){
 
 + (NSString *)latestPhotoForPlate:(NSString *)plate{
     return [self photosForPlate:plate].firstObject;
+}
+
++ (NSArray<NSString *> *)movePhotosForPlate:(NSString *)plate
+                                  entryTime:(NSDate *)entryTime
+                                   exitTime:(NSDate *)exitTime
+                                      error:(NSError **)error{
+    // photosForPlate 是新的在前，挪进 history 时按时间先后改名，第一张就是入场那张。
+    NSArray<NSString *> *photos =
+        [[self photosForPlate:plate] reverseObjectEnumerator].allObjects;
+    if (photos.count == 0){
+        return @[];
+    }
+    NSString *history = [self historyDirectoryWithError:error];
+    if (history == nil){
+        return @[];
+    }
+    NSString *plateText = sanitizedPlate(plate);
+    NSString *entryStamp = [timestampFormatter() stringFromDate:entryTime ?: [NSDate date]];
+    NSString *exitStamp = [timestampFormatter() stringFromDate:exitTime ?: [NSDate date]];
+    // 文件名＝车牌 + 入库时间 + 出库时间；同一趟停车有多张照片（入场/出场各一张）时，
+    // 第二张起加 _2、_3，顺着序号就能看出先后。
+    NSString *stem = [NSString stringWithFormat:@"%@_%@_%@", plateText, entryStamp, exitStamp];
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSMutableArray<NSString *> *moved = [NSMutableArray array];
+    NSError *failure = nil;
+    for (NSUInteger index = 0; index < photos.count; ++index){
+        NSString *source = photos[index];
+        NSString *extension = [source pathExtension].lowercaseString;
+        if (extension.length == 0){
+            extension = @"jpg";
+        }
+        NSString *base = index == 0 ? stem : [NSString stringWithFormat:@"%@_%lu",
+            stem, (unsigned long)(index + 1)];
+        NSString *destination = [history stringByAppendingPathComponent:
+            [base stringByAppendingPathExtension:extension]];
+        for (NSUInteger suffix = 1; [manager fileExistsAtPath:destination]; ++suffix){
+            destination = [history stringByAppendingPathComponent:
+                [[NSString stringWithFormat:@"%@_%lu", base, (unsigned long)suffix]
+                    stringByAppendingPathExtension:extension]];
+        }
+        NSError *moveError = nil;
+        if ([manager moveItemAtPath:source toPath:destination error:&moveError]){
+            [moved addObject:destination];
+        } else {
+            // 单张挪失败不影响其它张：记下第一条原因继续，已挪走的仍然可用。
+            failure = failure ?: (moveError ?: archiveError(@"挪动车牌照片失败"));
+        }
+    }
+    if (failure != nil && error != nullptr){
+        *error = failure;
+    }
+    return moved;
 }
 
 @end

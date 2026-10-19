@@ -3,6 +3,7 @@
 #import "BookingViewController.h"
 #import "DashboardViewController.h"
 #import "OccupancyViewController.h"
+#import "PlatePrompt.h"
 #import "OperationsViewController.h"
 #import "ParkingMapViewController.h"
 #import "RecordsViewController.h"
@@ -132,7 +133,8 @@ NSString *pageTitleForIndex(NSInteger index){
             [NSSplitViewItem sidebarWithViewController:sidebar];
         sidebarItem.minimumThickness = 200;
         sidebarItem.maximumThickness = 260;
-        sidebarItem.canCollapse = NO;
+        // 允许折叠：「显示 › 显示/隐藏侧边栏」与工具栏左侧开关都靠它。
+        sidebarItem.canCollapse = YES;
         self.sidebar = sidebar;
 
         // 构建 7 个页面，共享同一个 bridge。
@@ -250,6 +252,57 @@ NSString *pageTitleForIndex(NSInteger index){
     }
 }
 
+// 主菜单入口：刷新当前页。
+- (void)refreshCurrentPage{
+    [self refreshVisiblePage];
+}
+
+// 主菜单入口：按索引切页（侧边栏选中态由 showPage: 同步）。
+- (void)selectPage:(NSInteger)index{
+    [self showPage:index];
+}
+
+#pragma mark - 主菜单「操作」
+
+- (OperationsViewController *)operationsPage{
+    return (OperationsViewController *)self.pages[SmartParkPageOperations];
+}
+
+- (void)beginCheckIn{
+    [self showPage:SmartParkPageOperations];
+    [[self operationsPage] beginCheckIn];
+}
+
+- (void)beginCheckOut{
+    NSString *plate = SmartParkPromptForParkedPlate(bridge_.get(), @"出库",
+        @"选择或输入在场车牌，点「下一步」跳到车辆出入库办理出库。", @"下一步");
+    if (plate == nil){
+        return;
+    }
+    [self showPage:SmartParkPageOperations];
+    [[self operationsPage] beginCheckOutWithPlate:plate];
+}
+
+- (void)beginCarFinder{
+    NSString *plate = SmartParkPromptForParkedPlate(bridge_.get(), @"反向寻车",
+        @"选择或输入在场车牌，点「寻找」跳到车位地图查看步行路线。", @"寻找");
+    if (plate == nil){
+        return;
+    }
+    [self showPage:SmartParkPageMap];
+    if (plate.length > 0){
+        // 先切页（地图页此时已加载），再让地图页按车牌画路线。
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:SmartParkFindCarRequestNotification
+                          object:nil
+                        userInfo:@{SmartParkFindCarPlateKey: plate}];
+    }
+}
+
+- (void)beginReservation{
+    [self showPage:SmartParkPageBooking];
+}
+
 - (BOOL)isDatabaseReady{
     return bridge_ != nullptr && bridge_->ready();
 }
@@ -322,11 +375,14 @@ static NSString *const kSmartParkTitleItem = @"smartpark.toolbar.title";
 }
 
 - (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(NSToolbar *)toolbar{
-    return @[ kSmartParkTitleItem, kSmartParkRefreshItem, NSToolbarFlexibleSpaceItemIdentifier ];
+    return @[ NSToolbarToggleSidebarItemIdentifier, kSmartParkTitleItem,
+              kSmartParkRefreshItem, NSToolbarFlexibleSpaceItemIdentifier ];
 }
 
 - (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(NSToolbar *)toolbar{
-    return @[ NSToolbarFlexibleSpaceItemIdentifier, kSmartParkTitleItem,
+    // 侧边栏开关在最左、刷新在最右，标题居中——与 Finder / 系统设置的栏结构一致。
+    return @[ NSToolbarToggleSidebarItemIdentifier,
+              NSToolbarFlexibleSpaceItemIdentifier, kSmartParkTitleItem,
               NSToolbarFlexibleSpaceItemIdentifier, kSmartParkRefreshItem ];
 }
 
@@ -347,6 +403,10 @@ static NSString *const kSmartParkTitleItem = @"smartpark.toolbar.title";
         item.label = @"标题";
         item.paletteLabel = @"标题";
         return item;
+    }
+    if ([itemIdentifier isEqualToString:NSToolbarToggleSidebarItemIdentifier]){
+        // 系统标准项：AppKit 自带图标与 toggleSidebar: 动作，无需自己接线。
+        return [[NSToolbarItem alloc] initWithItemIdentifier:itemIdentifier];
     }
     if (![itemIdentifier isEqualToString:kSmartParkRefreshItem]){
         return nil;

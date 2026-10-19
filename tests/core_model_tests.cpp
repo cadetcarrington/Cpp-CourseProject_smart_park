@@ -10,6 +10,7 @@
 #include "core/service/AuditLogService.h"
 #include "core/service/DemoDirector.h"
 #include "core/service/ParkingService.h"
+#include "core/service/GridPlanner.h"
 #include "core/service/RemoteAnalystClient.h"
 #include "core/service/ParkingInsightEngine.h"
 #include "core/service/ReservationService.h"
@@ -20,13 +21,18 @@
 #include <QSqlQuery>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <queue>
 #include <set>
 #include <string>
+#include <vector>
 namespace{
 int failureCount = 0;
 void expect(bool condition, const std::string &message){
@@ -156,15 +162,15 @@ void testBillingService(){
            "billing keeps the first thirty minutes free");
     expect(billing.calculateFee(30min) == 0.0,
            "billing keeps the thirtieth minute free");
-    expect(billing.calculateFee(30min + 1s) == 5.0,
-           "billing charges the first unit after the free period");
-    expect(billing.calculateFee(60min) == 5.0,
+    expect(billing.calculateFee(30min + 1s) == 2.5,
+           "billing charges the first half-hour unit after the free period");
+    expect(billing.calculateFee(60min) == 2.5,
            "billing charges one unit for exactly thirty paid minutes");
-    expect(billing.calculateFee(60min + 1s) == 10.0,
+    expect(billing.calculateFee(60min + 1s) == 5.0,
            "billing rounds the second unit up");
-    expect(billing.calculateFee(90min) == 10.0,
+    expect(billing.calculateFee(90min) == 5.0,
            "billing charges two units for sixty paid minutes");
-    expect(billing.calculateFee(11h) == 100.0,
+    expect(billing.calculateFee(24h) == 100.0,
            "billing applies the daily fee cap");
 }
 void testDefaultLayout(){
@@ -670,9 +676,9 @@ void testPaidExitSurvivesRestart(){
                "paid exit test stores an entry");
         const auto closed = service.leave(u8"晋A12345", exit);
         expect(closed && closed->exitTime() && *closed->exitTime() == exit
-                   && closed->fee() == 15.0,
+                   && closed->fee() == 7.5,
                "paid exit records exact exit time and charged fee");
-        expect(service.totalRevenue() == 15.0,
+        expect(service.totalRevenue() == 7.5,
                "paid exit contributes to settled parking fees");
     }
     {
@@ -684,10 +690,10 @@ void testPaidExitSurvivesRestart(){
         if (restored.records().size() == 1){
             const auto &record = restored.records().front();
             expect(record.entryTime() == entry && record.exitTime()
-                       && *record.exitTime() == exit && record.fee() == 15.0,
+                       && *record.exitTime() == exit && record.fee() == 7.5,
                    "restart preserves paid record timestamps and fee");
         }
-        expect(restored.totalRevenue() == 15.0,
+        expect(restored.totalRevenue() == 7.5,
                "restart preserves settled parking fee total");
     }
 }
@@ -1530,10 +1536,10 @@ void testReservationCreateAndConflicts(){
     expect(first && !first->reservation.expectedRoute().empty(),
            "time-slot reservation returns an expected route snapshot");
     const auto *firstSpot = first ? findSpot(service, first->reservation.spotId()) : nullptr;
-    expect(firstSpot != nullptr && firstSpot->status() == smartpark::SpotStatus::Available,
-           "delayed locking keeps the spot physically available at creation");
-    expect(service.reservedSpots() == 0,
-           "no physical spot is reserved before the arrival window");
+    expect(firstSpot != nullptr && firstSpot->status() == smartpark::SpotStatus::Reserved,
+           "reservation locks the physical spot at creation");
+    expect(service.reservedSpots() == 1,
+           "reserved spot is counted as reserved right after creation");
     expect(std::abs(reservations.heldDeposits() - 20.0) < 1e-9,
            "deposit is charged on creation");
 
@@ -1543,9 +1549,11 @@ void testReservationCreateAndConflicts(){
     expect(!reservations.create({u8"晋A22222", smartpark::VehicleType::Car},
                                 now + 4h, now + 6h, now).has_value(),
            "overlapping window on the reserved spot is rejected");
-    expect(reservations.create({u8"晋A22222", smartpark::VehicleType::Car},
-                               now + 5h, now + 8h, now).has_value(),
-           "adjacent window on the same spot is accepted");
+    // 创建即锁位：同一车位的第一笔有效预约锁住车位后，相邻时段的第二笔
+    // 预约不能再复用该车位（旧实现允许，重启时会因双单争锁而失败）。
+    expect(!reservations.create({u8"晋A22222", smartpark::VehicleType::Car},
+                                now + 5h, now + 8h, now).has_value(),
+           "adjacent window cannot reuse a spot locked by an open reservation");
     expect(service.leave(u8"晋A77777", now + 35min).has_value(),
            "conflict test releases the first blocker");
     expect(reservations.create({u8"晋A33333", smartpark::VehicleType::Car},
@@ -1553,8 +1561,8 @@ void testReservationCreateAndConflicts(){
            "same window on another spot is accepted");
     expect(service.leave(u8"晋A88888", now + 35min).has_value(),
            "conflict test releases the second blocker");
-    expect(std::abs(reservations.heldDeposits() - 60.0) < 1e-9,
-           "each reservation charges its own deposit");
+    expect(std::abs(reservations.heldDeposits() - 40.0) < 1e-9,
+           "each accepted reservation charges its own deposit");
 
     expect(!service.createBooking({u8"晋A12345", smartpark::VehicleType::Car},
                                   now + 1h, now).has_value(),
@@ -1606,13 +1614,12 @@ void testReservationDelayedLockCheckInAndDepositDeduction(){
     const auto *lockedSpot = findSpot(service, spotId);
     expect(lockedSpot != nullptr
                && lockedSpot->status() == smartpark::SpotStatus::Reserved,
-           "arrival window locks the physical spot");
+           "creation locks the physical spot right away");
     expect(lockedSpot && lockedSpot->reservationExpiresAt()
                && *lockedSpot->reservationExpiresAt() == now + 2h + 30min,
            "short-term lock expires at the grace deadline");
     expect(service.reservedSpots() == 1, "locked spot is counted as reserved");
-    expect(!reservations.checkIn(u8"晋A12345", now + 30min).has_value(),
-           "check-in before the arrival window is rejected");
+    // 到场窗口自创建起打开，不再有「窗口未到」的拒绝分支；下界行为由晋A33333 用例覆盖。
 
     const auto arrived = reservations.checkIn(u8"晋A12345", now + 2h);
     expect(arrived.has_value(), "check-in at the start time succeeds");
@@ -1628,11 +1635,11 @@ void testReservationDelayedLockCheckInAndDepositDeduction(){
     expect(std::abs(reservations.heldDeposits() - 20.0) < 1e-9,
            "deposit is held as prepaid credit after check-in");
 
-    // 3 小时停车：免费 30 分钟后按 5 个计费单元收费 25 元，定金抵扣 20 元。
+    // 3 小时停车：免费 30 分钟后按 5 个计费单元收费 12.5 元，定金抵扣 12.5 元。
     const auto closed = service.leave(u8"晋A12345", now + 5h);
     expect(closed.has_value(), "reserved vehicle can leave");
-    expect(closed && std::abs(closed->fee() - 5.0) < 1e-9,
-           "deposit is deducted from the exit fee");
+    expect(closed && std::abs(closed->fee()) < 1e-9,
+           "deposit covers the whole exit fee");
     expect(reservationById(reservations, created->reservation.id())
                .has_value()
            && reservationById(reservations, created->reservation.id())->status()
@@ -1659,8 +1666,8 @@ void testReservationDelayedLockCheckInAndDepositDeduction(){
     const auto third = reservations.create({u8"晋A33333", smartpark::VehicleType::Car},
                                            now + 10h, now + 12h, now);
     expect(third.has_value(), "third reservation can be created");
-    expect(!reservations.checkIn(u8"晋A33333", now + 9h).has_value(),
-           "check-in before the lock window is rejected");
+    expect(reservations.checkIn(u8"晋A33333", now + 9h).has_value(),
+           "check-in long before the start time is accepted");
 }
 
 void testReservationNoShowAndCancel(){
@@ -1779,7 +1786,7 @@ void testReservationEnterAutoCheckIn(){
            "enter checks the reservation in by plate match");
     expect(!service.enter({u8"晋A12345", smartpark::VehicleType::Car}, now + 3h).has_value(),
            "same plate cannot enter twice");
-    // 2 小时停车：免费 30 分钟后 90 分钟 = 3 个计费单元 = 15 元 < 定金 20 元，
+    // 2 小时停车：免费 30 分钟后 90 分钟 = 3 个计费单元 = 7.5 元 < 定金 20 元，
     // 定金抵扣后实收 0 元（余额不退）。
     const auto closed = service.leave(u8"晋A12345", now + 4h);
     expect(closed.has_value() && std::abs(closed->fee()) < 1e-9,
@@ -1809,7 +1816,7 @@ void testReservationPersistenceAcrossRestart(){
                                    now + 5h, now + 7h, now).has_value(),
                "persistence test creates the cancelled order");
         expect(reservations.cancel(u8"晋A22222", now), "persistence test cancels an order");
-        // 完成并抵扣：3 小时停车，25 元减定金 20 元。
+        // 完成并抵扣：3 小时停车，12.5 元全部由定金抵扣。
         const auto completed = reservations.create({u8"晋A33333", smartpark::VehicleType::Car},
                                                    now + 8h, now + 11h, now);
         expect(completed.has_value(), "persistence test creates the completed order");
@@ -1857,7 +1864,7 @@ void testReservationPersistenceAcrossRestart(){
            "restart keeps the refunded deposit total");
     expect(std::abs(reservations.appliedDeposits() - 20.0) < 1e-9,
            "restart keeps the applied deposit total");
-    expect(std::abs(service.totalRevenue() - 5.0) < 1e-9,
+    expect(std::abs(service.totalRevenue()) < 1e-9,
            "restart counts only the settled exit fee after deposit credit");
     expect(std::abs(reservations.heldDeposits() - 40.0) < 1e-9,
            "restart keeps the held deposit total");
@@ -1865,8 +1872,159 @@ void testReservationPersistenceAcrossRestart(){
     expect(reservations.checkIn(u8"晋A44444", now + 13h).has_value(),
            "restored confirmed order can check in after restart");
     const auto exitFee = service.leave(u8"晋A55555", now + 16h + 30min);
-    expect(exitFee.has_value() && std::abs(exitFee->fee() - 5.0) < 1e-9,
+    expect(exitFee.has_value() && std::abs(exitFee->fee()) < 1e-9,
            "restored checked-in order deducts the deposit on exit");
+}
+
+// ===== 创建即锁位：相邻时段不得复用同一车位（P1） =====
+void testReservationAdjacentSameSpotRejected(){
+    using namespace std::chrono_literals;
+    const std::string description =
+        "site 60 30\n"
+        "entrance 0 15\n"
+        "exit 60 15\n"
+        "region A 10 10 1 1 1.2 5.5 6 left\n";
+    const auto layout = smartpark::ParkingLayout::fromDescription(description);
+    const auto now = reservationTestNow;
+    smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest);
+    auto &reservations = service.reservations();
+
+    const auto first = reservations.create({u8"晋A12345", smartpark::VehicleType::Car},
+                                           now + 2h, now + 3h, now);
+    expect(first.has_value(), "single-spot adjacent test creates the first reservation");
+    if (!first){
+        return;
+    }
+    const std::string spotId = first->reservation.spotId();
+    expect(!reservations.create({u8"晋A22222", smartpark::VehicleType::Car},
+                                now + 3h, now + 4h, now).has_value(),
+           "adjacent window cannot reuse a spot locked by an open reservation");
+    expect(!reservations.lastError().empty(), "reuse rejection reports a reason");
+    expect(reservations.reservations().size() == 1,
+           "rejected adjacent order is not kept");
+    expect(reservations.payments().size() == 1,
+           "rejected adjacent order is not charged");
+    expect(std::abs(reservations.heldDeposits() - 20.0) < 1e-9,
+           "only the first order holds a deposit");
+    const auto *spot = findSpot(service, spotId);
+    expect(spot != nullptr && spot->status() == smartpark::SpotStatus::Reserved
+               && spot->parkedVehicle()
+               && spot->parkedVehicle()->plateNumber() == u8"晋A12345",
+           "spot stays locked to the first reservation");
+    expect(service.reservedSpots() == 1, "rejected adjacent order does not add a lock");
+}
+
+// ===== 旧版相邻复用数据在重启时对账修复（P1 恢复路径） =====
+void testReservationLegacyConflictRepairsOnRestart(){
+    using namespace std::chrono_literals;
+    const std::string description =
+        "site 60 30\n"
+        "entrance 0 15\n"
+        "exit 60 15\n"
+        "region A 10 10 1 1 1.2 5.5 6 left\n";
+    const auto layout = smartpark::ParkingLayout::fromDescription(description);
+    const auto now = reservationTestNow;
+    QTemporaryDir directory;
+    expect(directory.isValid(), "legacy conflict test can create a directory");
+    const QString databasePath = directory.filePath("legacy-conflict.db");
+    {
+        smartpark::Persistence persistence(databasePath);
+        smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                          &persistence.repository());
+        auto &reservations = service.reservations();
+        const auto first = reservations.create({u8"晋A12345", smartpark::VehicleType::Car},
+                                               now + 2h, now + 3h, now);
+        expect(first.has_value(), "legacy conflict fixture creates the first order");
+        if (!first){
+            return;
+        }
+        const std::string spotId = first->reservation.spotId();
+        // 模拟旧版本写下的相邻时段第二单：同一车位、同一把锁，但锁只属于第一单。
+        const smartpark::Reservation legacy(
+            "R-LEGACY", u8"晋A22222", smartpark::VehicleType::Car, spotId,
+            now, now + 3h, now + 4h, now + 3h + 30min, 20.0, "PAY-LEGACY",
+            smartpark::ReservationStatus::Confirmed, smartpark::DepositState::Pending);
+        const smartpark::DepositPayment legacyCharge{
+            "PAY-LEGACY", "R-LEGACY", u8"晋A22222",
+            smartpark::DepositPayment::Kind::Charge, 20.0,
+            smartpark::DepositPayment::Status::Succeeded, now};
+        expect(persistence.repository().saveReservationOrder(legacy, &legacyCharge),
+               "legacy conflict fixture is persisted");
+    }
+    {
+        // 旧实现会在这里抛 "reserved spot belongs to another vehicle" 并让服务启动失败。
+        smartpark::Persistence persistence(databasePath);
+        smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                          &persistence.repository());
+        auto &reservations = service.reservations();
+        expect(reservations.reservations().size() == 2,
+               "restart loads both persisted orders");
+        const auto kept = reservations.findOpen(u8"晋A12345");
+        expect(kept.has_value()
+                   && kept->status() == smartpark::ReservationStatus::Confirmed,
+               "restart keeps the order that owns the physical lock");
+        const auto repaired = reservationById(reservations, "R-LEGACY");
+        expect(repaired.has_value()
+                   && repaired->status() == smartpark::ReservationStatus::Cancelled,
+               "restart cancels the conflicting legacy order");
+        expect(repaired && repaired->depositState() == smartpark::DepositState::Refunded,
+               "conflicting legacy order refunds its deposit");
+        expect(std::abs(reservations.refundedDeposits() - 20.0) < 1e-9,
+               "repair records the refunded deposit");
+        expect(std::abs(reservations.heldDeposits() - 20.0) < 1e-9,
+               "only the kept order's deposit stays held");
+        expect(reservations.payments().size() == 3,
+               "charge, legacy charge and repair refund are all persisted");
+        expect(reservations.checkIn(u8"晋A12345", now + 2h).has_value(),
+               "service keeps working after the restart repair");
+    }
+    {
+        smartpark::Persistence persistence(databasePath);
+        smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest,
+                                          &persistence.repository());
+        auto &reservations = service.reservations();
+        expect(reservations.payments().size() == 3, "restart repair is idempotent");
+        expect(std::abs(reservations.refundedDeposits() - 20.0) < 1e-9,
+               "repair does not refund twice");
+    }
+}
+
+// ===== 仪表盘待结算/没收定金统计覆盖新版时段预约（P2） =====
+void testPendingDepositsIncludeTimeSlotReservations(){
+    using namespace std::chrono_literals;
+    const auto layout = smartpark::ParkingLayout::fromDescription(reservationTestLayout);
+    const auto now = reservationTestNow;
+    smartpark::ParkingService service(layout, smartpark::AllocationStrategy::Nearest);
+    auto &reservations = service.reservations();
+
+    expect(std::abs(service.pendingDeposits()) < 1e-9,
+           "no pending deposits before any order");
+    expect(reservations.create({u8"晋A12345", smartpark::VehicleType::Car},
+                               now + 2h, now + 5h, now).has_value(),
+           "pending-deposit test creates a time-slot reservation");
+    expect(std::abs(service.pendingDeposits() - 20.0) < 1e-9,
+           "dashboard pending deposits include time-slot reservation deposits");
+    expect(reservations.checkIn(u8"晋A12345", now + 2h).has_value(),
+           "pending-deposit test checks the reservation in");
+    expect(std::abs(service.pendingDeposits() - 20.0) < 1e-9,
+           "checked-in deposit still counts as pending until exit settlement");
+    expect(service.leave(u8"晋A12345", now + 3h).has_value(),
+           "pending-deposit test closes the record");
+    expect(std::abs(service.pendingDeposits()) < 1e-9,
+           "settled reservation deposit leaves the pending total");
+    expect(service.createBooking({u8"晋A88888", smartpark::VehicleType::Car},
+                                 now + 6h, now).has_value(),
+           "pending-deposit test creates a legacy booking");
+    expect(std::abs(service.pendingDeposits() - 20.0) < 1e-9,
+           "booking and reservation pending deposits are summed once");
+    expect(reservations.create({u8"晋A33333", smartpark::VehicleType::Car},
+                               now + 8h, now + 9h, now).has_value(),
+           "pending-deposit test creates a late order");
+    reservations.sweep(now + 9h + 31min);
+    expect(std::abs(service.pendingDeposits() - 20.0) < 1e-9,
+           "no-show reservation leaves the pending total");
+    expect(std::abs(service.forfeitedDeposits() - 20.0) < 1e-9,
+           "dashboard forfeited deposits include no-show reservations");
 }
 
 // ================= 数据分析（本地小模型 + 预留远程 API） =================
@@ -1925,7 +2083,7 @@ void testAnalyticsReportConclusions(){
     expect(std::abs(report.currentOccupancyRate - 3.0 / 20.0) < 1e-9,
            "report reflects the current occupancy rate");
     expect(report.peakEntryHour >= 0, "report detects an entry peak hour");
-    expect(std::abs(report.totalRevenue - 10.0) < 1e-9,
+    expect(std::abs(report.totalRevenue - 5.0) < 1e-9,
            "report reflects the collected revenue");
     expect(!report.recommendations.empty(), "report produces recommendations");
     for (const auto &point : report.forecast){
@@ -2229,6 +2387,367 @@ void testFakePaymentGateway(){
     expect(afterFailure.has_value(),
            "the failure flag resets after one charge");
 }
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// GridPlanner 转弯感知状态搜索回归：
+// 转弯惩罚取决于到达方向，真实最优解必须定义在 (格子, 到达方向) 状态图上，
+// "每格只保留一个最优状态"的旧实现会漏掉更便宜的路线。下面两个 3×3 小栅格
+// 反例分别来自代码评审和 Lead 的独立验证，旧实现分别返回 7.40 / 7.225。
+// 测试内的 oracle 是一份独立实现的状态图 Dijkstra（只复刻代价模型，不与
+// GridPlanner 共享代码），用真实最优值断言，避免"用实现验证实现"。
+namespace{
+struct GridOracleNode{
+    double cost;
+    int state;
+};
+bool operator > (const GridOracleNode & first, const GridOracleNode & second) noexcept{
+    return first.cost > second.cost;
+}
+double gridOracleOptimalCost(int columnCount, int rowCount, const std::vector<bool> &blocked,
+                             const std::vector<int> &occupancy, double weight, double cellSize,
+                             int startCell, int goalCell){
+    const int cellCount = columnCount * rowCount;
+    const int startState = cellCount * 8;   // 起点没有到达方向，单独占一个状态
+    const int stateCount = cellCount * 8 + 1;
+    const double infinity = std::numeric_limits<double>::infinity();
+    // 与 GridPlanner 相同的代价模型：每次变向罚 2*cellSize；进入格子的占用倍率
+    // 为 1 + weight * occupancy；斜穿要求两侧的正交格都可走。
+    const double turnPenalty = 2.0 * cellSize;
+    const int offsets[8][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1},
+                               {1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
+    const auto centerOf = [columnCount, cellSize](int cell){
+        return smartpark::Point{(cell % columnCount) * cellSize + cellSize / 2.0,
+                                (cell / columnCount) * cellSize + cellSize / 2.0};
+    };
+    std::vector<double> best(static_cast<std::size_t>(stateCount), infinity);
+    std::vector<bool> settled(static_cast<std::size_t>(stateCount), false);
+    std::priority_queue<GridOracleNode, std::vector<GridOracleNode>,
+                        std::greater<GridOracleNode>> queue;
+    best[static_cast<std::size_t>(startState)] = 0.0;
+    queue.push({0.0, startState});
+    while (!queue.empty()){
+        const GridOracleNode current = queue.top();
+        queue.pop();
+        if (settled[static_cast<std::size_t>(current.state)]
+            || current.cost > best[static_cast<std::size_t>(current.state)]){
+            continue;
+        }
+        settled[static_cast<std::size_t>(current.state)] = true;
+        const bool atStart = current.state == startState;
+        const int cell = atStart ? startCell : current.state / 8;
+        const int arrival = atStart ? -1 : current.state % 8;
+        if (cell == goalCell){
+            return current.cost;
+        }
+        const int column = cell % columnCount;
+        const int row = cell / columnCount;
+        for (int direction = 0; direction < 8; ++direction){
+            const int nextColumn = column + offsets[direction][0];
+            const int nextRow = row + offsets[direction][1];
+            if (nextColumn < 0 || nextColumn >= columnCount
+                || nextRow < 0 || nextRow >= rowCount){
+                continue;
+            }
+            const int next = nextRow * columnCount + nextColumn;
+            if (blocked[static_cast<std::size_t>(next)]){
+                continue;
+            }
+            if (direction >= 4){
+                const int firstOrthogonal = row * columnCount + column + offsets[direction][0];
+                const int secondOrthogonal = (row + offsets[direction][1]) * columnCount + column;
+                if (blocked[static_cast<std::size_t>(firstOrthogonal)]
+                    || blocked[static_cast<std::size_t>(secondOrthogonal)]){
+                    continue;
+                }
+            }
+            const double stepDistance = smartpark::distance(centerOf(cell), centerOf(next));
+            const double turnCost = arrival >= 0 && arrival != direction ? turnPenalty : 0.0;
+            const double nextCost = current.cost + (stepDistance + turnCost)
+                * (1.0 + weight * static_cast<double>(occupancy[static_cast<std::size_t>(next)]));
+            const int nextState = next * 8 + direction;
+            if (nextCost < best[static_cast<std::size_t>(nextState)]){
+                best[static_cast<std::size_t>(nextState)] = nextCost;
+                queue.push({nextCost, nextState});
+            }
+        }
+    }
+    return infinity;
+}
+bool onGridCenter(double value, double cellSize){
+    const double steps = (value - cellSize / 2.0) / cellSize;
+    return std::abs(steps - std::round(steps)) < 1e-9;
+}
+// 检查 Route 的字段与折线是否自洽：端点、边界、距离、转弯数、代价符号。
+void expectGridRouteConsistent(const smartpark::Route &route, smartpark::Point from,
+                               smartpark::Point to, double cellSize, double siteWidth,
+                               double siteHeight, const std::string &label){
+    expect(route.points.size() >= 2, label + ": route has at least two points");
+    expect(route.distance > 0.0 && route.cost > 0.0,
+           label + ": route distance and cost are positive");
+    if (route.points.size() < 2){
+        return;
+    }
+    expect(std::abs(route.points.front().x - from.x) < 1e-9
+               && std::abs(route.points.front().y - from.y) < 1e-9,
+           label + ": route starts at the requested start cell center");
+    expect(std::abs(route.points.back().x - to.x) < 1e-9
+               && std::abs(route.points.back().y - to.y) < 1e-9,
+           label + ": route ends at the requested goal cell center");
+    bool insideSite = true;
+    bool centerAligned = true;
+    double polylineDistance = 0.0;
+    for (std::size_t index = 0; index < route.points.size(); ++index){
+        const smartpark::Point point = route.points[index];
+        insideSite = insideSite && point.x >= 0.0 && point.x <= siteWidth
+            && point.y >= 0.0 && point.y <= siteHeight;
+        centerAligned = centerAligned && onGridCenter(point.x, cellSize)
+            && onGridCenter(point.y, cellSize);
+        if (index > 0){
+            polylineDistance += smartpark::distance(route.points[index - 1], point);
+        }
+    }
+    expect(insideSite, label + ": every route point stays inside the site");
+    expect(centerAligned, label + ": every route point is a grid cell center");
+    expect(std::abs(polylineDistance - route.distance) < 1e-9,
+           label + ": distance equals the polyline segment sum");
+    // turnCount 与折线拐点数一致。注意最优路线可能以不同方向再次经过同一格，
+    // 折线允许 180 度回穿：两条共线反向线段同样算一次转向。
+    int directionChanges = 0;
+    for (std::size_t index = 2; index < route.points.size(); ++index){
+        const smartpark::Point first{route.points[index - 1].x - route.points[index - 2].x,
+                                     route.points[index - 1].y - route.points[index - 2].y};
+        const smartpark::Point second{route.points[index].x - route.points[index - 1].x,
+                                      route.points[index].y - route.points[index - 1].y};
+        const double firstLength = std::hypot(first.x, first.y);
+        const double secondLength = std::hypot(second.x, second.y);
+        const double scale = std::max(1.0, firstLength * secondLength);
+        const double cross = first.x * second.y - first.y * second.x;
+        const double dot = first.x * second.x + first.y * second.y;
+        if (std::abs(cross) > 1e-9 * scale || dot < -1e-9 * scale){
+            ++directionChanges;
+        }
+    }
+    expect(directionChanges == route.turnCount,
+           label + ": turnCount equals the number of polyline direction changes");
+}
+} // namespace
+void testGridPlannerTurnAwareSearch(){
+    using namespace smartpark;
+    // 场景 1：代码评审给出的 3×3 反例。起步格 8、目标格 3，格 2 被挡，
+    // 占用值按行优先给出拥堵程度（index = row * 3 + col）。
+    // 旧实现（每格只保留一个最优状态）返回 7.40；真实最优 6.00：多走半步绕开
+    // 拥堵再少转一次弯，评审报告中的 7.41 / 6 就是这组配置。
+    {
+        const double cellSize = 0.5;
+        const std::vector<Rectangle> obstacles{{{1.0, 0.0}, 0.5, 0.5}};   // 挡住格 2 (col2,row0)
+        const GridPlanner planner(1.5, 1.5, {}, obstacles, cellSize);
+        OccupancyField occupancy;
+        occupancy.weight = 0.35;
+        occupancy.occupancy = {5, 4, 4, 9, 3, 2, 1, 0, 5};
+        const Point from{1.25, 1.25};   // 格 8 (col2,row2)
+        const Point to{0.25, 0.75};     // 格 3 (col0,row1)
+        std::vector<bool> blocked(9, false);
+        blocked[2] = true;
+        const double optimum = gridOracleOptimalCost(
+            3, 3, blocked, occupancy.occupancy, occupancy.weight, cellSize, 8, 3);
+        expect(std::abs(optimum - 6.0) < 1e-9,
+               "oracle reproduces the reviewer counterexample optimum 6.0");
+        const Route route = planner.plan(from, to, &occupancy);
+        expect(!route.points.empty(), "turn-aware planner routes around the blocked cell");
+        expect(std::abs(route.cost - optimum) < 1e-9,
+               "planner cost equals the state-graph optimum 6.0 (old single-state cost: 7.40)");
+        expect(route.turnCount == 1, "reviewer counterexample optimal route turns exactly once");
+        expect(route.points.size() == 3
+                   && std::abs(route.points[1].x - 1.25) < 1e-9
+                   && std::abs(route.points[1].y - 0.75) < 1e-9
+                   && std::abs(route.distance - 1.5) < 1e-9,
+               "reviewer counterexample optimal polyline keeps only its single turn vertex");
+        expectGridRouteConsistent(route, from, to, cellSize, 1.5, 1.5,
+                                  "reviewer counterexample");
+        // 同一次多目标搜索复用状态图，代价必须仍等于单目标最优值；
+        // start == goal 保持旧行为（两个相同端点、零代价）。
+        const std::vector<Route> routes = planner.planFromToTargets(from, {to, from}, &occupancy);
+        expect(routes.size() == 2, "multi-target search returns one route per target");
+        if (routes.size() == 2){
+            expect(std::abs(routes[0].cost - route.cost) < 1e-9,
+                   "multi-target route cost matches the single-target optimum");
+            expect(routes[1].points.size() == 2
+                       && std::abs(routes[1].points[0].x - from.x) < 1e-9
+                       && std::abs(routes[1].points[1].y - from.y) < 1e-9
+                       && routes[1].cost == 0.0 && routes[1].distance == 0.0
+                       && routes[1].turnCount == 0,
+                   "start == goal keeps the legacy two-point zero-cost route");
+        }
+    }
+    // 场景 2：状态图里"非简单路径"更便宜的组合（Lead 独立验证）：最优状态路径会
+    // 以不同方向再次经过格 7 (col1,row2) 的格心，折线的最后一笔回穿该格心。
+    // 旧实现返回 7.225；真实最优 6.95。重建逻辑不能假设路线是简单路径。
+    {
+        const double cellSize = 0.5;
+        const std::vector<Rectangle> obstacles{
+            {{0.0, 0.0}, 0.5, 0.5},    // 挡住格 0 (col0,row0)
+            {{1.0, 0.0}, 0.5, 0.5},    // 挡住格 2 (col2,row0)
+            {{1.0, 0.5}, 0.5, 0.5}};   // 挡住格 5 (col2,row1)
+        const GridPlanner planner(1.5, 1.5, {}, obstacles, cellSize);
+        OccupancyField occupancy;
+        occupancy.weight = 0.35;
+        occupancy.occupancy = {3, 2, 2, 5, 3, 7, 8, 0, 1};
+        const Point from{0.75, 0.25};   // 格 1 (col1,row0)
+        const Point to{0.25, 1.25};     // 格 6 (col0,row2)
+        std::vector<bool> blocked(9, false);
+        blocked[0] = true;
+        blocked[2] = true;
+        blocked[5] = true;
+        const double optimum = gridOracleOptimalCost(
+            3, 3, blocked, occupancy.occupancy, occupancy.weight, cellSize, 1, 6);
+        expect(std::abs(optimum - 6.95) < 1e-9,
+               "oracle reproduces the non-simple-path optimum 6.95");
+        const Route route = planner.plan(from, to, &occupancy);
+        expect(!route.points.empty(), "turn-aware planner finds the re-entering route");
+        expect(std::abs(route.cost - optimum) < 1e-9,
+               "planner cost equals the non-simple-path optimum 6.95 (old cost: 7.225)");
+        expect(route.turnCount == 2 && route.points.size() == 4
+                   && std::abs(route.points[1].x - 0.75) < 1e-9
+                   && std::abs(route.points[1].y - 1.25) < 1e-9
+                   && std::abs(route.points[2].x - 1.25) < 1e-9
+                   && std::abs(route.points[2].y - 1.25) < 1e-9,
+               "re-entering optimal route keeps its two turn vertices");
+        expectGridRouteConsistent(route, from, to, cellSize, 1.5, 1.5,
+                                  "non-simple-path counterexample");
+    }
+    // 场景 3：无障碍时两步对角直行比"直角绕行"更省：0 次转向，代价 2 个对角步。
+    // 直角绕行是 4 步 * 0.5 = 2.0 距离 + 1 次转向惩罚 1.0 = 3.0，明显更贵。
+    {
+        const GridPlanner planner(1.5, 1.5, {}, {}, 0.5);
+        const Point from{0.25, 0.25};   // 格 0
+        const Point to{1.25, 1.25};     // 格 8
+        const Route route = planner.plan(from, to);
+        const double diagonalCost = std::sqrt(2.0);   // 2 * 0.5 * sqrt(2)
+        expect(!route.points.empty() && route.turnCount == 0,
+               "open grid prefers the fewer-turn diagonal route");
+        expect(std::abs(route.cost - diagonalCost) < 1e-9
+                   && std::abs(route.distance - diagonalCost) < 1e-9,
+               "diagonal route costs two diagonal steps without a turn penalty");
+        expect(route.points.size() == 2, "diagonal route only needs its two endpoints");
+        expectGridRouteConsistent(route, from, to, 0.5, 1.5, 1.5, "open diagonal");
+    }
+    // 场景 4：起点即终点（保持旧行为：两个相同端点、零代价）。
+    {
+        const GridPlanner planner(1.5, 1.5, {}, {}, 0.5);
+        const Point center{0.75, 0.75};   // 格 4
+        const Route route = planner.plan(center, center);
+        expect(route.points.size() == 2
+                   && std::abs(route.points[0].x - center.x) < 1e-9
+                   && std::abs(route.points[0].y - center.y) < 1e-9
+                   && std::abs(route.points[1].x - center.x) < 1e-9
+                   && std::abs(route.points[1].y - center.y) < 1e-9,
+               "start == goal returns two identical endpoints");
+        expect(route.cost == 0.0 && route.distance == 0.0 && route.turnCount == 0,
+               "start == goal keeps zero cost, distance and turns");
+    }
+    // 场景 5：目标不可达时返回空路线，不能崩溃或给出半条折线。
+    {
+        const std::vector<Rectangle> obstacles{{{0.0, 0.5}, 1.5, 0.5}};   // 整行 row1 被挡
+        const GridPlanner planner(1.5, 1.5, {}, obstacles, 0.5);
+        const Point from{0.25, 0.25};   // 格 0
+        const Point to{0.25, 1.25};     // 格 6
+        const Route route = planner.plan(from, to);
+        expect(route.points.empty() && route.cost == 0.0,
+               "unreachable goal returns an empty route");
+        const std::vector<Route> routes = planner.planFromToTargets(from, {to}, nullptr);
+        expect(routes.size() == 1 && routes[0].points.empty(),
+               "multi-target search reports the unreachable goal as an empty route");
+    }
+}
+// GridPlanner 性能基准：只在环境变量 SMARTPARK_GRID_BENCH 存在时运行，
+// 不参与断言，也不影响常规 ctest 行为。
+// 用法：SMARTPARK_GRID_BENCH=1 build/macos/tests/smartpark_core_tests
+double medianMicroseconds(std::vector<double> samples){
+    std::sort(samples.begin(), samples.end());
+    const std::size_t count = samples.size();
+    if (count % 2 == 1){
+        return samples[count / 2];
+    }
+    return (samples[count / 2 - 1] + samples[count / 2]) / 2.0;
+}
+void benchmarkGridPlanner(){
+    const smartpark::ParkingLayout layout = smartpark::ParkingLayout::defaultLayout();
+    const std::vector<smartpark::ParkingSpot> spots = layout.spots();
+    const smartpark::GridPlanner planner(layout.siteWidth(), layout.siteHeight(), spots);
+    // 代表性拥堵场：每 3 个车位占一个（occupy 只对空闲车位生效），
+    // 再按 SpotAllocator 默认半径/权重构建占用场。
+    std::vector<smartpark::ParkingSpot> occupiedSpots = spots;
+    const smartpark::Vehicle benchmarkVehicle(u8"晋P00001", smartpark::VehicleType::Car);
+    for (std::size_t index = 0; index < occupiedSpots.size(); index += 3){
+        occupiedSpots[index].occupy(benchmarkVehicle);
+    }
+    const smartpark::OccupancyField occupancy =
+        planner.buildOccupancy(occupiedSpots, 12.0, 0.35);
+    std::vector<smartpark::Point> accessPoints;
+    accessPoints.reserve(spots.size());
+    for (const smartpark::ParkingSpot &spot : spots){
+        accessPoints.push_back(spot.accessPoint());
+    }
+    // 12 个均匀分布的目标，模拟 SpotAllocator 一次评估一个分区的候选集合。
+    std::vector<smartpark::Point> multiTargets;
+    for (std::size_t index = 0; index < 12; ++index){
+        multiTargets.push_back(accessPoints[index * accessPoints.size() / 12]);
+    }
+    const smartpark::Point from = layout.entrance();
+    const smartpark::Point singleTarget = accessPoints.back();
+    double sink = 0.0;
+    // 预热一遍，排除首次访问内存/页表带来的偏差。
+    sink += planner.plan(from, singleTarget, &occupancy).distance;
+    const std::vector<smartpark::Route> warmRoutes =
+        planner.planFromToTargets(from, multiTargets, &occupancy);
+    if (!warmRoutes.empty()){
+        sink += warmRoutes.front().distance;
+    }
+
+    const int singleIterations = 200;
+    std::vector<double> singleSamples;
+    singleSamples.reserve(static_cast<std::size_t>(singleIterations));
+    for (int iteration = 0; iteration < singleIterations; ++iteration){
+        const auto start = std::chrono::steady_clock::now();
+        const smartpark::Route route = planner.plan(from, singleTarget, &occupancy);
+        const auto stop = std::chrono::steady_clock::now();
+        singleSamples.push_back(
+            std::chrono::duration<double, std::micro>(stop - start).count());
+        sink += route.distance + route.cost + static_cast<double>(route.turnCount);
+    }
+
+    const int multiIterations = 50;
+    std::vector<double> multiSamples;
+    multiSamples.reserve(static_cast<std::size_t>(multiIterations));
+    for (int iteration = 0; iteration < multiIterations; ++iteration){
+        const auto start = std::chrono::steady_clock::now();
+        const std::vector<smartpark::Route> routes =
+            planner.planFromToTargets(from, multiTargets, &occupancy);
+        const auto stop = std::chrono::steady_clock::now();
+        multiSamples.push_back(
+            std::chrono::duration<double, std::micro>(stop - start).count());
+        for (const smartpark::Route &route : routes){
+            sink += route.distance;
+        }
+    }
+
+    const smartpark::Route singleRoute = planner.plan(from, singleTarget, &occupancy);
+    std::size_t nonEmpty = 0;
+    for (const smartpark::Route &route : planner.planFromToTargets(from, multiTargets, &occupancy)){
+        if (!route.points.empty()){
+            ++nonEmpty;
+        }
+    }
+    std::printf("[grid-bench] layout=defaultLayout spots=%zu single: N=%d median=%.1f us "
+                "(distance=%.3f cost=%.3f turns=%d, points=%zu)\n",
+                spots.size(), singleIterations, medianMicroseconds(singleSamples),
+                singleRoute.distance, singleRoute.cost, singleRoute.turnCount,
+                singleRoute.points.size());
+    std::printf("[grid-bench] multi: N=%d goals=%zu median=%.1f us "
+                "(nonEmpty=%zu/%zu sink=%.3f)\n",
+                multiIterations, multiTargets.size(), medianMicroseconds(multiSamples),
+                nonEmpty, multiTargets.size(), sink);
+}
 int main(){
     int argc = 0;
     char programName[] = "smartpark_core_tests";
@@ -2288,7 +2807,14 @@ int main(){
     testReservationPaymentFailure();
     testReservationEnterAutoCheckIn();
     testReservationPersistenceAcrossRestart();
+    testReservationAdjacentSameSpotRejected();
+    testReservationLegacyConflictRepairsOnRestart();
+    testPendingDepositsIncludeTimeSlotReservations();
     testFakePaymentGateway();
+    testGridPlannerTurnAwareSearch();
+    if (std::getenv("SMARTPARK_GRID_BENCH") != nullptr){
+        benchmarkGridPlanner();
+    }
     if (failureCount != 0){
         std::cerr << failureCount << " test assertion(s) failed\n";
         return 1;

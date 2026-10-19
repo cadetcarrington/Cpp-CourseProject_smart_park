@@ -96,7 +96,8 @@ namespace smartpark{
         std::chrono::minutes minLeadTime{30};     // 最短提前时间
         std::chrono::minutes minDuration{30};     // 最短预约时长
         std::chrono::minutes gracePeriod{30};     // 到场宽限期
-        std::chrono::minutes lockLeadTime{30};    // 延迟锁位：开始前多久创建短时锁
+        std::chrono::minutes lockLeadTime{30};    // 历史字段：早期「开始前多久锁位」；
+                                                  // 现在创建预约即锁位，保留该值供协议/界面显示
         double deposit{20.0};                     // 定金
     };
     // 定金流水，持久化到 deposit_payments 表。

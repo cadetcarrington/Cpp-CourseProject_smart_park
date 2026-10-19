@@ -63,6 +63,9 @@ public:
     // 车辆作业写操作
     std::optional<smartpark::AllocationResult> enterVehicle(
         const std::string &plate, smartpark::VehicleType type) override;
+    void enterVehicleAsync(const std::string &plate, smartpark::VehicleType type,
+                           QObject *context,
+                           std::function<void(smartpark::AsyncEntryOutcome)> done);
     std::optional<smartpark::AllocationResult> emergencyEnter(
         const std::string &plate, smartpark::VehicleType type) override;
     std::optional<smartpark::ParkingRecord> leaveVehicle(const std::string &plate) override;

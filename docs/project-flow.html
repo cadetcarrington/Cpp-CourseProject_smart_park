@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>智慧停车场系统 · 模块结构与业务流程图</title>
+<style>
+  :root{
+    --ink:#1f2933;
+    --ink-soft:#52606d;
+    --line:#c3cbd6;
+    --line-soft:#dfe4ea;
+    --bg:#f4f6f8;
+    --card:#ffffff;
+    --server:#2563eb;
+    --mac:#0f766e;
+    --web:#b45309;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; padding:0; }
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    font-size:14px;
+    line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+  .page{ padding:32px 28px 56px; min-width:1180px; }
+  header{ margin-bottom:24px; }
+  header h1{
+    margin:0 0 6px;
+    font-size:24px;
+    font-weight:700;
+    letter-spacing:.3px;
+  }
+  header .sub{ margin:0; color:var(--ink-soft); font-size:13px; }
+  header .facts{ margin-top:10px; display:flex; flex-wrap:wrap; gap:8px; }
+  header .facts span{
+    background:#e8edf3; color:var(--ink-soft);
+    border-radius:999px; padding:3px 10px; font-size:12px;
+  }
+
+  /* ---------- 总览：根节点 + 总线下挂三栏 ---------- */
+  .overview{
+    display:grid;
+    grid-template-columns:repeat(3, minmax(0,1fr));
+    row-gap:0;
+  }
+  .overview .root{
+    grid-column:1 / -1;
+    justify-self:center;
+    background:#fff;
+    border:1.5px solid var(--ink);
+    border-radius:10px;
+    padding:12px 28px;
+    font-size:16px;
+    font-weight:700;
+    letter-spacing:.5px;
+    box-shadow:0 1px 2px rgba(16,24,40,.06);
+  }
+  .overview .bus{
+    grid-column:1 / -1;
+    height:0;
+    margin:0 16.6667%;
+    border-top:1.5px solid var(--line);
+  }
+  .overview .drops{ grid-column:1 / -1; display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); height:20px; }
+  .overview .drops i{ justify-self:center; width:1.5px; height:100%; background:var(--line); }
+
+  /* ---------- 面板 ---------- */
+  .panel{
+    background:var(--card);
+    border:1px solid var(--line-soft);
+    border-radius:14px;
+    padding:16px 16px 18px;
+    margin:0 7px;
+    box-shadow:0 1px 3px rgba(16,24,40,.05);
+  }
+  .panel h2{
+    margin:0 0 4px;
+    font-size:16px;
+    font-weight:700;
+    display:flex;
+    align-items:baseline;
+    gap:8px;
+  }
+  .panel h2 em{
+    font-style:normal;
+    font-size:11.5px;
+    font-weight:500;
+    color:var(--ink-soft);
+    background:#f1f4f8;
+    border-radius:6px;
+    padding:2px 7px;
+    letter-spacing:.2px;
+  }
+  .panel .path{ margin:0 0 14px; font-size:12px; color:var(--ink-soft); }
+  .panel.server{ border-top:3px solid var(--server); }
+  .panel.mac{ border-top:3px solid var(--mac); }
+  .panel.web{ border-top:3px solid var(--web); }
+
+  /* ---------- 面板内：左侧竖向导轨 + 分组肘形连接 ---------- */
+  .rail{ position:relative; padding-left:16px; }
+  .rail::before{
+    content:""; position:absolute; left:5px; top:6px; bottom:14px;
+    width:1.5px; background:var(--line);
+  }
+  .group{ position:relative; margin-bottom:14px; }
+  .group:last-child{ margin-bottom:0; }
+  .group::before{
+    content:""; position:absolute; left:-11px; top:13px;
+    width:11px; height:1.5px; background:var(--line);
+  }
+  .group::after{
+    content:""; position:absolute; left:-6.5px; top:13px;
+    width:5px; height:5px; border-radius:50%;
+    background:var(--line); transform:translateY(-50%);
+  }
+  .group h3{
+    margin:0 0 7px;
+    font-size:13px;
+    font-weight:650;
+    color:var(--ink);
+    background:#f7f9fc;
+    border:1px solid var(--line-soft);
+    border-radius:8px;
+    padding:5px 9px;
+  }
+  .chips{ display:flex; flex-wrap:wrap; gap:6px; }
+  .chip{
+    background:#fff;
+    border:1px solid var(--line);
+    border-radius:7px;
+    padding:4px 8px;
+    font-size:12px;
+    color:var(--ink);
+    white-space:nowrap;
+  }
+  .chip small{ color:var(--ink-soft); font-size:11px; margin-left:4px; }
+  .panel.server .chip{ border-color:#c7d6f5; }
+  .panel.mac .chip{ border-color:#bfe3df; }
+  .panel.web .chip{ border-color:#e8d3b8; }
+  .chip.key{ background:#eef4ff; border-color:#a9c3f2; font-weight:600; }
+  .panel.mac .chip.key{ background:#e9f6f4; border-color:#9ed3cc; }
+  .panel.web .chip.key{ background:#fdf3e5; border-color:#e5c496; }
+
+  /* ---------- 业务流程 ---------- */
+  section.flows{ margin-top:30px; }
+  section h2.title{
+    margin:0 0 14px;
+    font-size:17px;
+    font-weight:700;
+  }
+  .flow{
+    background:var(--card);
+    border:1px solid var(--line-soft);
+    border-radius:14px;
+    padding:14px 16px 16px;
+    margin-bottom:12px;
+    box-shadow:0 1px 3px rgba(16,24,40,.05);
+  }
+  .flow h3{
+    margin:0 0 10px;
+    font-size:13.5px;
+    font-weight:650;
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .flow h3 .tag{
+    font-size:11px;
+    font-weight:600;
+    border-radius:6px;
+    padding:2px 7px;
+    background:#eef1f5;
+    color:var(--ink-soft);
+  }
+  .flow ol{
+    margin:0; padding:0; list-style:none;
+    display:flex; flex-wrap:wrap; align-items:center; gap:8px;
+  }
+  .flow li{
+    background:#fff;
+    border:1px solid var(--line);
+    border-radius:8px;
+    padding:6px 10px;
+    font-size:12.5px;
+    white-space:nowrap;
+  }
+  .flow li.arrow{
+    border:none;
+    background:none;
+    padding:0 2px;
+    color:var(--line);
+    font-size:15px;
+  }
+  .flow li.hot{ background:#eef4ff; border-color:#a9c3f2; font-weight:600; }
+
+  /* ---------- 部署 ---------- */
+  section.deploy{ margin-top:30px; }
+  table{
+    width:100%;
+    border-collapse:collapse;
+    background:var(--card);
+    border:1px solid var(--line-soft);
+    border-radius:14px;
+    overflow:hidden;
+    font-size:12.5px;
+  }
+  th,td{
+    text-align:left;
+    padding:9px 14px;
+    border-bottom:1px solid var(--line-soft);
+    vertical-align:top;
+  }
+  th{ background:#f7f9fc; font-weight:650; color:var(--ink); }
+  tr:last-child td{ border-bottom:none; }
+  code{
+    font-family:"SF Mono",Menlo,Consolas,monospace;
+    font-size:11.5px;
+    background:#f1f4f8;
+    border-radius:5px;
+    padding:1px 5px;
+  }
+  footer{
+    margin-top:26px;
+    color:var(--ink-soft);
+    font-size:12px;
+    text-align:center;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>智慧停车场系统 · 模块结构与业务流程图</h1>
+    <p class="sub">C++17 / Qt6 + SQLite · TCP v1 / REST / WebSocket · macOS 管理端（Objective-C++ / AppKit）+ 网页端（原生 JS + Canvas）</p>
+    <div class="facts">
+      <span>3 座车库 · 10 个分区 · 330 个车位</span>
+      <span>单入口 / 两出口</span>
+      <span>120 充电 · 210 普通</span>
+      <span>0.5 m 栅格 A* 寻路</span>
+      <span>14 个自动化测试（含 REST 端到端）</span>
+    </div>
+  </header>
+
+  <!-- ================= 总览 ================= -->
+  <section class="overview">
+    <div class="root">智慧停车场系统 smartpark</div>
+    <div class="bus"></div>
+    <div class="drops"><i></i><i></i><i></i></div>
+
+    <!-- ---------- 服务端 ---------- -->
+    <article class="panel server">
+      <h2>服务端 <em>apps/server · src/core · src/network</em></h2>
+      <p class="path">单进程同时提供 TCP / HTTP / WebSocket，所有业务规则、计费与调度都在这里</p>
+      <div class="rail">
+        <div class="group">
+          <h3>进程入口</h3>
+          <div class="chips">
+            <span class="chip key">main.cpp</span>
+            <span class="chip">参数 --port / --http-port / --ws-port</span>
+            <span class="chip">--db · --layout · --web-root</span>
+            <span class="chip">--advertise · --site-name</span>
+            <span class="chip">selftest 自检</span>
+          </div>
+        </div>
+        <div class="group">
+          <h3>网络层 src/network</h3>
+          <div class="chips">
+            <span class="chip key">TCP v1 协议</span>
+            <span class="chip">SmartParkTcpServer</span>
+            <span class="chip">ServerSession</span>
+            <span class="chip">Protocol（QDataStream）</span>
+            <span class="chip key">REST /api/v1/*</span>
+            <span class="chip">auth · parking · records</span>
+            <span class="chip">reservations · payments · guide</span>
+            <span class="chip key">WebSocket</span>
+            <span class="chip">EventHub 事件推送</span>
+            <span class="chip">PlateRecognition → Python LPR</span>
+          </div>
+        </div>
+        <div class="group">
+          <h3>领域模型 src/core/model</h3>
+          <div class="chips">
+            <span class="chip">ParkingLayout（DSL 解析 + 签名）</span>
+            <span class="chip">ParkingSpot</span>
+            <span class="chip">Vehicle</span>
+            <span class="chip">ParkingRecord</span>
+            <span class="chip">Reservation</span>
+            <span class="chip">Booking</span>
+            <span class="chip">Geometry</span>
+          </div>
+        </div>
+        <div class="group">
+          <h3>业务服务 src/core/service</h3>
+          <div class="chips">
+            <span class="chip key">ParkingService</span>
+            <span class="chip key">SpotAllocator 分区优先 + 出口系数加权</span>
+            <span class="chip key">GridPlanner A*（四向/八向 · 离障加价）</span>
+            <span class="chip">Billing 计费</span>
+            <span class="chip">ReservationService 预约 / 锁位 / 到场</span>
+            <span class="chip">UserStore 账号</span>
+            <span class="chip">AnalyticsEngine</span>
+            <span class="chip">ParkingInsightEngine 占用率预测</span>
+            <span class="chip">BackgroundEntryPlanner</span>
+            <span class="chip">DemoDirector 演示脚本</span>
+            <span class="chip">AuditLogService</span>
+          </div>
+        </div>
+        <div class="group">
+          <h3>存储与配置</h3>
+          <div class="chips">
+            <span class="chip key">SQLite</span>
+            <span class="chip">accounts · parking_spots</span>
+            <span class="chip">parking_records · reservations</span>
+            <span class="chip">payments · layout_snapshot</span>
+            <span class="chip">data/garage-3tower.txt 布局 DSL</span>
+            <span class="chip">布局签名不符 → 拒绝启动</span>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- ---------- macOS 管理端 ---------- -->
+    <article class="panel mac">
+      <h2>macOS 管理端 <em>apps/macos</em></h2>
+      <p class="path">Objective-C++ / AppKit 全代码搭界面，原生工具栏 + 侧边栏 + 7 个功能页</p>
+      <div class="rail">
+        <div class="group">
+          <h3>启动与窗口</h3>
+          <div class="chips">
+            <span class="chip key">main.mm</span>
+            <span class="chip">--db / --layout / --check-db</span>
+            <span class="chip">AppDelegate</span>
+            <span class="chip key">MainWindowController</span>
+            <span class="chip">原生工具栏（居中标题 · 刷新）</span>
+            <span class="chip">SidebarViewController</span>
+            <span class="chip">PageHostViewController</span>
+            <span class="chip">MainMenu（⌘C/⌘V · 操作 · 页面 ⌘1–7）</span>
+          </div>
+        </div>
+        <div class="group">
+          <h3>功能页面 ×7</h3>
+          <div class="chips">
+            <span class="chip key">仪表盘 DashboardViewController</span>
+            <span class="chip">KPI · 环形/折线/柱状图</span>
+            <span class="chip">快捷卡片 · 反向寻车</span>
+            <span class="chip key">车位图 ParkingMapViewController</span>
+            <span class="chip">ParkingMapView 自绘地图</span>
+            <span class="chip">车位 / 障碍 / 闸机 / 路线</span>
+            <span class="chip key">车辆出入库 OperationsViewController</span>
+            <span class="chip">识别即入库 · 识别即出库</span>
+            <span class="chip">照片留档 · 结果面板 · 评分明细</span>
+            <span class="chip">当前车位 OccupancyViewController</span>
+            <span class="chip">预约管理 BookingViewController</span>
+            <span class="chip">停车记录 RecordsViewController</span>
+            <span class="chip">设施配置 SettingsViewController</span>
+          </div>
+        </div>
+        <div class="group">
+          <h3>桥接与本地能力</h3>
+          <div class="chips">
+            <span class="chip key">ParkingBridge</span>
+            <span class="chip">本地模式 = 直接调 ParkingService</span>
+            <span class="chip">远程模式 = TCP v1 RemoteClient</span>
+            <span class="chip">LocalRecognitionService（车牌识别）</span>
+            <span class="chip">PlatePhotoArchive 照片留档</span>
+            <span class="chip">PlatePrompt 选车牌弹窗</span>
+            <span class="chip">ConfidenceGate 低置信度确认</span>
+          </div>
+        </div>
+        <div class="group">
+          <h3>自绘控件</h3>
+          <div class="chips">
+            <span class="chip">ParkingMapView</span>
+            <span class="chip">LineChartView（整数刻度 · 默认量程）</span>
+            <span class="chip">BarChartView</span>
+            <span class="chip">DonutChartView</span>
+            <span class="chip">TableView</span>
+            <span class="chip">LoginViewController / RegisterViewController</span>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- ---------- 网页端 ---------- -->
+    <article class="panel web">
+      <h2>网页端 H5 <em>apps/webclient</em></h2>
+      <p class="path">不依赖框架：index.html + style.css + app.js，Canvas 画车位图，WebSocket 实时刷新</p>
+      <div class="rail">
+        <div class="group">
+          <h3>页面结构</h3>
+          <div class="chips">
+            <span class="chip key">index.html</span>
+            <span class="chip">style.css</span>
+            <span class="chip key">app.js</span>
+            <span class="chip">单页多视图切换</span>
+          </div>
+        </div>
+        <div class="group">
+          <h3>功能模块</h3>
+          <div class="chips">
+            <span class="chip key">登录 / 注册</span>
+            <span class="chip">POST /auth/login · /auth/register</span>
+            <span class="chip key">车位地图</span>
+            <span class="chip">Canvas 绘制 · 悬停看车牌与时段</span>
+            <span class="chip">分区过滤 · 空闲/占用/预约配色</span>
+            <span class="chip key">预约</span>
+            <span class="chip">创建 · 取消 · 到场确认</span>
+            <span class="chip key">停车与缴费</span>
+            <span class="chip">订单 · 模拟支付 · 记录查询</span>
+            <span class="chip key">实时刷新</span>
+            <span class="chip">WebSocket 事件 → 增量重绘</span>
+          </div>
+        </div>
+        <div class="group">
+          <h3>与服务端契约</h3>
+          <div class="chips">
+            <span class="chip">REST /api/v1/*（JSON）</span>
+            <span class="chip">Bearer token</span>
+            <span class="chip">静态页由服务端 --web-root 直出</span>
+            <span class="chip">WS /ws</span>
+          </div>
+        </div>
+      </div>
+    </article>
+  </section>
+
+  <!-- ================= 业务流程 ================= -->
+  <section class="flows">
+    <h2 class="title">关键业务流程</h2>
+
+    <div class="flow">
+      <h3>入库 <span class="tag">macOS 管理端 / 网页端</span></h3>
+      <ol>
+        <li>拍照或输入车牌</li>
+        <li class="arrow">→</li>
+        <li class="hot">车牌识别（置信度 &lt; 0.85 弹一次确认）</li>
+        <li class="arrow">→</li>
+        <li>车辆入场（写 parking_records）</li>
+        <li class="arrow">→</li>
+        <li class="hot">SpotAllocator 选位：分区优先 + 出口系数加权</li>
+        <li class="arrow">→</li>
+        <li class="hot">GridPlanner 生成入场路线</li>
+        <li class="arrow">→</li>
+        <li>照片留档 + 结果面板</li>
+        <li class="arrow">→</li>
+        <li>EventHub → WebSocket 推送网页端</li>
+      </ol>
+    </div>
+
+    <div class="flow">
+      <h3>出库 <span class="tag">macOS 管理端 / 网页端</span></h3>
+      <ol>
+        <li>车牌或再次识别</li>
+        <li class="arrow">→</li>
+        <li>找到在场记录与车位</li>
+        <li class="arrow">→</li>
+        <li class="hot">Billing 计费（停车时长 × 费率）</li>
+        <li class="arrow">→</li>
+        <li>支付订单（模拟网关）</li>
+        <li class="arrow">→</li>
+        <li>释放车位 · 生成出库路线</li>
+        <li class="arrow">→</li>
+        <li>记录归档 · 报表与图表更新</li>
+      </ol>
+    </div>
+
+    <div class="flow">
+      <h3>反向寻车 <span class="tag">车位图</span></h3>
+      <ol>
+        <li>选在场车牌（弹窗或下拉）</li>
+        <li class="arrow">→</li>
+        <li class="hot">入口 → 车位：灰色路线（四向 · 走车道中间）</li>
+        <li class="arrow">→</li>
+        <li class="hot">车位 → 出口：蓝色路线</li>
+        <li class="arrow">→</li>
+        <li>端点吸附车位边缘 · 拐角圆弧</li>
+        <li class="arrow">→</li>
+        <li>「清除路线」同时清掉规划路线叠层</li>
+      </ol>
+    </div>
+
+    <div class="flow">
+      <h3>预约 <span class="tag">创建即锁位</span></h3>
+      <ol>
+        <li>选车位与时段（最长提前 7 天）</li>
+        <li class="arrow">→</li>
+        <li class="hot">创建预约 → 立即锁位（Reserved）</li>
+        <li class="arrow">→</li>
+        <li>到场确认 → 生成在场记录（Active）</li>
+        <li class="arrow">→</li>
+        <li>超时未到 → 爽约释放 + 押金处理</li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ================= 部署 ================= -->
+  <section class="deploy">
+    <h2 class="title">部署与通信</h2>
+    <table>
+      <thead>
+        <tr><th style="width:16%">角色</th><th style="width:30%">运行形态</th><th style="width:27%">数据 / 依赖</th><th>与本系统其它部分的连接</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>服务端</strong></td>
+          <td><code>smartpark_server</code>（s1 上由 <code>start.sh</code> 拉起）</td>
+          <td>SQLite 库 + <code>data/garage-3tower.txt</code> + 静态页目录</td>
+          <td>TCP 9527 / HTTP 18080 / WS 18081，供 macOS 与网页端接入</td>
+        </tr>
+        <tr>
+          <td><strong>macOS 管理端</strong></td>
+          <td><code>smartpark_admin_macos.app</code>（Qt 6.8.3 + AppKit）</td>
+          <td>本地模式用本地库与本地 LPR；远程模式连服务端</td>
+          <td>本地：直接调 <code>ParkingService</code>；远程：TCP v1 + REST</td>
+        </tr>
+        <tr>
+          <td><strong>网页端</strong></td>
+          <td>静态页（服务端 <code>--web-root</code> 直出）</td>
+          <td>浏览器内运行，无构建步骤</td>
+          <td>REST <code>/api/v1/*</code> + WebSocket <code>/ws</code></td>
+        </tr>
+        <tr>
+          <td><strong>车牌识别</strong></td>
+          <td>Python：<code>scripts/recognize_plate.py</code>（检测 + OCR）</td>
+          <td>ONNX 模型 + 运行缓存</td>
+          <td>由服务端 <code>PlateRecognition</code> 或 macOS 本地进程调用</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <footer>smartpark · 课程设计 · 本图由项目源码结构整理</footer>
+</div>
+</body>
+</html>

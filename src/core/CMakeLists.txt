@@ -29,6 +29,8 @@ add_library(smartpark_core STATIC
     service/FakePaymentGateway.h
     service/GridPlanner.cpp
     service/GridPlanner.h
+    service/BackgroundEntryPlanner.cpp
+    service/BackgroundEntryPlanner.h
     service/ParkingService.cpp
     service/ParkingService.h
     service/ParkingInsightEngine.cpp
@@ -53,3 +55,15 @@ target_include_directories(smartpark_core
 )
 
 target_link_libraries(smartpark_core PUBLIC Qt6::Sql)
+
+# AppleClang 通常未随附 OpenMP；未找到时保留后台执行和串行搜索。
+option(SMARTPARK_ENABLE_OPENMP "Parallelize independent gate route searches" ON)
+if(SMARTPARK_ENABLE_OPENMP)
+    find_package(OpenMP QUIET COMPONENTS CXX)
+    if(OpenMP_CXX_FOUND)
+        target_link_libraries(smartpark_core PUBLIC OpenMP::OpenMP_CXX)
+        message(STATUS "SmartPark route planning: OpenMP enabled")
+    else()
+        message(STATUS "SmartPark route planning: serial fallback (OpenMP not found)")
+    endif()
+endif()

@@ -233,14 +233,12 @@ int runSelftest(){
                      == false,
           "reservation.create returns end/grace deadline", reservedPayload);
 
-    // 5. 到场核销：预约 60 分钟后才开始，立即到场应被到场窗口校验拒绝
-    //    （正常到场链路由核心测试以注入时间覆盖）。
+    // 5. 到场核销：到场窗口从预约创建时打开，所以 60 分钟后才开始的预约
+    //    此刻就能核销（旧版「开始前 30 分钟才允许」的窗口已废弃）。
     const auto checkin = client.request(QStringLiteral("reservation.checkin"),
         QJsonObject{{QStringLiteral("plate"), QStringLiteral("晋T00002")}});
-    check(checkin.has_value() && !checkin->value(QStringLiteral("ok")).toBool()
-              && checkin->value(QStringLiteral("error")).toString().contains(
-                     QStringLiteral("到场时间窗口")),
-          "reservation.checkin rejects arrival outside the window",
+    check(checkin.has_value() && checkin->value(QStringLiteral("ok")).toBool(),
+          "reservation.checkin accepts arrival right after creation",
           checkin.value_or(QJsonObject()));
 
     // 6. 离场（晋T00001 刚入场 → 免费时段内费用为 0）

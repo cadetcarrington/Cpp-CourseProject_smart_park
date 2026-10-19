@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>路径规划算法流程（竖向）· GridPlanner 多目标 A*</title>
+<style>
+  html,body{margin:0;background:#fff;color:#111}
+  body{
+    padding:34px 30px 40px;
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  }
+  .head{max-width:1000px;margin:0 auto 6px}
+  h1{font-size:17px;font-weight:600;letter-spacing:.3px;margin:0 0 4px;color:#111}
+  .hint{font-size:12.5px;color:#666;margin:0}
+  .diagram{max-width:1000px;margin:10px auto 0;overflow-x:auto}
+  svg{display:block;width:1000px;height:auto;min-width:1000px}
+  svg text{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    fill:#111;
+  }
+  .box{fill:#fff;stroke:#1f2937;stroke-width:1.5}
+  .loopbox{fill:#fff;stroke:#1f2937;stroke-width:1.5}
+  .line{fill:none;stroke:#1f2937;stroke-width:1.5;stroke-linecap:square}
+  .note{
+    max-width:1000px;margin:14px auto 0;padding:10px 14px;border:1px solid #e5e7eb;border-radius:8px;
+    font-size:12.5px;color:#333;line-height:1.7;background:#fff;
+  }
+  .note b{font-weight:600}
+  @media print{
+    body{padding:12px}
+    .diagram{overflow:visible}
+    svg{width:100%;min-width:0}
+  }
+</style>
+</head>
+<body>
+
+<div class="head">
+  <h1>路径规划算法流程（GridPlanner · 多目标 A*）</h1>
+  <p class="hint">自上而下为执行顺序；④ 是循环体，⑤ 判定不满足时沿右侧回到 ④，满足后继续向下。</p>
+</div>
+
+<div class="diagram">
+<svg viewBox="0 0 1000 990" role="img" aria-label="GridPlanner 路径规划竖向流程图">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 1 L8 5 L0 9" fill="none" stroke="#1f2937" stroke-width="1.3"/>
+    </marker>
+  </defs>
+  <!-- 起点 -->
+  <rect x="320" y="28" width="360" height="52" rx="12" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+  <text x="500" y="50" font-size="14.5" font-weight="600" fill="#111827" text-anchor="middle">入口</text>
+  <line x1="500" y1="80" x2="500" y2="100" stroke="#111827" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- ① 入口与坐标映射 -->
+  <rect x="320" y="102" width="360" height="52" rx="10" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+  <text x="500" y="123" font-size="13.5" font-weight="600" fill="#111827" text-anchor="middle">① 坐标映射</text>
+  <text x="500" y="139" font-size="10.5" font-weight="normal" fill="#4b5563" text-anchor="middle">起点 / 目标中心 → 空闲格子（占用时半径回退）</text>
+  <line x1="500" y1="154" x2="500" y2="174" stroke="#111827" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- ② 状态空间初始化 -->
+  <rect x="320" y="176" width="360" height="52" rx="10" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+  <text x="500" y="198" font-size="13.5" font-weight="600" fill="#111827" text-anchor="middle">② 状态空间初始化</text>
+  <line x1="500" y1="228" x2="500" y2="248" stroke="#111827" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- ③ 启发值表 -->
+  <rect x="320" y="250" width="360" height="52" rx="10" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+  <text x="500" y="272" font-size="13.5" font-weight="600" fill="#111827" text-anchor="middle">③ 启发值表计算</text>
+  <line x1="500" y1="302" x2="500" y2="322" stroke="#111827" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- ④ A* 主循环 -->
+  <rect x="220" y="324" width="560" height="328" rx="12" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+  <text x="500" y="350" font-size="13.5" font-weight="600" fill="#111827" text-anchor="middle">④ A* 主循环</text>
+  <rect x="265" y="360" width="470" height="42" rx="8" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+  <text x="500" y="385" font-size="12" font-weight="normal" fill="#374151" text-anchor="middle">1. 弹出 f = g + h 最小的堆节点</text>
+  <line x1="500" y1="402" x2="500" y2="416" stroke="#111827" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="265" y="418" width="470" height="42" rx="8" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+  <text x="500" y="443" font-size="12" font-weight="normal" fill="#374151" text-anchor="middle">2. 目标格结算（firstSettledStamp），全部结算则提前结束</text>
+  <line x1="500" y1="460" x2="500" y2="474" stroke="#111827" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="265" y="476" width="470" height="42" rx="8" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+  <text x="500" y="501" font-size="12" font-weight="normal" fill="#374151" text-anchor="middle">3. 展开各个方向的边界与障碍 </text>
+  <line x1="500" y1="518" x2="500" y2="532" stroke="#111827" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="265" y="534" width="470" height="42" rx="8" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+  <text x="500" y="559" font-size="12" font-weight="normal" fill="#374151" text-anchor="middle">4. 计算代价（= (步长 + 转向罚分) × 拥堵系数）</text>
+  <line x1="500" y1="576" x2="500" y2="590" stroke="#111827" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="265" y="592" width="470" height="42" rx="8" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+  <text x="500" y="617" font-size="12" font-weight="normal" fill="#374151" text-anchor="middle">5. 若更优：更新节点，并压入堆</text>
+  <line x1="500" y1="652" x2="500" y2="672" stroke="#111827" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- ⑤ 终止判定 -->
+  <rect x="320" y="674" width="360" height="52" rx="10" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+  <text x="500" y="696" font-size="13.5" font-weight="600" fill="#111827" text-anchor="middle">⑤ 全部目标均结算</text>
+  <!-- ⑤ 否 → 回到 ④（右侧回环） -->
+  <path d="M680 700 H800 V466 H782" fill="none" stroke="#111827" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="694" y="692" font-size="13.5" font-weight="600" fill="#111827" text-anchor="start">否</text>
+  <!-- ⑤ 是 → ⑥ -->
+  <line x1="500" y1="726" x2="500" y2="744" stroke="#111827" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="514" y="738" font-size="13.5" font-weight="600" fill="#111827" text-anchor="start">是</text>
+  <!-- ⑥ 路线重建 -->
+  <rect x="320" y="746" width="360" height="52" rx="10" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+  <text x="500" y="777" font-size="13.5" font-weight="600" fill="#111827" text-anchor="middle">⑥ 更新路线</text>
+  <!-- <text x="500" y="980" font-size="11.5" fill="#333" text-anchor="middle">parent 链回溯：允许同一格子以不同到达方向重复经过</text> -->
+  <!-- <text x="500" y="999" font-size="11.5" fill="#333" text-anchor="middle">折点整理：起点中心 + 方向变化点 + 目标中心；统计距离 / 转弯数</text> -->
+  <line x1="500" y1="798" x2="500" y2="816" stroke="#111827" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- ⑦ 输出路线 -->
+  <rect x="320" y="818" width="360" height="52" rx="10" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+  <text x="500" y="840" font-size="13.5" font-weight="600" fill="#111827" text-anchor="middle">⑦ 输出路线</text>
+  <!-- <text x="500" y="1092" font-size="11.5" fill="#333" text-anchor="middle">Route { points, distance, cost, turnCount }</text> -->
+  <text x="500" y="858" font-size="11.5" font-weight="normal" fill="#4b5563" text-anchor="middle">返回 1 条</text>
+  <line x1="500" y1="870" x2="500" y2="888" stroke="#111827" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- 结束 -->
+  <rect x="320" y="890" width="360" height="52" rx="12" fill="#fff" stroke="#111827" stroke-width="1.5"/>
+  <text x="500" y="921" font-size="14" font-weight="600" fill="#111827" text-anchor="middle">返回路线</text>
+</svg>
+</div>
+
+
+<div class="note">
+  <b>流程说明：</b>④ 循环体每轮弹出 f=g+h 最小的状态 → 惰性删除过期堆项 → 目标格首次结算（全部目标结算可提前结束）
+  → 展开 8 个方向（边界 / 障碍 / 切角检查）→ 按 (步长 + 转向罚分) × 拥堵系数 计算代价 → 更优则更新 parent/bestCost 并压堆；
+  ⑤ 中 open 为空或全部目标结算后进入 ⑥，否则沿右侧回环继续 ④。③ 中目标集合为空时 h≡0，退化为单源全图 Dijkstra。
+</div>
+
+</body>
+</html>

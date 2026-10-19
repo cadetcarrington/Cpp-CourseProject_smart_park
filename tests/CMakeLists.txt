@@ -9,6 +9,11 @@ target_link_libraries(smartpark_core_tests
 
 add_test(NAME smartpark_core_tests COMMAND smartpark_core_tests)
 
+add_executable(smartpark_background_planning_tests background_planning_tests.cpp)
+target_link_libraries(smartpark_background_planning_tests PRIVATE smartpark_core)
+add_test(NAME smartpark_background_planning_tests COMMAND smartpark_background_planning_tests)
+set_tests_properties(smartpark_background_planning_tests PROPERTIES TIMEOUT 90)
+
 # Gate 断线补报「部分确认」：真实 OfflineQueue + 真实协议分帧，
 # 外加进程内 mock 服务端只发半帧应答，验证失败安全。
 if(TARGET smartpark_gate)
@@ -31,6 +36,21 @@ if(TARGET smartpark_gate)
     add_test(NAME smartpark_gate_replay_tests
              COMMAND smartpark_gate_replay_tests)
 endif()
+
+# 车牌识别并发/进程泄漏回归：假 shell 脚本当 lprCommand，真实覆盖
+# 并发上限 + 有界排队（排满立刻失败）、超时杀整棵进程树（setsid 进程组）、
+# context 销毁取消（不回调、槽位恢复）、正常 JSON 解析、同步入口超时清理。
+# 调度器参数在进程内只读一次，测试在 main() 开头统一设 2 / 4 / 500ms。
+add_executable(smartpark_lpr_concurrency_tests lpr_concurrency_tests.cpp)
+target_compile_features(smartpark_lpr_concurrency_tests PRIVATE cxx_std_17)
+target_link_libraries(smartpark_lpr_concurrency_tests
+    PRIVATE
+        smartpark_network
+        Qt6::Core
+)
+add_test(NAME smartpark_lpr_concurrency_tests
+         COMMAND smartpark_lpr_concurrency_tests)
+set_tests_properties(smartpark_lpr_concurrency_tests PROPERTIES TIMEOUT 120)
 
 if(APPLE AND TARGET smartpark_admin_macos)
     enable_language(OBJCXX)
@@ -80,8 +100,7 @@ if(APPLE AND TARGET smartpark_admin_macos)
     target_compile_options(smartpark_macos_remote_tests PRIVATE -fobjc-arc)
     set_target_properties(smartpark_macos_remote_tests PROPERTIES AUTOMOC ON)
     target_compile_definitions(smartpark_macos_remote_tests PRIVATE
-        SMARTPARK_LPR_SCRIPT_PATH="${CMAKE_SOURCE_DIR}/scripts/recognize_plate.py"
-        SMARTPARK_PLATE_EXAMPLES_PATH="${CMAKE_SOURCE_DIR}/examples/plates")
+        SMARTPARK_LPR_SCRIPT_PATH="${CMAKE_SOURCE_DIR}/scripts/recognize_plate.py")
     find_library(SECURITY_FRAMEWORK_FOR_TESTS Security REQUIRED)
     target_link_libraries(smartpark_macos_remote_tests PRIVATE
         smartpark_core smartpark_network
@@ -117,4 +136,7 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_plate_geometry.py)
     add_test(NAME smartpark_plate_dataset_tests
         COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_plate_datasets.py)
+    # 底色判定只需要 numpy；缺 numpy 时同样自动跳过。
+    add_test(NAME smartpark_plate_color_tests
+        COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_plate_color.py)
 endif()
