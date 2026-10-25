@@ -61,6 +61,7 @@ using smartpark::network::recognizePlateAsync;
 namespace{
 
 int g_failures = 0;
+int g_lprTimeoutMs = 500;    // main() 里按 CI 环境放宽；时间断言按它缩放
 QTemporaryDir *g_tempDir = nullptr;
 QStringList g_tags;          // 本进程创建过的 marker tag，退出前兜底清理
 QStringList g_dirs;          // 本进程创建过的临时目录（脚本/命令行里带着它）
@@ -485,9 +486,10 @@ void testTimeoutKillsProcessTree(){
                && outcome.note.contains(QStringLiteral("超时")),
            QStringLiteral("timeout produces Failed + 超时 note (note=%1, status=%2)")
                .arg(outcome.note).arg(static_cast<int>(outcome.status)));
-    expect(took >= 350 && took < 5000,
-           QStringLiteral("honors SMARTPARK_LPR_TIMEOUT_MS≈500ms (took %1ms)")
-               .arg(took));
+    expect(took >= g_lprTimeoutMs * 7 / 10 && took < g_lprTimeoutMs + 2000,
+           QStringLiteral("honors SMARTPARK_LPR_TIMEOUT_MS≈%2ms (took %1ms)")
+               .arg(took)
+               .arg(g_lprTimeoutMs));
     // 关键回归：脚本本身、后台 marker 都不能剩（看门狗要杀整组而不是只 kill sh）。
     expect(waitForMarkerDead(pid, 5000),
            QStringLiteral("background marker process is gone after timeout "
@@ -652,9 +654,10 @@ void testSyncTimeoutTreeCleanup(){
     expect(result.isEmpty(), QStringLiteral("sync timeout returns an empty result"));
     expect(note.contains(QStringLiteral("超时")),
            QStringLiteral("sync timeout note mentions 超时 (note=%1)").arg(note));
-    expect(took >= 300 && took < 5000,
-           QStringLiteral("sync timeout honors the configured ~500ms (took %1ms)")
-               .arg(took));
+    expect(took >= g_lprTimeoutMs * 6 / 10 && took < g_lprTimeoutMs + 2000,
+           QStringLiteral("sync timeout honors the configured ~%2ms (took %1ms)")
+               .arg(took)
+               .arg(g_lprTimeoutMs));
     expect(QFileInfo::exists(markerFile),
            QStringLiteral("sync script did spawn its background marker before "
                           "timeout"));
@@ -675,7 +678,11 @@ int main(int argc, char **argv){
     // 调度器参数在进程内第一次用到识别时读取一次：一次设定，全测试共用。
     qputenv("SMARTPARK_LPR_MAX_CONCURRENCY", "2");
     qputenv("SMARTPARK_LPR_QUEUE_LIMIT", "4");
-    qputenv("SMARTPARK_LPR_TIMEOUT_MS", "500");
+    // CI 虚拟机冷启动、fork 与脚本装载比本机慢得多，500ms 偶发把正常任务
+    // 也掐掉（顶部「注意二」；ubuntu runner 上曾致 5/8 任务超时）。GitHub
+    // Actions 等会设置 CI=true，此时放宽到 3s；并发 2 / 排队 4 的语义不变。
+    g_lprTimeoutMs = qEnvironmentVariableIsSet("CI") ? 3000 : 500;
+    qputenv("SMARTPARK_LPR_TIMEOUT_MS", QByteArray::number(g_lprTimeoutMs));
 
     QCoreApplication app(argc, argv);
     QTemporaryDir tempDir(QDir::tempPath()
