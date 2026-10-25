@@ -6,12 +6,19 @@
 namespace smartpark{
 
 // 账号存储：SQLite users 表 + 盐化迭代 SHA-256 口令摘要。
-// 登录与注册共用与停车数据相同的数据库文件；空库首次打开时自动播种
-// 演示账号 admin（密码 smartpark），与登录界面的演示提示保持一致。
+// 服务端/测试场景默认在空库播种演示账号 admin（密码 smartpark），与登录
+// 界面的演示提示保持一致；macOS 管理端的本地库用 NoSeed 打开——空库首启
+// 由注册页创建第一个管理员账号（见 LoginViewController 首启流程）。
 // GUI / TCP / REST 网关共用本类做登录验证、角色判定与服务端 token 签发。
 class UserStore{
 public:
-    explicit UserStore(const QString &databasePath);
+    enum class SeedPolicy{
+        Seed,    // 空库播种 admin / gate / user 演示账号（服务端、测试）
+        NoSeed   // 空库保持无账号（macOS 管理端本地库）
+    };
+
+    explicit UserStore(const QString &databasePath,
+                       SeedPolicy seedPolicy = SeedPolicy::Seed);
     ~UserStore();
 
     UserStore(const UserStore &) = delete;
@@ -35,7 +42,12 @@ public:
     };
 
     LoginResult verifyLogin(const QString &userName, const QString &password);
-    RegisterResult registerUser(const QString &userName, const QString &password);
+    // role：admin / gate / user。REST 网关（H5 用户注册）用默认的 user；
+    // macOS 管理端本地库的首个账号传 admin。
+    RegisterResult registerUser(const QString &userName, const QString &password,
+                                const QString &role = QString::fromLatin1("user"));
+    // users 表当前账号数；查询失败返回 -1。登录界面据此判断是否首启。
+    int userCount() const;
 
     // ---- 服务端 token（docs/rest-api.md §2）----
     // 签发明文仅返回一次，库中 auth_tokens 只存 SHA-256 摘要；

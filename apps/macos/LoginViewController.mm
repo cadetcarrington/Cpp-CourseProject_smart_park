@@ -117,6 +117,9 @@ static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
     NSInteger _lockdownRemaining;
     // 启动时从钥匙串回填的账号，用于在换账号登录后清掉旧条目。
     NSString *_restoredAccount;
+    // 底部演示提示；首启（本地库无账号）时改写文案并自动弹出注册页。
+    NSTextField *_demoHint;
+    BOOL _firstRunHandled;
 }
 
 - (instancetype)initWithUserStore:(smartpark::UserStore *)userStore{
@@ -264,13 +267,13 @@ static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
     cardStack.translatesAutoresizingMaskIntoConstraints = NO;
     [card addSubview:cardStack];
 
-    NSTextField *demoHint = [NSTextField wrappingLabelWithString:
-        @"账号：admin　密码：smartpark。可注册新账号。"];
-    demoHint.font = [NSFont systemFontOfSize:12];
-    demoHint.textColor = [NSColor tertiaryLabelColor];
-    demoHint.alignment = NSTextAlignmentCenter;
+    _demoHint = [NSTextField wrappingLabelWithString:
+        @"远程服务端演示账号：admin / smartpark。可注册新账号。"];
+    _demoHint.font = [NSFont systemFontOfSize:12];
+    _demoHint.textColor = [NSColor tertiaryLabelColor];
+    _demoHint.alignment = NSTextAlignmentCenter;
 
-    for (NSView *view in @[title, subtitle, card, demoHint]){
+    for (NSView *view in @[title, subtitle, card, _demoHint]){
         view.translatesAutoresizingMaskIntoConstraints = NO;
         [root addSubview:view];
     }
@@ -302,9 +305,9 @@ static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
         [rememberRow.widthAnchor constraintEqualToConstant:292],
         [_errorLabel.widthAnchor constraintEqualToConstant:292],
 
-        [demoHint.topAnchor constraintEqualToAnchor:card.bottomAnchor constant:16],
-        [demoHint.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:32],
-        [demoHint.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-32],
+        [_demoHint.topAnchor constraintEqualToAnchor:card.bottomAnchor constant:16],
+        [_demoHint.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:32],
+        [_demoHint.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-32],
     ]];
 
     self.view = root;
@@ -326,6 +329,28 @@ static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
     } else{
         [self.view.window makeFirstResponder:_userNameField];
     }
+    [self handleFirstRunIfNeeded];
+}
+
+// 首启流程：本地库（未勾选远程）里一个账号都没有时，改写演示提示并自动
+// 弹出注册页创建第一个管理员；之后每次打开都走正常登录。只判定一次，
+// 注册页被取消后仍可通过「注册新账号」按钮重新打开。
+- (void)handleFirstRunIfNeeded{
+    if (_firstRunHandled || _userStore == nullptr){
+        return;
+    }
+    _firstRunHandled = YES;
+    if (_remoteCheck.state == NSControlStateValueOn){
+        return;
+    }
+    const int users = _userStore->userCount();
+    if (users != 0){
+        return;
+    }
+    _demoHint.stringValue =
+        @"首次使用：请先注册一个账号（已为你打开注册页）。";
+    _userNameField.placeholderString = @"注册后自动回填";
+    [self openRegister:nil];
 }
 
 #pragma mark - 记住账号 / 记住密码
@@ -685,6 +710,13 @@ static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
     }
     RegisterViewController *registerPage =
         [[RegisterViewController alloc] initWithUserStore:_userStore];
+    // 本地库的注册发生在管理员控制台自己的账号库里，一律给 admin；
+    // 远程模式注册写入服务端库，保持 user（H5 用户注册同样的默认值）。
+    registerPage.registerRole = (_remoteCheck.state == NSControlStateValueOn)
+        ? nil
+        : @"admin";
+    registerPage.firstRun = (_userStore->userCount() == 0
+                             && _remoteCheck.state == NSControlStateValueOff);
 
     __weak LoginViewController *weakSelf = self;
     registerPage.onRegistered = ^(NSString *userName){
@@ -696,6 +728,8 @@ static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
         strongSelf->_userNameField.stringValue = userName;
         strongSelf->_userNameField.backgroundColor = [NSColor textBackgroundColor];
         [strongSelf setError:@"" focus:strongSelf->_passwordField];
+        strongSelf->_demoHint.stringValue =
+            @"账号已创建，输入口令即可登录。";
     };
 
     [self presentViewControllerAsSheet:registerPage];

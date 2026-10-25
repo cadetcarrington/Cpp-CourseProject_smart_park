@@ -15,6 +15,7 @@
 #include "core/service/ParkingInsightEngine.h"
 #include "core/service/ReservationService.h"
 #include "core/service/FakePaymentGateway.h"
+#include "core/service/UserStore.h"
 #include "core/service/Billing.h"
 #include <QCoreApplication>
 #include <QTemporaryDir>
@@ -2748,6 +2749,45 @@ void benchmarkGridPlanner(){
                 multiIterations, multiTargets.size(), medianMicroseconds(multiSamples),
                 nonEmpty, multiTargets.size(), sink);
 }
+
+// macOS 管理端首启流程的账号存储契约：NoSeed 空库不播种、userCount 为 0；
+// 注册可指定角色（首启建管理员），默认策略仍播种演示账号供服务端/H5 使用。
+void testUserStoreSeedPolicyAndRoles(){
+    QTemporaryDir dir;
+    {
+        smartpark::UserStore store(
+            dir.filePath(QStringLiteral("noseed.db")),
+            smartpark::UserStore::SeedPolicy::NoSeed);
+        expect(store.lastError().isEmpty(), "NoSeed store opens cleanly");
+        expect(store.userCount() == 0, "NoSeed fresh database has no accounts");
+        const auto ok = store.registerUser(
+            QStringLiteral("boss"), QStringLiteral("boss-password"),
+            QStringLiteral("admin"));
+        expect(ok == smartpark::UserStore::RegisterResult::Success,
+               "first-run registration succeeds");
+        expect(store.userCount() == 1, "registered account counted");
+        expect(store.roleOf(QStringLiteral("boss")) == QStringLiteral("admin"),
+               "first registered account gets admin role");
+        expect(store.verifyLogin(QStringLiteral("boss"),
+                                 QStringLiteral("boss-password"))
+                   == smartpark::UserStore::LoginResult::Success,
+               "first-run admin can log in");
+    }
+    {
+        smartpark::UserStore store(dir.filePath(QStringLiteral("seed.db")));
+        expect(store.lastError().isEmpty(), "default policy store opens cleanly");
+        expect(store.userCount() == 3, "default policy seeds demo accounts");
+        expect(store.roleOf(QStringLiteral("admin")) == QStringLiteral("admin"),
+               "seeded admin keeps admin role");
+        const auto ok = store.registerUser(QStringLiteral("h5user"),
+                                           QStringLiteral("h5-password"));
+        expect(ok == smartpark::UserStore::RegisterResult::Success,
+               "role-default registration succeeds");
+        expect(store.roleOf(QStringLiteral("h5user")) == QStringLiteral("user"),
+               "role-default registration becomes user");
+    }
+}
+
 int main(){
     int argc = 0;
     char programName[] = "smartpark_core_tests";
@@ -2811,6 +2851,7 @@ int main(){
     testReservationLegacyConflictRepairsOnRestart();
     testPendingDepositsIncludeTimeSlotReservations();
     testFakePaymentGateway();
+    testUserStoreSeedPolicyAndRoles();
     testGridPlannerTurnAwareSearch();
     if (std::getenv("SMARTPARK_GRID_BENCH") != nullptr){
         benchmarkGridPlanner();

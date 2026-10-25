@@ -88,7 +88,10 @@
 #pragma mark - 登录界面
 
 - (void)showLogin{
-    userStore_ = std::make_unique<smartpark::UserStore>(databasePath_);
+    // 本地库不播种演示账号：空库首启走「创建管理员账号」注册页
+    // （LoginViewController 首启流程），已有账号的库不受影响。
+    userStore_ = std::make_unique<smartpark::UserStore>(
+        databasePath_, smartpark::UserStore::SeedPolicy::NoSeed);
     if (!userStore_->lastError().isEmpty()){
         NSAlert *alert = [[NSAlert alloc] init];
         alert.messageText = @"账号数据库不可用";

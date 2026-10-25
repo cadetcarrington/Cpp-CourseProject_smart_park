@@ -28,7 +28,7 @@ bool isDuplicateColumnError(const QString &errorText){
 }
 }
 
-UserStore::UserStore(const QString &databasePath){
+UserStore::UserStore(const QString &databasePath, SeedPolicy seedPolicy){
     connectionName_ = QStringLiteral("smartpark-users-%1").arg(
         QString::number(reinterpret_cast<quintptr>(this), 16));
     database_ = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName_);
@@ -44,7 +44,7 @@ UserStore::UserStore(const QString &databasePath){
     if (lastError_.isEmpty()){
         migrateSchema();
     }
-    if (lastError_.isEmpty()){
+    if (lastError_.isEmpty() && seedPolicy == SeedPolicy::Seed){
         ensureSeedAccount();
     }
 }
@@ -274,6 +274,14 @@ QString UserStore::roleOf(const QString &userName) const{
     return query.value(0).toString();
 }
 
+int UserStore::userCount() const{
+    QSqlQuery query(database_);
+    if (!query.exec(QStringLiteral("SELECT COUNT(*) FROM users")) || !query.next()){
+        return -1;
+    }
+    return query.value(0).toInt();
+}
+
 QString UserStore::issueToken(const QString &userName, qint64 ttlMs){
     const QString role = roleOf(userName);
     if (role.isEmpty()){
@@ -368,7 +376,8 @@ bool UserStore::touchLastLogin(const QString &userName){
 }
 
 UserStore::RegisterResult UserStore::registerUser(const QString &userName,
-                                                  const QString &password){
+                                                  const QString &password,
+                                                  const QString &role){
     const QString normalized = userName.trimmed();
     if (normalized.isEmpty() || password.isEmpty()){
         return RegisterResult::EmptyFields;
@@ -389,12 +398,14 @@ UserStore::RegisterResult UserStore::registerUser(const QString &userName,
     QRandomGenerator::system()->fillRange(reinterpret_cast<quint32 *>(salt.data()), 4);
     QSqlQuery insert(database_);
     insert.prepare(QStringLiteral(
-        "INSERT INTO users(username, salt, password_hash, created_at_ms)"
-        " VALUES(:userName, :salt, :digest, :createdAt)"));
+        "INSERT INTO users(username, salt, password_hash, created_at_ms, role)"
+        " VALUES(:userName, :salt, :digest, :createdAt, :role)"));
     insert.bindValue(QStringLiteral(":userName"), normalized);
     insert.bindValue(QStringLiteral(":salt"), QString::fromLatin1(salt.toBase64()));
     insert.bindValue(QStringLiteral(":digest"), hashPassword(password, salt));
     insert.bindValue(QStringLiteral(":createdAt"), QDateTime::currentMSecsSinceEpoch());
+    insert.bindValue(QStringLiteral(":role"),
+                     role.isEmpty() ? QStringLiteral("user") : role);
     if (!insert.exec()){
         lastError_ = insert.lastError().text();
         return RegisterResult::StorageError;

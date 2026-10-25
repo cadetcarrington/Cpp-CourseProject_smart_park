@@ -30,12 +30,16 @@
 - (void)loadView{
     NSView *root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 420, 320)];
 
-    NSTextField *title = [NSTextField labelWithString:@"注册新账号"];
+    NSTextField *title = [NSTextField labelWithString:
+        self.firstRun ? @"创建管理员账号" : @"注册新账号"];
     title.font = [NSFont systemFontOfSize:17 weight:NSFontWeightSemibold];
     title.textColor = [NSColor labelColor];
 
-    NSTextField *hint = [NSTextField wrappingLabelWithString:
-        @"账号 2-24 个字符且不含空格；口令至少 6 位。"];
+    NSString *hintText = self.firstRun
+        ? @"首次使用：注册的第一个账号将成为本机管理员。\n"
+          @"账号 2-24 个字符且不含空格；口令至少 6 位。"
+        : @"账号 2-24 个字符且不含空格；口令至少 6 位。";
+    NSTextField *hint = [NSTextField wrappingLabelWithString:hintText];
     hint.textColor = [NSColor secondaryLabelColor];
     hint.font = [NSFont systemFontOfSize:12];
 
@@ -191,7 +195,10 @@
         return;
     }
 
-    const auto result = _userStore->registerUser(userName, password);
+    const QString role = self.registerRole == nil
+        ? QString()
+        : QString::fromUtf8(self.registerRole.UTF8String);
+    const auto result = _userStore->registerUser(userName, password, role);
     if (result == smartpark::UserStore::RegisterResult::Success){
         void (^callback)(NSString *) = self.onRegistered;
         NSString *name = [NSString stringWithUTF8String:userName.toUtf8().constData()];

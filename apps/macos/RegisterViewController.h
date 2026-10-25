@@ -17,4 +17,11 @@ class UserStore;
 // 注册成功后回调，参数为新账号名（用于登录页预填）。
 @property (nonatomic, copy) void (^onRegistered)(NSString *userName);
 
+// 注册账号落库时使用的角色（admin / gate / user），nil 按 user 处理。
+// 登录页在本地库注册时传 admin；远程模式注册仍为 user。
+@property (nonatomic, copy) NSString *registerRole;
+
+// 首启流程（本地库尚无账号）：标题改为「创建管理员账号」。
+@property (nonatomic) BOOL firstRun;
+
 @end
