@@ -84,6 +84,8 @@
 @property (nonatomic, copy) NSArray<NSNumber *> *minimumWidths;
 @property (nonatomic, assign) NSInteger badgeColumn;
 @property (nonatomic, copy) NSColor *(^badgeTintBlock)(NSString *value);
+// macOS 27 的 NSRefreshController；用 id 类型让旧 SDK 也能编译本文件。
+@property (nonatomic, strong, nullable) id pullToRefreshController;
 @end
 
 @implementation TableView
@@ -321,6 +323,30 @@
     cell.toolTip = value;
     cell.label.toolTip = value;
     return cell;
+}
+
+#pragma mark - macOS 27 下拉刷新
+
+- (void)enablePullToRefreshWithTarget:(id)target action:(SEL)action{
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
+    if (@available(macOS 27.0, *)){
+        NSRefreshController *refresh = [[NSRefreshController alloc] init];
+        refresh.target = target;
+        refresh.action = action;
+        // 指示器用强调色，与表格当前行的选中色一致。
+        refresh.tintColor = [NSColor controlAccentColor];
+        _scroll.refreshController = refresh;
+        self.pullToRefreshController = refresh;
+    }
+#else
+    (void)target;
+    (void)action;
+#endif
+}
+
+- (void)endPullToRefresh{
+    // 未启用（旧系统/旧 SDK）时 pullToRefreshController 为 nil，这里即空操作。
+    [self.pullToRefreshController performSelector:@selector(endRefreshing)];
 }
 
 @end

@@ -17,6 +17,13 @@ NSView * _Nullable SmartParkGlassWrap(NSView *content, CGFloat cornerRadius){
         NSGlassEffectView *glass = [[NSGlassEffectView alloc] init];
         glass.cornerRadius = cornerRadius;
         glass.contentView = content;
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
+        // macOS 27：卡片承载输入框/按钮等交互控件，按官方指引启用
+        // 交互玻璃（按压时的系统视觉反馈）。
+        if (@available(macOS 27.0, *)){
+            glass.effectIsInteractive = YES;
+        }
+#endif
         return glass;
     }
 #else
@@ -66,17 +73,36 @@ API_AVAILABLE(macos(26.0))
 
 #endif  // __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
 
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+
+// 胶囊内的按钮样式：无边框 + 半粗体 + 强调色 + 最小尺寸保证胶囊形态。
+static void SmartParkStyleCapsuleButton(NSButton *button){
+    button.bordered = NO;
+    button.font = [NSFont systemFontOfSize:button.font.pointSize
+                                   weight:NSFontWeightSemibold];
+    button.contentTintColor = [NSColor controlAccentColor];
+    [button.heightAnchor constraintGreaterThanOrEqualToConstant:26].active = YES;
+    [button.widthAnchor constraintGreaterThanOrEqualToConstant:84].active = YES;
+}
+
+#endif  // __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+
 NSView *SmartParkGlassButton(NSButton *button, CGFloat cornerRadius){
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
+    if (@available(macOS 27.0, *)){
+        // macOS 27：官方交互玻璃（effectIsInteractive），按压反馈由系统
+        // 提供，替代 26 上的手写悬停着色。
+        SmartParkStyleCapsuleButton(button);
+        NSGlassEffectView *glass = [[NSGlassEffectView alloc] init];
+        glass.cornerRadius = cornerRadius;
+        glass.effectIsInteractive = YES;
+        glass.contentView = button;
+        return glass;
+    }
+#endif
     if (@available(macOS 26.0, *)){
-        button.bordered = NO;
-        button.font = [NSFont systemFontOfSize:button.font.pointSize
-                                       weight:NSFontWeightSemibold];
-        button.contentTintColor = [NSColor controlAccentColor];
-        // 胶囊高度略加余量，玻璃圆角≈高度一半即成胶囊形。
-        [button.heightAnchor constraintGreaterThanOrEqualToConstant:26].active = YES;
-        [button.widthAnchor constraintGreaterThanOrEqualToConstant:84].active = YES;
-
+        SmartParkStyleCapsuleButton(button);
         SmartParkGlassHoverChrome *glass = [[SmartParkGlassHoverChrome alloc] init];
         glass.cornerRadius = cornerRadius;
         glass.contentView = button;

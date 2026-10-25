@@ -86,7 +86,16 @@ bool recordOverlapsRange(const smartpark::ParkingRecord &record,
 - (void)viewDidLoad{
     [super viewDidLoad];
     _filterActive = NO;
+    // macOS 27：停车记录支持下拉刷新（与 ⌘R / 页面刷新同一条数据路径）。
+    [_table enablePullToRefreshWithTarget:self action:@selector(pullToRefresh:)];
     [self refresh];
+}
+
+// NSRefreshController 的 target/action（sender 类型用 id，避免旧 SDK
+// 引用不到 NSRefreshController 类）。
+- (void)pullToRefresh:(id)sender{
+    [self refresh];
+    [_table endPullToRefresh];
 }
 
 - (NSDatePicker *)datePicker{

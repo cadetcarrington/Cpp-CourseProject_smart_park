@@ -44,22 +44,6 @@ jobs:
       - name: Test
         run: ctest --test-dir build/ci --output-on-failure --timeout 240
 
-      # 一次性侦察步骤：把 macOS 27 SDK 里 AppKit 的新 API 头文件打进构建
-      # 日志，供本机（SDK 26.2）开发 macOS 27 适配时查阅精确签名。
-      - name: Dump macOS 27 AppKit headers
-        if: matrix.os == 'xcode-27'
-        run: |
-          SDK=$(xcrun --show-sdk-path)
-          H="$SDK/System/Library/Frameworks/AppKit.framework/Headers"
-          echo "== NSRefreshController.h =="
-          cat "$H/NSRefreshController.h" 2>/dev/null || echo MISSING
-          echo "== NSScrollView refreshController =="
-          grep -n -B3 -A6 "refreshController" "$H/NSScrollView.h" || true
-          echo "== NSGlassEffectView.h (27 changes?) =="
-          cat "$H/NSGlassEffectView.h" 2>/dev/null || true
-          echo "== All API_AVAILABLE(macos(27..)) in AppKit =="
-          grep -rn "API_AVAILABLE(macos(27" "$H" | head -80 || true
-
       # 在 macos-26 上顺手产出 DMG 工件，验证打包链路在新系统上的可用性。
       - name: Package DMG
         if: matrix.os == 'macos-26'

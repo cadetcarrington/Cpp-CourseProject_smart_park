@@ -22,6 +22,12 @@ NS_ASSUME_NONNULL_BEGIN
 // row 越界返回 nil。
 - (nullable NSArray<NSString *> *)rowAtIndex:(NSInteger)row;
 - (nullable NSString *)valueAtRow:(NSInteger)row column:(NSInteger)column;
+
+// macOS 27：给表格滚动视图接上下拉刷新（NSScrollView.refreshController，
+// target/action 触发）。旧 SDK 编译期剔除、旧系统运行期空操作。
+- (void)enablePullToRefreshWithTarget:(id)target action:(SEL)action;
+// 刷新完成后收起下拉指示器；未启用时是空操作。
+- (void)endPullToRefresh;
 @end
 
 NS_ASSUME_NONNULL_END
