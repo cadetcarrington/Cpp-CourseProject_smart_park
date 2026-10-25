@@ -5,6 +5,7 @@
 #include <QEventLoop>
 
 #import "RegisterViewController.h"
+#import "GlassUI.h"
 
 #include "core/service/UserStore.h"
 
@@ -151,14 +152,9 @@ static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
     subtitle.font = [NSFont systemFontOfSize:13];
     subtitle.textColor = [NSColor secondaryLabelColor];
 
-    // 登录卡片：在窗口内层再叠一层毛玻璃，形成分层的玻璃卡片质感。
-    NSVisualEffectView *card = [[NSVisualEffectView alloc] init];
-    card.material = NSVisualEffectMaterialContentBackground;
-    card.blendingMode = NSVisualEffectBlendingModeWithinWindow;
-    card.state = NSVisualEffectStateActive;
-    card.wantsLayer = YES;
-    card.layer.cornerRadius = 14.0;
-    card.layer.masksToBounds = YES;
+    // 登录卡片容器：macOS 26 用液态玻璃，旧系统用 NSVisualEffectView
+    // 分层毛玻璃。两条路径共用同一套 cardStack 内容与外围约束。
+    NSView *cardAnchor = nil;
 
     NSTextField *cardTitle = [NSTextField labelWithString:@"管理端登录"];
     cardTitle.font = [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold];
@@ -264,8 +260,25 @@ static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
     cardStack.alignment = NSLayoutAttributeLeading;
     cardStack.spacing = 9.0;
     cardStack.edgeInsets = NSEdgeInsetsMake(18, 18, 18, 18);
-    cardStack.translatesAutoresizingMaskIntoConstraints = NO;
-    [card addSubview:cardStack];
+    cardAnchor = SmartParkGlassWrap(cardStack, 20.0);
+    if (cardAnchor == nil){
+        NSVisualEffectView *card = [[NSVisualEffectView alloc] init];
+        card.material = NSVisualEffectMaterialContentBackground;
+        card.blendingMode = NSVisualEffectBlendingModeWithinWindow;
+        card.state = NSVisualEffectStateActive;
+        card.wantsLayer = YES;
+        card.layer.cornerRadius = 14.0;
+        card.layer.masksToBounds = YES;
+        cardStack.translatesAutoresizingMaskIntoConstraints = NO;
+        [card addSubview:cardStack];
+        [NSLayoutConstraint activateConstraints:@[
+            [cardStack.topAnchor constraintEqualToAnchor:card.topAnchor],
+            [cardStack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
+            [cardStack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
+            [cardStack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor],
+        ]];
+        cardAnchor = card;
+    }
 
     _demoHint = [NSTextField wrappingLabelWithString:
         @"远程服务端演示账号：admin / smartpark。可注册新账号。"];
@@ -273,7 +286,7 @@ static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
     _demoHint.textColor = [NSColor tertiaryLabelColor];
     _demoHint.alignment = NSTextAlignmentCenter;
 
-    for (NSView *view in @[title, subtitle, card, _demoHint]){
+    for (NSView *view in @[title, subtitle, cardAnchor, _demoHint]){
         view.translatesAutoresizingMaskIntoConstraints = NO;
         [root addSubview:view];
     }
@@ -285,14 +298,9 @@ static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
         [subtitle.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:4],
         [subtitle.centerXAnchor constraintEqualToAnchor:root.centerXAnchor],
 
-        [card.topAnchor constraintEqualToAnchor:subtitle.bottomAnchor constant:22],
-        [card.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:32],
-        [card.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-32],
-
-        [cardStack.topAnchor constraintEqualToAnchor:card.topAnchor],
-        [cardStack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
-        [cardStack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
-        [cardStack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor],
+        [cardAnchor.topAnchor constraintEqualToAnchor:subtitle.bottomAnchor constant:22],
+        [cardAnchor.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:32],
+        [cardAnchor.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-32],
 
         [_userNameField.widthAnchor constraintEqualToConstant:292],
         [_passwordRow.widthAnchor constraintEqualToConstant:292],
@@ -305,7 +313,7 @@ static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
         [rememberRow.widthAnchor constraintEqualToConstant:292],
         [_errorLabel.widthAnchor constraintEqualToConstant:292],
 
-        [_demoHint.topAnchor constraintEqualToAnchor:card.bottomAnchor constant:16],
+        [_demoHint.topAnchor constraintEqualToAnchor:cardAnchor.bottomAnchor constant:16],
         [_demoHint.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:32],
         [_demoHint.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-32],
     ]];

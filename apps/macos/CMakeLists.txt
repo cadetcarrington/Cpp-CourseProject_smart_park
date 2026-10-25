@@ -11,6 +11,8 @@ set(MACOS_ADMIN_SOURCES
     PlatePrompt.mm
     AppDelegate.h
     AppDelegate.mm
+    GlassUI.h
+    GlassUI.mm
     MainWindowController.h
     MainWindowController.mm
     LoginViewController.h

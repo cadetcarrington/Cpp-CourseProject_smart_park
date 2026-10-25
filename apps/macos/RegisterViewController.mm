@@ -1,4 +1,5 @@
 #import "RegisterViewController.h"
+#import "GlassUI.h"
 
 #include "core/service/UserStore.h"
 
@@ -95,14 +96,19 @@
     stack.alignment = NSLayoutAttributeLeading;
     stack.spacing = 8.0;
     stack.edgeInsets = NSEdgeInsetsMake(20, 20, 20, 20);
-    stack.translatesAutoresizingMaskIntoConstraints = NO;
-    [root addSubview:stack];
+    // macOS 26：整卡液态玻璃；旧系统直接铺在 sheet 上（观感不变）。
+    NSView *stackAnchor = SmartParkGlassWrap(stack, 16.0);
+    if (stackAnchor == nil){
+        stackAnchor = stack;
+    }
+    stackAnchor.translatesAutoresizingMaskIntoConstraints = NO;
+    [root addSubview:stackAnchor];
 
     [NSLayoutConstraint activateConstraints:@[
-        [stack.topAnchor constraintEqualToAnchor:root.topAnchor],
-        [stack.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
-        [stack.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],
-        [stack.bottomAnchor constraintEqualToAnchor:root.bottomAnchor],
+        [stackAnchor.topAnchor constraintEqualToAnchor:root.topAnchor],
+        [stackAnchor.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
+        [stackAnchor.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],
+        [stackAnchor.bottomAnchor constraintEqualToAnchor:root.bottomAnchor],
         [_userNameField.widthAnchor constraintEqualToConstant:360],
         [_passwordField.widthAnchor constraintEqualToConstant:360],
         [_confirmField.widthAnchor constraintEqualToConstant:360],

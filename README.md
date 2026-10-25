@@ -18,6 +18,7 @@ SmartPark 是一套以 C++17 为核心的智能停车场管理系统（C++ 课�
 ## 功能特性
 
 - **首次启动注册**：管理端账号库为空时，第一次打开自动弹出「创建管理员账号」注册页，注册成功后账号名回填登录框；之后每次启动都是正常登录页（[LoginViewController.mm](apps/macos/LoginViewController.mm)）。
+- **macOS 26 液态玻璃**：登录与注册卡片在 macOS 26（Tahoe）上自动采用 Liquid Glass 材质（`NSGlassEffectView`，[GlassUI.mm](apps/macos/GlassUI.mm)），标准控件与工具栏随 SDK 新材质自动刷新；macOS 12–15 保持原有 NSVisualEffectView 外观，观感零变化。
 - **两套内置车库布局**：75 位六层车库（[data/garage-6f.txt](data/garage-6f.txt)，58 × 42.4 米，双入口单出口）与按 CAD 图纸重建的 330 位三塔楼地库（[data/garage-3tower.txt](data/garage-3tower.txt)，165 × 85 米，10 个车位分区、1 入口 2 出口）；车位分配按分区负载、入口/出口距离、拥堵与转弯次数加权评分，也可切换最近车位策略（[SpotAllocator](src/core/service/SpotAllocator.cpp)、[GridPlanner](src/core/service/GridPlanner.cpp)，路径规划用 A* 与多目标 Dijkstra）。
 - **识别即办理的出入库**：出入库页选择车牌照片，本机识别后置信度达标（默认 0.85）直接入场/出场，读不准时弹一次人工确认；绿牌自动把车辆类型记为电动车（[OperationsViewController.mm](apps/macos/OperationsViewController.mm)）。
 - **时段预约**：校验提前量与时长冲突、创建即锁定物理车位、到场核销、取消退定金、爽约没收、离场抵扣定金；管理端表单、网页与命令行共用同一 `Reservation` 模型（[ReservationService](src/core/service/ReservationService.cpp)）。
