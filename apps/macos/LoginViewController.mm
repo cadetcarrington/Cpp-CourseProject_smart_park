@@ -252,9 +252,13 @@ static NSString *const kRemotePortDefaultsKey = @"smartpark.remote.port";
     _registerButton.bezelStyle = NSBezelStyleRounded;
     _registerButton.accessibilityIdentifier = @"smartpark.login.register";
 
+    // 「登录」主按钮在 macOS 26 上是独立玻璃胶囊（悬停着色）；
+    // 旧系统仍是系统圆角按钮。布局一律引用包装视图。
+    NSView *loginAction = SmartParkGlassButton(_loginButton, 13.0);
+
     NSStackView *cardStack = [NSStackView stackViewWithViews:@[
         cardTitle, cardHint, _userNameField, _passwordRow, rememberRow,
-        _remoteCheck, _remoteRow, _errorLabel, _loginButton, _registerButton
+        _remoteCheck, _remoteRow, _errorLabel, loginAction, _registerButton
     ]];
     cardStack.orientation = NSUserInterfaceLayoutOrientationVertical;
     cardStack.alignment = NSLayoutAttributeLeading;

@@ -21,4 +21,10 @@ BOOL SmartParkGlassEnabled(void);
 // 系统或 SDK 不满足时返回 nil，content 不被改动、不加约束。
 NSView * _Nullable SmartParkGlassWrap(NSView *content, CGFloat cornerRadius);
 
+// 主按钮玻璃胶囊：返回应放入布局的视图（macOS 26 上是包着按钮的
+// NSGlassEffectView 胶囊——按钮置为无边框 + 半粗体 + 强调色文字，
+// 悬停时胶囊轻微着色；cornerRadius 通常用胶囊半径≈高度的一半）。
+// 旧系统原样返回 button，系统样式不变，调用方布局代码无需分支。
+NSView *SmartParkGlassButton(NSButton *button, CGFloat cornerRadius);
+
 NS_ASSUME_NONNULL_END

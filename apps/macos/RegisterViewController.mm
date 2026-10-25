@@ -84,7 +84,10 @@
     cancelButton.accessibilityIdentifier = @"smartpark.register.cancel";
     cancelButton.keyEquivalent = @"\033";
 
-    NSStackView *buttons = [NSStackView stackViewWithViews:@[_registerButton, cancelButton]];
+    // 「注册账号」主按钮在 macOS 26 上是独立玻璃胶囊；旧系统不变。
+    NSView *registerAction = SmartParkGlassButton(_registerButton, 13.0);
+
+    NSStackView *buttons = [NSStackView stackViewWithViews:@[registerAction, cancelButton]];
     buttons.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     buttons.spacing = 8.0;
 
