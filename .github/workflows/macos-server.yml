@@ -11,8 +11,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # macos-14 镜像 2026-11-02 退役，基线换 macos-15；
+        # macos-26 / xcode-27（macOS 27，preview）覆盖新系统与 Xcode 27 工具链。
         include:
-          - os: macos-14
+          - os: macos-15
+            macos_admin: 'ON'
+          - os: macos-26
+            macos_admin: 'ON'
+          - os: xcode-27
             macos_admin: 'ON'
           - os: ubuntu-24.04
             macos_admin: 'OFF'
@@ -37,3 +43,20 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build/ci --output-on-failure --timeout 240
+
+      # 在 macos-26 上顺手产出 DMG 工件，验证打包链路在新系统上的可用性。
+      - name: Package DMG
+        if: matrix.os == 'macos-26'
+        env:
+          BUILD_DIR: ${{ github.workspace }}/build/ci
+          SKIP_BUILD: '1'
+          RUN_SMOKE: '0'
+        run: scripts/package-macos.sh
+
+      - name: Upload DMG
+        if: matrix.os == 'macos-26'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartParkAdmin-macOS-26
+          path: build/pack/*.dmg
+          if-no-files-found: error

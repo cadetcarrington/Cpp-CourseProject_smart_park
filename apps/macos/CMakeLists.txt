@@ -98,3 +98,16 @@ set_target_properties(smartpark_admin_macos PROPERTIES
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
     MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
 )
+
+# CMake 不提供 LSMinimumSystemVersion 的内建属性（见 CMake issue #19685），
+# CMAKE_OSX_DEPLOYMENT_TARGET 只影响二进制的 minos。这里在构建后幂等补写
+# plist，让 Finder/Gatekeeper 能看到与二进制一致的系统要求。
+# 注意：sh -c 脚本必须整体作为单参数传入，用位置参数会被 VERBATIM 拆坏。
+if(CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(_SP_PLIST "$<TARGET_FILE_DIR:smartpark_admin_macos>/../Info.plist")
+    add_custom_command(TARGET smartpark_admin_macos POST_BUILD
+        COMMAND /bin/sh -c
+            "/usr/libexec/PlistBuddy -c 'Delete :LSMinimumSystemVersion' '${_SP_PLIST}' 2>/dev/null; /usr/libexec/PlistBuddy -c 'Add :LSMinimumSystemVersion string ${CMAKE_OSX_DEPLOYMENT_TARGET}' '${_SP_PLIST}'"
+        VERBATIM
+    )
+endif()

@@ -65,25 +65,41 @@ if [[ -d "$DRIVERS_DIR" ]]; then
         [[ "$name" == "libqsqlite.dylib" ]] || rm "$drv"
     done
 fi
+
+# 管理端是纯 AppKit 应用，不创建 QGuiApplication，platforms/styles/
+# iconengines/imageformats 插件永远不会被加载，连带 QtGui/QtWidgets/QtSvg/
+# QtDBus framework 一起裁掉（保留 sqldrivers/tls/networkinformation）。
+for plug in platforms styles iconengines imageformats; do
+    rm -rf "$APP/Contents/PlugIns/$plug"
+done
+for fw in QtGui QtWidgets QtSvg QtDBus; do
+    rm -rf "$APP/Contents/Frameworks/$fw.framework"
+done
 xattr -cr "$APP"
 
 echo "== [4/6] ad-hoc 签名与校验 =="
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
-echo "== [5/6] 冒烟启动（6 秒） =="
-"$APP/Contents/MacOS/smartpark_admin_macos" > "$WORK/smoke.log" 2>&1 & SMOKE_PID=$!
-sleep 6
-if kill -0 "$SMOKE_PID" 2>/dev/null; then
-    kill "$SMOKE_PID" || true
-    echo "smoke: 进程存活 6 秒，视为启动成功"
+echo "== [5/6] 冒烟启动（6 秒；RUN_SMOKE=0 跳过，CI 无窗口环境用） =="
+if [[ "${RUN_SMOKE:-1}" == "1" ]]; then
+    "$APP/Contents/MacOS/smartpark_admin_macos" > "$WORK/smoke.log" 2>&1 & SMOKE_PID=$!
+    sleep 6
+    if kill -0 "$SMOKE_PID" 2>/dev/null; then
+        kill "$SMOKE_PID" || true
+        echo "smoke: 进程存活 6 秒，视为启动成功"
+    else
+        echo "error: 打包后应用启动即退出，日志：" >&2
+        cat "$WORK/smoke.log" >&2
+        exit 1
+    fi
 else
-    echo "error: 打包后应用启动即退出，日志：" >&2
-    cat "$WORK/smoke.log" >&2
-    exit 1
+    echo "smoke: 已按 RUN_SMOKE=0 跳过"
 fi
 
 rm -f "$WORK/smoke.log"
+# 拖拽安装：镜像里放一个指向 /Applications 的替身。
+ln -s /Applications "$WORK/Applications"
 
 echo "== [6/6] 组装 DMG =="
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' \

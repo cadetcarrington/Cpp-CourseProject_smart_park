@@ -83,7 +83,7 @@ scripts/run-macos.sh --remote 127.0.0.1:9527 --user admin
 
 [构建脚本](scripts/build-macos.sh) 会尝试通过 qmake、常用安装路径或 Homebrew 查找 Qt。默认输出为 `build/macos/apps/macos/smartpark_admin_macos.app`；构建和运行脚本均可通过 `BUILD_DIR` 指定其他构建目录。
 
-需要分发包时，运行 [scripts/package-macos.sh](scripts/package-macos.sh) 一键产出带使用说明与 ad-hoc 签名的 DMG（输出至 `build/pack/`，如 `SmartParkAdmin-0.5.0-macOS-arm64.dmg`）；脚本自动完成 Release 构建、macdeployqt、裁剪多余 SQL 驱动、签名校验与冒烟启动。
+需要分发包时，运行 [scripts/package-macos.sh](scripts/package-macos.sh) 一键产出带使用说明与 ad-hoc 签名的 DMG（输出至 `build/pack/`，如 `SmartParkAdmin-0.5.0-macOS-arm64.dmg`）；脚本自动完成 Release 构建、macdeployqt、裁剪非 QSQLITE 驱动与 GUI 类插件/framework、签名校验与冒烟启动（CI 里 `RUN_SMOKE=0` 跳过）。部署目标为 macOS 12（`CMAKE_OSX_DEPLOYMENT_TARGET`，写入 Info.plist 的 LSMinimumSystemVersion）。CI 在 macos-15／macos-26／macOS 27（`xcode-27` 预览镜像）与 ubuntu-24.04 上构建并跑测试，macos-26 任务同时上传 DMG 工件。
 
 也可直接使用预设：
 

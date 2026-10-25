@@ -25,6 +25,15 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
+# Qt 6.8 仅支持 macOS 12 及以上；显式声明部署目标（驱动
+# -mmacosx-version-min 旗标并写入 .app 的 LSMinimumSystemVersion）。
+# 用户可通过 -DCMAKE_OSX_DEPLOYMENT_TARGET=... 覆盖；FORCE 回填空缓存项，
+# 否则旧构建目录里的空条目会让默认值失效。
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING
+        "Minimum macOS deployment version" FORCE)
+endif()
+
 add_subdirectory(src/core)
 add_subdirectory(src/network)
 add_subdirectory(apps/server)
